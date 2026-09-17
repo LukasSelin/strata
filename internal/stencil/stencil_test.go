@@ -46,6 +46,12 @@ func TestRowLengthPanics(t *testing.T) {
 	mustPanic(t, "short row", func() {
 		HornSlopeRow(make([]float32, 4), make([]float32, 6), make([]float32, 5), make([]float32, 6), 1, 1, 1, false)
 	})
+	mustPanic(t, "short aspect row", func() {
+		HornAspectRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 5), 1, 1, -1, false)
+	})
+	mustPanic(t, "short hillshade row", func() {
+		HornHillshadeRow(make([]float32, 4), make([]float32, 5), make([]float32, 6), make([]float32, 6), 1, 1, 1, 1, 1)
+	})
 	mustPanic(t, "dx/dy length", func() {
 		HornGradientRow(make([]float32, 4), make([]float32, 3), make([]float32, 6), make([]float32, 6), make([]float32, 6), 1, 1)
 	})
@@ -157,6 +163,92 @@ func TestClearBorder(t *testing.T) {
 		}
 		if set != want {
 			t.Fatalf("bit %d = %v, want %v", i, set, want)
+		}
+	}
+}
+
+// atan2Specials are the argument values whose combinations exercise every
+// special case of math.Atan2, plus ordinary values of each sign.
+var atan2Specials = []float32{
+	0, float32(math.Copysign(0, -1)), float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN()),
+	1, -1, 0.5, -2, 3e38, -3e38, math.SmallestNonzeroFloat32, -math.SmallestNonzeroFloat32, 1e-30, -7e20,
+}
+
+// atan2Sample returns a random float32 of random sign whose magnitude is
+// log-uniform over most of the float32 range, or occasionally uniform in
+// [0, 4), so that ratios near 1 and the reduction thresholds are common.
+func atan2Sample(rng *rand.Rand) float32 {
+	var v float32
+	if rng.IntN(4) == 0 {
+		v = float32(rng.Float64() * 4)
+	} else {
+		v = float32(math.Pow(2, rng.Float64()*200-100))
+	}
+	if rng.IntN(2) == 0 {
+		v = -v
+	}
+	return v
+}
+
+func TestAtan2F32Accuracy(t *testing.T) {
+	const bound = 3e-7
+	var worst float64
+	check := func(y, x float32) {
+		got := Atan2F32(y, x)
+		want := math.Atan2(float64(y), float64(x))
+		if math.IsNaN(want) {
+			if got == got {
+				t.Fatalf("Atan2F32(%g, %g) = %g, want NaN", y, x, got)
+			}
+			return
+		}
+		if math.Signbit(float64(got)) != math.Signbit(want) {
+			t.Fatalf("Atan2F32(%g, %g) = %g, math.Atan2 = %g: sign differs", y, x, got, want)
+		}
+		e := math.Abs(float64(got) - want)
+		worst = max(worst, e)
+		if e > bound {
+			t.Fatalf("Atan2F32(%g, %g) = %g, math.Atan2 = %g, error %.3g > %.3g", y, x, got, want, e, bound)
+		}
+	}
+	for _, y := range atan2Specials {
+		for _, x := range atan2Specials {
+			check(y, x)
+		}
+	}
+	n := 2_000_000
+	if testing.Short() {
+		n = 100_000
+	}
+	rng := rand.New(rand.NewPCG(21, 22))
+	for range n {
+		y, x := atan2Sample(rng), atan2Sample(rng)
+		check(y, x)
+		// Nearly equal magnitudes, around the π/4 diagonals.
+		check(y, math.Nextafter32(y, 0)*float32(1-2*rng.IntN(2)))
+	}
+	t.Logf("largest error %.3g radians", worst)
+
+	pi := float32(math.Pi)
+	for _, tc := range []struct {
+		y, x, want float32
+	}{
+		{0, 0, 0},
+		{float32(math.Copysign(0, -1)), 0, float32(math.Copysign(0, -1))},
+		{0, float32(math.Copysign(0, -1)), pi},
+		{float32(math.Copysign(0, -1)), float32(math.Copysign(0, -1)), -pi},
+		{0, -5, pi},
+		{float32(math.Copysign(0, -1)), -5, -pi},
+		{5, 0, pi / 2},
+		{-5, float32(math.Copysign(0, -1)), -pi / 2},
+		{float32(math.Inf(1)), float32(math.Inf(1)), pi / 4},
+		{float32(math.Inf(-1)), float32(math.Inf(-1)), -(pi - pi/4)},
+		{3, float32(math.Inf(-1)), pi},
+		{float32(math.Inf(-1)), 3, -pi / 2},
+	} {
+		got := Atan2F32(tc.y, tc.x)
+		if math.Float32bits(got) != math.Float32bits(tc.want) {
+			t.Errorf("Atan2F32(%g, %g) = %g (%#x), want %g (%#x)", tc.y, tc.x, got, math.Float32bits(got), tc.want, math.Float32bits(tc.want))
 		}
 	}
 }
