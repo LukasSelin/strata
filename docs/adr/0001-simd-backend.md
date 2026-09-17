@@ -56,8 +56,8 @@ golang/go#78902, `src/simd` in the go1.27.1 toolchain.
 
 ## Spike
 
-The prototype is in `internal/spike/simdbackend` (throwaway, not imported by
-anything). It implements `Add`, `Clamp`, and a 3×3 Horn slope-magnitude row
+The prototype was `internal/spike/simdbackend` (throwaway, never imported;
+removed in STRATA-6, last present in ad531b4). It implements `Add`, `Clamp`, and a 3×3 Horn slope-magnitude row
 kernel (8 neighbour loads, 17 ops, `sqrt`; the §14 shape). Variants:
 
 - scalar
@@ -215,5 +215,6 @@ gap versus the spike's NaN-only archsimd Clamp (567).
   (golang/go#79781).
 - **Fusion (§20)** becomes a Go code-generation problem rather than an
   assembly one, which keeps it viable.
-- `internal/spike/simdbackend` keeps the asm-vs-archsimd slope-row comparison
-  reproducible. Delete it once the first real terrain kernel lands.
+- `internal/spike/simdbackend` kept the asm-vs-archsimd slope-row comparison
+  reproducible until the first real terrain kernel landed. It was deleted in
+  STRATA-6; check out ad531b4 to re-run it.
