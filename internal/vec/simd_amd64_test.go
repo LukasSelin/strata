@@ -182,6 +182,34 @@ func TestAVX2InPlace(t *testing.T) {
 	assertSlicesEqual(t, "Add in-place AVX2", a, want)
 }
 
+// TestBackendSelection checks that the SIMD set is installed at init,
+// that UseScalar(true) replaces all of it, and that UseScalar(false)
+// puts every kernel back.
+func TestBackendSelection(t *testing.T) {
+	requireAVX2(t)
+	defer UseScalar(false)
+	if Backend() != "avx2" {
+		t.Fatalf("Backend() = %q, want avx2", Backend())
+	}
+	assertKernels(t, "init", kernelsInUse(), *simdKernels)
+	assertKernels(t, "SIMD set", *simdKernels, kernelSet{
+		add: addFloat32AVX2, sub: subFloat32AVX2, mul: mulFloat32AVX2, div: divFloat32AVX2,
+		addScalar: addScalarFloat32AVX2, mulScalar: mulScalarFloat32AVX2,
+		min: minFloat32AVX2, max: maxFloat32AVX2, clamp: clampFloat32AVX2,
+		abs: absFloat32AVX2, sqrt: sqrtFloat32AVX2,
+	})
+	UseScalar(true)
+	if Backend() != "scalar" {
+		t.Fatalf("after UseScalar(true), Backend() = %q", Backend())
+	}
+	assertKernels(t, "UseScalar(true)", kernelsInUse(), scalarKernels)
+	UseScalar(false)
+	if Backend() != "avx2" {
+		t.Fatalf("after UseScalar(false), Backend() = %q, want avx2", Backend())
+	}
+	assertKernels(t, "UseScalar(false)", kernelsInUse(), *simdKernels)
+}
+
 const benchN = 4096
 
 func benchInputs(n int) (dst, a, x []float32) {

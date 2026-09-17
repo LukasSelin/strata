@@ -26,17 +26,20 @@ func init() {
 	if !archsimd.X86.AVX2() {
 		return
 	}
-	addFloat32 = addFloat32AVX2
-	subFloat32 = subFloat32AVX2
-	mulFloat32 = mulFloat32AVX2
-	divFloat32 = divFloat32AVX2
-	addScalarFloat32 = addScalarFloat32AVX2
-	mulScalarFloat32 = mulScalarFloat32AVX2
-	minFloat32 = minFloat32AVX2
-	maxFloat32 = maxFloat32AVX2
-	clampFloat32 = clampFloat32AVX2
-	absFloat32 = absFloat32AVX2
-	sqrtFloat32 = sqrtFloat32AVX2
+	simdKernels = &kernelSet{
+		add:       addFloat32AVX2,
+		sub:       subFloat32AVX2,
+		mul:       mulFloat32AVX2,
+		div:       divFloat32AVX2,
+		addScalar: addScalarFloat32AVX2,
+		mulScalar: mulScalarFloat32AVX2,
+		min:       minFloat32AVX2,
+		max:       maxFloat32AVX2,
+		clamp:     clampFloat32AVX2,
+		abs:       absFloat32AVX2,
+		sqrt:      sqrtFloat32AVX2,
+	}
+	UseScalar(false)
 }
 
 func load8(s []float32) archsimd.Float32x8 {

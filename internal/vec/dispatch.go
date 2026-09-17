@@ -17,6 +17,62 @@ var (
 	sqrtFloat32      = scalarSqrtFloat32
 )
 
+// kernelSet is one backend's kernels, one field per function variable.
+type kernelSet struct {
+	add, sub, mul, div func(dst, a, b []float32)
+	addScalar          func(dst, src []float32, value float32)
+	mulScalar          func(dst, src []float32, value float32)
+	min, max           func(dst, a, b []float32)
+	clamp              func(dst, src []float32, lo, hi float32)
+	abs, sqrt          func(dst, src []float32)
+}
+
+var scalarKernels = kernelSet{
+	add:       scalarAddFloat32,
+	sub:       scalarSubFloat32,
+	mul:       scalarMulFloat32,
+	div:       scalarDivFloat32,
+	addScalar: scalarAddScalarFloat32,
+	mulScalar: scalarMulScalarFloat32,
+	min:       scalarMinFloat32,
+	max:       scalarMaxFloat32,
+	clamp:     scalarClampFloat32,
+	abs:       scalarAbsFloat32,
+	sqrt:      scalarSqrtFloat32,
+}
+
+// simdKernels is the SIMD set, or nil when this build or CPU has none.
+var simdKernels *kernelSet
+
+func (k *kernelSet) install() {
+	addFloat32, subFloat32, mulFloat32, divFloat32 = k.add, k.sub, k.mul, k.div
+	addScalarFloat32, mulScalarFloat32 = k.addScalar, k.mulScalar
+	minFloat32, maxFloat32, clampFloat32 = k.min, k.max, k.clamp
+	absFloat32, sqrtFloat32 = k.abs, k.sqrt
+}
+
+// Backend names the kernels currently in use: "avx2" or "scalar".
+func Backend() string {
+	if simdKernels != nil && !usingScalar {
+		return "avx2"
+	}
+	return "scalar"
+}
+
+var usingScalar bool
+
+// UseScalar forces the scalar kernels (true) or restores the best
+// available backend (false). It exists for equivalence tests and
+// scalar-vs-SIMD benchmarks, and must not be called while kernels run.
+func UseScalar(scalar bool) {
+	usingScalar = scalar
+	if scalar || simdKernels == nil {
+		scalarKernels.install()
+		return
+	}
+	simdKernels.install()
+}
+
 func requireEqualLen2(dst, src []float32) {
 	if len(src) != len(dst) {
 		panic("vec: dst and src must have equal length")
