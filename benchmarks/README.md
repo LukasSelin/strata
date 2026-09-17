@@ -41,10 +41,13 @@ go run ./benchmarks/cmd/stratabench < bench.txt
 - **`-count`.** Use at least 5. `stratabench` and `benchstat` both report
   the median. With `-count`, the testing package reruns each leaf
   benchmark consecutively, so a size's fixture is built once.
-- **`-short`** skips 16384². That size needs about 4 GB: three float32
-  operands of 1 GiB each plus masks. The whole algebra matrix takes about
-  10 minutes with `-count 5` on the RESULTS.md machine; `-short` saves the
-  16384² share of that and the 4 GB.
+- **`-short`** skips 16384², where each float32 operand is 1 GiB.
+  Measured peak private memory for the algebra suite at 16384² is
+  3.15 GiB for the two-input operations (three operands plus masks) and
+  2.12 GiB for Clamp (two). Fixtures are freed between sizes and between
+  operations, so a full run peaks at 3.15 GiB too. The whole algebra
+  matrix takes about 10 minutes with `-count 5` on the RESULTS.md
+  machine; `-short` saves the 16384² share of that and the memory.
 - **`-strata.sizes 256,1024`** runs other sizes. It is a flag of the test
   binary, so put it after the package.
 - **`-bench 'Add/size=4096/mask=off'`** selects part of the matrix; each
@@ -138,8 +141,9 @@ Rules:
   (`internal/vec` and `internal/stencil` have one) so that both backends run
   in one binary. A workload that uses several kernel packages passes a
   `Kernels` whose functions switch all of them.
-- Build fixtures once per size, touch every page before timing, and keep
-  `Run` allocation-free. Add a cheap `TestZeroAllocs` like
+- Build fixtures once per size, allocate only the operands the workload
+  reads, touch every page before timing, and keep `Run` allocation-free.
+  Document the measured 16384² peak in the category's `doc.go`. Add a cheap `TestZeroAllocs` like
   `algebra/bench_test.go`'s.
 - Commit a `RESULTS.md` with the machine, the exact commands, the
   `stratabench` output between the `<!-- stratabench output begin -->`
