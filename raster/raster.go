@@ -30,7 +30,10 @@
 // panicking.
 package raster
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // Float32Raster is a 2D float32 raster, or a view into one. Windows are
 // also Float32Rasters, so anything that accepts a raster accepts a
@@ -102,11 +105,27 @@ func requireShape(width, height, stride int) int {
 	if stride < width {
 		panic(fmt.Sprintf("raster: stride %d is less than width %d", stride, width))
 	}
-	return dataLen(width, height, stride)
+	n, ok := shapeLen(width, height, stride)
+	if !ok {
+		panic(fmt.Sprintf("raster: %d×%d with stride %d has more cells than an int holds",
+			width, height, stride))
+	}
+	return n
 }
 
+// dataLen is the Data length of a shape known to fit in an int.
 func dataLen(width, height, stride int) int {
 	return (height-1)*stride + width
+}
+
+// shapeLen is dataLen for a shape with positive dimensions and stride >=
+// width that may not fit: ok is false if (height-1)*stride + width
+// overflows an int.
+func shapeLen(width, height, stride int) (n int, ok bool) {
+	if height-1 > (math.MaxInt-width)/stride {
+		return 0, false
+	}
+	return dataLen(width, height, stride), true
 }
 
 // Row returns the Width cells of row y as a slice sharing r's memory.
@@ -161,7 +180,11 @@ func (r Float32Raster) Validate() error {
 	if r.Stride < r.Width {
 		return fmt.Errorf("raster: stride %d is less than width %d", r.Stride, r.Width)
 	}
-	n := dataLen(r.Width, r.Height, r.Stride)
+	n, ok := shapeLen(r.Width, r.Height, r.Stride)
+	if !ok {
+		return fmt.Errorf("raster: %d×%d with stride %d has more cells than an int holds",
+			r.Width, r.Height, r.Stride)
+	}
 	if len(r.Data) < n {
 		return fmt.Errorf("raster: data has %d cells, need %d", len(r.Data), n)
 	}
@@ -169,7 +192,9 @@ func (r Float32Raster) Validate() error {
 		if r.ValidOffset < 0 {
 			return fmt.Errorf("raster: negative ValidOffset %d", r.ValidOffset)
 		}
-		if bits := len(r.Valid) * 64; bits < r.ValidOffset+n {
+		// len(r.Valid)*64 cannot overflow: a slice of that many words
+		// could not be allocated.
+		if bits := len(r.Valid) * 64; r.ValidOffset > bits-n {
 			return fmt.Errorf("raster: mask has %d bits, need %d (offset %d + %d cells)",
 				bits, r.ValidOffset+n, r.ValidOffset, n)
 		}

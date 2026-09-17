@@ -216,6 +216,27 @@ func TestHillshadeFlat(t *testing.T) {
 	}
 }
 
+// TestHillshadeHugeAzimuth checks that azimuths of any finite size are
+// directions: one past 1e300 degrees once overflowed to Inf in radians and
+// made every cell NaN.
+func TestHillshadeHugeAzimuth(t *testing.T) {
+	dem := plane(6, 5, 3, -1, 1, 1)
+	for _, az := range []float64{1e308, -1e308, 360 * (1 << 60), 1e20 + 45} {
+		got, want := raster.NewFloat32Like(dem), raster.NewFloat32Like(dem)
+		Hillshade(got, dem, HillshadeOptions{CellSize: 1, Azimuth: az})
+		reduced := math.Mod(az, 360)
+		if reduced == 0 {
+			reduced = 360 // 0 would mean the default
+		}
+		Hillshade(want, dem, HillshadeOptions{CellSize: 1, Azimuth: reduced})
+		eachInterior(got, func(x, y int, v float32) {
+			if w := want.Data[want.Index(x, y)]; v != w {
+				t.Errorf("azimuth %g: hillshade(%d, %d) = %g, want %g as for %g", az, x, y, v, w, reduced)
+			}
+		})
+	}
+}
+
 func TestHillshadeFacingLight(t *testing.T) {
 	// A plane whose normal points at the light: its aspect is the azimuth
 	// and its slope 90° − altitude, so it falls by tan(90° − alt) per unit

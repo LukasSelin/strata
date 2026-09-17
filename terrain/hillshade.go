@@ -92,6 +92,9 @@ func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 	if !(alt > 0 && alt <= 90) {
 		panic(fmt.Sprintf("terrain: Altitude must be in (0, 90] (or 0 for 45), got %v", opts.Altitude))
 	}
+	// Reduce the azimuth first: math.Mod is exact, and a huge azimuth in
+	// radians would overflow to Inf, making every cell NaN.
+	az = math.Mod(az, 360)
 	az, alt = az*math.Pi/180, alt*math.Pi/180
 	// The kernel computes (c + bx·dx + by·dy) / sqrt(1 + dx² + dy²).
 	c := float32(255 * math.Sin(alt))

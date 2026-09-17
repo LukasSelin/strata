@@ -28,14 +28,15 @@ func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
 	const op = "algebra.Clamp"
 	check(op, "dst", dst, dst)
 	check(op, "src", dst, src)
-	clamp(op, dst, src, lo, hi, compact(dst) && compact(src))
+	checkMasks(op, dst, src)
+	clamp(dst, src, lo, hi, compact(dst) && compact(src))
 }
 
 // clamp is Clamp after the checks. whole selects one kernel call over all
 // cells, which requires every operand to be compact (see binaryApply).
-func clamp(op string, dst, src raster.Float32Raster, lo, hi float32, whole bool) {
+func clamp(dst, src raster.Float32Raster, lo, hi float32, whole bool) {
 	clampValues(dst, src, lo, hi, whole)
-	unaryValidity(op, dst, src, whole)
+	unaryValidity(dst, src, whole)
 }
 
 // clampValues is the arithmetic of clamp, without validity.
@@ -58,7 +59,8 @@ func binary(op string, dst, a, b raster.Float32Raster, kernel binaryKernel) {
 	check(op, "dst", dst, dst)
 	check(op, "a", dst, a)
 	check(op, "b", dst, b)
-	binaryApply(op, dst, a, b, kernel, compact(dst) && compact(a) && compact(b))
+	checkMasks(op, dst, a, b)
+	binaryApply(dst, a, b, kernel, compact(dst) && compact(a) && compact(b))
 }
 
 // binaryApply is binary after the checks. whole selects one kernel call
@@ -66,9 +68,9 @@ func binary(op string, dst, a, b raster.Float32Raster, kernel binaryKernel) {
 // every operand to be compact: sharing a wider stride is not enough,
 // because the span would then cover dst's row padding, which in a window
 // is its parent's cells.
-func binaryApply(op string, dst, a, b raster.Float32Raster, kernel binaryKernel, whole bool) {
+func binaryApply(dst, a, b raster.Float32Raster, kernel binaryKernel, whole bool) {
 	binaryValues(dst, a, b, kernel, whole)
-	binaryValidity(op, dst, a, b, whole)
+	binaryValidity(dst, a, b, whole)
 }
 
 // binaryValues is the arithmetic of binaryApply, without validity.
@@ -102,17 +104,31 @@ func check(op, name string, dst, r raster.Float32Raster) {
 	}
 }
 
-// binaryValidity sets dst's validity to the AND of a's and b's.
-func binaryValidity(op string, dst, a, b raster.Float32Raster, whole bool) {
-	switch {
-	case a.Valid == nil:
-		unaryValidity(op, dst, b, whole)
-		return
-	case b.Valid == nil:
-		unaryValidity(op, dst, a, whole)
+// checkMasks panics if an input has a validity mask and dst has none,
+// before anything is written.
+func checkMasks(op string, dst raster.Float32Raster, inputs ...raster.Float32Raster) {
+	if dst.Valid != nil {
 		return
 	}
-	requireDstMask(op, dst)
+	for _, in := range inputs {
+		if in.Valid != nil {
+			panic(op + ": an input has a validity mask but dst.Valid is nil; allocate dst " +
+				"with raster.NewFloat32Like, or set Valid on its root raster before windowing")
+		}
+	}
+}
+
+// binaryValidity sets dst's validity to the AND of a's and b's. dst has a
+// mask if an input does.
+func binaryValidity(dst, a, b raster.Float32Raster, whole bool) {
+	switch {
+	case a.Valid == nil:
+		unaryValidity(dst, b, whole)
+		return
+	case b.Valid == nil:
+		unaryValidity(dst, a, whole)
+		return
+	}
 	if whole {
 		raster.MaskAndRange(dst.Valid, dst.ValidOffset, a.Valid, a.ValidOffset,
 			b.Valid, b.ValidOffset, dst.Width*dst.Height)
@@ -124,13 +140,12 @@ func binaryValidity(op string, dst, a, b raster.Float32Raster, whole bool) {
 	}
 }
 
-// unaryValidity sets dst's validity to src's.
-func unaryValidity(op string, dst, src raster.Float32Raster, whole bool) {
+// unaryValidity sets dst's validity to src's. dst has a mask if src does.
+func unaryValidity(dst, src raster.Float32Raster, whole bool) {
 	if src.Valid == nil {
 		fillValid(dst, whole)
 		return
 	}
-	requireDstMask(op, dst)
 	if sameBits(dst, src) {
 		return // in place: dst's bits already are src's
 	}
@@ -157,13 +172,6 @@ func fillValid(dst raster.Float32Raster, whole bool) {
 	}
 	for y := range dst.Height {
 		raster.MaskFillRange(dst.Valid, dst.ValidOffset+y*dst.Stride, dst.Width, true)
-	}
-}
-
-func requireDstMask(op string, dst raster.Float32Raster) {
-	if dst.Valid == nil {
-		panic(op + ": an input has a validity mask but dst.Valid is nil; allocate dst " +
-			"with raster.NewFloat32Like, or set Valid on its root raster before windowing")
 	}
 }
 

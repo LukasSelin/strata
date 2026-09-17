@@ -54,7 +54,26 @@ func TestParseTiles(t *testing.T) {
 			t.Errorf("parseTiles(%q) = %d, %d, %v; want %d, %d", tc.shape, w, h, err, tc.w, tc.h)
 		}
 	}
-	if _, _, err := parseTiles("tiles", 10); err == nil {
-		t.Error("parseTiles accepted a bad shape")
+	for _, shape := range []string{"tiles", "strips0", "strips-3", "0x5", "5x0", "-1x4", "x", "3x", "strips"} {
+		if _, _, err := parseTiles(shape, 10); err == nil {
+			t.Errorf("parseTiles accepted %q", shape)
+		}
 	}
+}
+
+// FuzzParseTiles checks that parseTiles never panics and only returns
+// positive tile dimensions.
+func FuzzParseTiles(f *testing.F) {
+	for _, s := range []string{"strips256", "1024x1024", "0x0", "strips-1", "9223372036854775807x1", "xx"} {
+		f.Add(s, 20000)
+	}
+	f.Fuzz(func(t *testing.T, shape string, size int) {
+		if size <= 0 {
+			return
+		}
+		w, h, err := parseTiles(shape, size)
+		if err == nil && (w <= 0 || h <= 0) {
+			t.Fatalf("parseTiles(%q, %d) = %d, %d", shape, size, w, h)
+		}
+	})
 }
