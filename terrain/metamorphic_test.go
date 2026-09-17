@@ -182,13 +182,6 @@ func relDEM(d fuzzdata.Source, w, h, values int, masked bool) raster.Float32Rast
 	return dem
 }
 
-// relTB is what the relations need of a test: the whole of testing.T
-// they use, and what rapid.T offers (TestTerrainRelations).
-type relTB interface {
-	Helper()
-	Fatalf(format string, args ...any)
-}
-
 // FuzzTerrainRelations checks the relations above over fuzz inputs.
 // TestTerrainRelations checks the same body with rapid instead.
 func FuzzTerrainRelations(f *testing.F) {
@@ -207,7 +200,7 @@ func FuzzTerrainRelations(f *testing.F) {
 // path (plain, Tiled or Chunked, with its own tiles and workers) over its
 // own memory layout, so a relation also catches a halo or tile that reads
 // the wrong cells.
-func terrainRelations(t relTB, d fuzzdata.Source) {
+func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 	rel, kind := d.IntN(11), d.IntN(4)
 	o := relOp{
 		kind:     kind,
@@ -367,7 +360,7 @@ func terrainRelations(t relTB, d fuzzdata.Source) {
 // have the same validity and, if valid, the same Data: the same bits (any
 // NaN matching any NaN) with bits set, the same value (+0 matching -0)
 // otherwise.
-func requireSameCell(t relTB, id string, got raster.Float32Raster, x, y int, want raster.Float32Raster, wx, wy int, bits bool) {
+func requireSameCell(t rastertest.TB, id string, got raster.Float32Raster, x, y int, want raster.Float32Raster, wx, wy int, bits bool) {
 	t.Helper()
 	gv, wv := got.IsValid(x, y), want.IsValid(wx, wy)
 	if gv != wv {
@@ -387,7 +380,7 @@ func requireSameCell(t relTB, id string, got raster.Float32Raster, x, y int, wan
 	}
 }
 
-func requireSameOutputs(t relTB, id string, got, want []raster.Float32Raster, bits bool) {
+func requireSameOutputs(t rastertest.TB, id string, got, want []raster.Float32Raster, bits bool) {
 	t.Helper()
 	for k := range want {
 		for y := range want[k].Height {
@@ -403,7 +396,7 @@ func requireSameOutputs(t relTB, id string, got, want []raster.Float32Raster, bi
 // a horizontal mirror with the azimuth negated, over arbitrary values; up
 // to rounding for Aspect (the angle mapped by T) and Hillshade under the
 // other symmetries (the light mapped by T), over moderate values.
-func testDihedral(t relTB, d fuzzdata.Source, id string, o relOp, w, h int, masked bool,
+func testDihedral(t rastertest.TB, d fuzzdata.Source, id string, o relOp, w, h int, masked bool,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
 	tr := rastertest.All()[d.Range(1, 7)]
@@ -512,7 +505,7 @@ func mapAspect(tr rastertest.Dihedral, a float64, trig bool) float64 {
 // testDerived checks that Slope, Aspect and Hillshade are the documented
 // functions of Gradient's dx and dy, bit for bit, cell by cell, including
 // validity.
-func testDerived(t relTB, id string, o relOp, dem raster.Float32Raster,
+func testDerived(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
 	g := o
