@@ -90,7 +90,7 @@ func fuzzOperand(d *fuzzdata.Reader, w, h int, masked bool) operand {
 		root.Valid = make([]uint64, raster.MaskWords(off+n)+1)
 		root.ValidOffset = off
 		for k := range root.Valid {
-			root.Valid[k] = d.Uint64() | d.Uint64()
+			root.Valid[k] = d.Dense(2)
 		}
 	}
 	return operand{r: root.Window(x, y, w, h), root: root, x: x, y: y}

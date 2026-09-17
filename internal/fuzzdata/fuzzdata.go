@@ -24,7 +24,7 @@ type Reader struct {
 // New returns a Reader over b.
 func New(b []byte) *Reader {
 	h := fnv.New64a()
-	h.Write(b)
+	_, _ = h.Write(b) // a hash.Hash never fails
 	s := h.Sum64()
 	return &Reader{b: b, rng: rand.New(rand.NewPCG(s, s^0x9e3779b97f4a7c15))}
 }
@@ -39,6 +39,17 @@ func (r *Reader) Uint64() uint64 {
 	return r.rng.Uint64()
 }
 
+// Dense returns the OR of the next n words, whose bits are each clear with
+// probability about 2⁻ⁿ for random input: validity masks with most cells
+// valid.
+func (r *Reader) Dense(n int) uint64 {
+	var v uint64
+	for range n {
+		v |= r.Uint64()
+	}
+	return v
+}
+
 // Byte returns the next byte.
 func (r *Reader) Byte() byte {
 	if len(r.b) > 0 {
@@ -46,7 +57,7 @@ func (r *Reader) Byte() byte {
 		r.b = r.b[1:]
 		return v
 	}
-	return byte(r.rng.Uint32())
+	return byte(r.rng.Uint32()) // #nosec G115 -- truncation intended
 }
 
 // Bool returns the low bit of the next byte.
@@ -61,7 +72,7 @@ func (r *Reader) IntN(n int) int {
 	if n <= 256 {
 		return int(r.Byte()) % n
 	}
-	return int(r.Uint64() % uint64(n))
+	return int(r.Uint64() % uint64(n)) // #nosec G115 -- the result is below n
 }
 
 // Range returns a value in [lo, hi].
@@ -89,9 +100,9 @@ func (r *Reader) Float32() float32 {
 	case sel < 48:
 		return Specials[int(sel)%len(Specials)]
 	case sel < 128:
-		return math.Float32frombits(uint32(r.Uint64()))
+		return math.Float32frombits(uint32(r.Uint64())) // #nosec G115 -- truncation intended
 	default:
-		return 1000 + float32(int8(r.Byte()))/4
+		return 1000 + float32(int8(r.Byte()))/4 // #nosec G115 -- wrapping intended
 	}
 }
 
@@ -112,6 +123,6 @@ func (r *Reader) Float64() float64 {
 	case sel < 128:
 		return math.Float64frombits(r.Uint64())
 	default:
-		return float64(int8(r.Byte())) / 4
+		return float64(int8(r.Byte())) / 4 // #nosec G115 -- wrapping intended
 	}
 }

@@ -58,7 +58,8 @@ func render(w io.Writer, results []result) {
 			}
 			peak := slices.Max(field(rs, func(r result) float64 { return float64(r.PeakPrivate) }))
 			base := median(field(rs, func(r result) float64 { return float64(r.BasePrivate) }))
-			tiles, bound, identical := k.tiles, "–", "reference"
+			var tiles string
+			bound, identical := "–", "reference"
 			if k.kind == "reference" {
 				tiles = "whole raster in memory"
 			} else {

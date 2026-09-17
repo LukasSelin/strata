@@ -431,7 +431,6 @@ func TestChunkedCancellation(t *testing.T) {
 	final := out.clone()
 	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
 
-	base := runtime.NumGoroutine()
 	for _, workers := range []int{1, 2, 3, 8, runtime.GOMAXPROCS(0)} {
 		for _, tiles := range [][2]int{{0, 0}, {7, 4}, {1, 1}, {40, 3}} {
 			for _, after := range []int64{1, 5, 17} {
@@ -464,7 +463,7 @@ func TestChunkedCancellation(t *testing.T) {
 				if int64(done) != src.reads.Load() {
 					t.Fatalf("%s: %d tiles read but %d written", id, src.reads.Load(), done)
 				}
-				requireGoroutines(t, id, base)
+				requireNoLeaks(t, id)
 			}
 		}
 	}
@@ -502,7 +501,6 @@ func TestChunkedIOErrors(t *testing.T) {
 	final := out.clone()
 	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
 	errIO := errors.New("disk on fire")
-	base := runtime.NumGoroutine()
 	for _, workers := range []int{1, 2, 5, runtime.GOMAXPROCS(0)} {
 		for _, tiles := range [][2]int{{6, 5}, {0, 4}, {1, 1}} {
 			tw, th := orDim(tiles[0], w), orDim(tiles[1], h)
@@ -544,7 +542,7 @@ func TestChunkedIOErrors(t *testing.T) {
 					if done == len(plan) {
 						t.Fatalf("%s: every tile written although a read failed", id)
 					}
-					requireGoroutines(t, id, base)
+					requireNoLeaks(t, id)
 				}
 			}
 		}

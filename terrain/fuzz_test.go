@@ -199,7 +199,7 @@ func FuzzTerrain(f *testing.F) {
 				r.Valid = make([]uint64, raster.MaskWords(off+n)+d.IntN(2))
 				r.ValidOffset = off
 				for k := range r.Valid {
-					r.Valid[k] = d.Uint64() | d.Uint64() | d.Uint64()
+					r.Valid[k] = d.Dense(3)
 				}
 			}
 			return fuzzRoot{r, x, y}

@@ -140,14 +140,14 @@ func slopeSentinelLanes(dst, r0, r1, r2 []float32, invx, invy, nd float32) int {
 	return n - len(dst)
 }
 
-// SlopeNaNAVX2: vectorized Horn kernel; NaN propagates through the
+// SlopeNaNAVX2 is the vectorized Horn kernel; NaN propagates through the
 // arithmetic, with the extra z5·0 term (see hornNaN).
 func SlopeNaNAVX2(dst, src []float32, w, h int, cellSize float32) {
 	fillBorder(dst, w, h, NaN32)
 	slopeRows(dst, src, w, h, cellSize, slopeRowNaNAVX2)
 }
 
-// SlopeSentinelAVX2: vectorized Horn kernel with nine compares and a blend.
+// SlopeSentinelAVX2 is the vectorized Horn kernel with nine compares and a blend.
 func SlopeSentinelAVX2(dst, src []float32, w, h int, cellSize, nd float32) {
 	fillBorder(dst, w, h, nd)
 	invx, invy := hornScales(cellSize)
@@ -156,7 +156,7 @@ func SlopeSentinelAVX2(dst, src []float32, w, h int, cellSize, nd float32) {
 	}
 }
 
-// SlopeMaskAVX2: the vectorized Horn kernel over every interior cell (no
+// SlopeMaskAVX2 is the vectorized Horn kernel over every interior cell (no
 // centre term needed), plus the word-level SlopeMask pass.
 func SlopeMaskAVX2(dst, src []float32, dstValid, valid []uint64, w, h int, cellSize float32, scratch []uint64) {
 	slopeRows(dst, src, w, h, cellSize, slopeRowAVX2)

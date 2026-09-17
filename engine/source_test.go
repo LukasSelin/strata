@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"go.uber.org/goleak"
+
 	"strata/engine"
 	"strata/raster"
 )
@@ -156,6 +158,7 @@ func TestMemorySinkWriteWindow(t *testing.T) {
 // TestMemorySinkConcurrent writes one-cell regions of a masked sink from
 // many goroutines, whose mask words are shared; run with -race.
 func TestMemorySinkConcurrent(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	const w, h = 67, 13
 	dst := raster.NewFloat32(w, h, make([]float32, w*h))
 	dst.Valid = raster.NewMask(w * h)
@@ -385,6 +388,7 @@ func TestRawFileOS(t *testing.T) {
 }
 
 func TestRawErrors(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	defer engine.SetRawCallBytes(4 * 10 * 2)() // two rows per call
 	errDisk := errors.New("disk failed")
 	f := &memFile{b: make([]byte, 4*10*10), failAt: 4 * 35, failErr: errDisk}
@@ -545,6 +549,7 @@ func must(t *testing.T, err error) {
 // TestRawFileHandles writes and reads a raster through a RawFile with
 // several handles from many goroutines.
 func TestRawFileHandles(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	const w, h = 257, 131
 	rng := rand.New(rand.NewPCG(7, 7))
 	path := filepath.Join(t.TempDir(), "raw.f32")
