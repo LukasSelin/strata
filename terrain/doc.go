@@ -42,6 +42,13 @@
 // every tiling and worker count. The plain functions run the same kernels
 // as one tile with one worker, on the calling goroutine.
 //
+// SlopeChunked, AspectChunked, HillshadeChunked and GradientChunked read
+// the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// tile at a time, so rasters larger than memory, such as raw float32
+// files, run in Workers × tile buffers (DESIGN.md §27). They give the
+// same bits as the plain functions on the same data, for every tiling and
+// worker count; the edge is the raster's edge, not a tile's.
+//
 // # Validity
 //
 // Validity is never inferred from Data: every interior cell is computed,
@@ -68,7 +75,8 @@
 // written yet), overlapping mask bits, and invalid options. The operand
 // checks are shared with the Tiled functions, and their panic messages
 // start with "engine:". The Tiled functions return an error only for
-// cancellation.
+// cancellation, and the Chunked functions also for errors of their
+// sources and sinks.
 //
 // # Backends
 //

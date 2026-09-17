@@ -47,6 +47,48 @@ func ClampTiled(ctx context.Context, dst, src raster.Float32Raster, lo, hi float
 	return exec.Process(ctx, dst, src, clampKernel{lo, hi}, opts)
 }
 
+// The Chunked functions run an operation through the engine over sources
+// and sinks with bounded memory: they read the inputs and write dst a tile
+// at a time, with Workers × tile buffers in memory, and write the bits the
+// plain function would write into in-memory rasters for every
+// engine.Options. They return an error if a source or sink fails, or
+// ctx.Err() if ctx is done before every tile is written. See package
+// engine for sources, sinks, memory, cancellation and errors.
+
+// AddChunked is Add run by the engine over sources and a sink.
+func AddChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, opts engine.Options) error {
+	return binaryChunked(ctx, dst, a, b, vec.Add, opts)
+}
+
+// SubChunked is Sub run by the engine over sources and a sink.
+func SubChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, opts engine.Options) error {
+	return binaryChunked(ctx, dst, a, b, vec.Sub, opts)
+}
+
+// MulChunked is Mul run by the engine over sources and a sink.
+func MulChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, opts engine.Options) error {
+	return binaryChunked(ctx, dst, a, b, vec.Mul, opts)
+}
+
+// MinChunked is Min run by the engine over sources and a sink.
+func MinChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, opts engine.Options) error {
+	return binaryChunked(ctx, dst, a, b, vec.Min, opts)
+}
+
+// MaxChunked is Max run by the engine over sources and a sink.
+func MaxChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, opts engine.Options) error {
+	return binaryChunked(ctx, dst, a, b, vec.Max, opts)
+}
+
+// ClampChunked is Clamp run by the engine over a source and a sink.
+func ClampChunked(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, lo, hi float32, opts engine.Options) error {
+	return exec.ProcessChunked(ctx, []engine.RasterSink{dst}, []engine.RasterSource{src}, clampKernel{lo, hi}, opts)
+}
+
+func binaryChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSource, kernel binaryKernel, opts engine.Options) error {
+	return exec.ProcessChunked(ctx, []engine.RasterSink{dst}, []engine.RasterSource{a, b}, binaryOp{kernel}, opts)
+}
+
 func binaryTiled(ctx context.Context, dst, a, b raster.Float32Raster, kernel binaryKernel, opts engine.Options) error {
 	return exec.ProcessN(ctx, []raster.Float32Raster{dst}, []raster.Float32Raster{a, b}, binaryOp{kernel}, opts)
 }

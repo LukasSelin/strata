@@ -9,6 +9,7 @@ Decisions recorded elsewhere and summarized here:
 - [ADR 0001](docs/adr/0001-simd-backend.md): SIMD backend technology (STRATA-2).
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
+- [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
 
 ## 1. Project Goal
 
@@ -1013,16 +1014,23 @@ Algorithms should not implement tile-boundary coordination individually.
   for Clamp, Add, Slope, Aspect, Hillshade, Gradient and a radius-2
   kernel, with and without masks, on windows whose stride is not a
   multiple of 64.
-- **Buffers.** Tile and halo buffers are allocated with `Stride` rounded
-  up to a multiple of 64, so each row's mask bits start on a word
-  boundary and mask copies are plain word copies
-  (benchmarks/nodata/RESULTS.md).
+- **Buffers.** Tile and halo buffers of operands with validity are
+  allocated with `Stride` rounded up to a multiple of 64, so each row's
+  mask bits start on a word boundary and mask copies are plain word
+  copies (benchmarks/nodata/RESULTS.md). Buffers without validity are
+  compact (`Stride == Width`), so a raw file's consecutive full-width
+  rows are read and written in one call and pointwise kernels keep their
+  whole-span path.
 
-Status: in-memory halos done (STRATA-8), with any number of workers
-(STRATA-9). Tiles of in-memory rasters read their halos as views of the
-input, and the engine writes the edge policy itself instead of calling
-the kernel for edge cells. Copied tile and halo buffers belong with
-sources and sinks (§24, §27), not started.
+Status: done. Tiles of in-memory rasters read their halos as views of
+the input (STRATA-8), with any number of workers (STRATA-9), and the
+engine writes the edge policy itself instead of calling the kernel for
+edge cells. Chunked execution (§24, §27) copies each tile with its halo
+into per-worker buffers and runs the same band code on them, with the
+buffers placed at their raster positions, so only the raster's own edge
+gets the edge policy. `internal/exec`'s `TestChunkedTilesAndWorkers`
+runs the same matrix as `TestTilesAndWorkers` through memory sources and
+sinks.
 
 ## 24. Chunk-Oriented Execution
 
@@ -1030,24 +1038,54 @@ The engine should understand chunks rather than files.
 
 **Dense data uses random-access windowed sources.** The engine plans the
 tiles itself, so it can read each tile and its halo independently and in
-parallel. Sketch, with the exact shape settled in STRATA-8:
+parallel. Settled shape, in package `engine`:
 
 ```go
 type RasterSource interface {
     Size() (width, height int)
-    // ReadWindow fills dst (data and validity) with the dst.Width×dst.Height
-    // region whose top-left cell is (x, y). The region lies inside the source.
+    Masked() bool // false: every cell is valid
+    // ReadWindow fills dst's cells (Data, and validity if dst has a mask)
+    // from the dst.Width×dst.Height region at (x, y). Safe for concurrent
+    // calls.
     ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y int) error
 }
 
 type RasterSink interface {
-    // WriteWindow stores src at (x, y). It may be called concurrently for
-    // disjoint regions.
+    Size() (width, height int)
+    Masked() bool // whether it stores validity
+    // WriteWindow stores src's cells at (x, y). Safe for concurrent calls
+    // on disjoint regions. It may overwrite the Data of src's invalid
+    // cells (a fill value), which §31 leaves unspecified.
     WriteWindow(ctx context.Context, src raster.Float32Raster, x, y int) error
 }
 ```
 
-Sources read into caller-supplied buffers, so workers can reuse them (§37).
+- Sources read into caller-supplied buffers, so workers reuse them
+  (§37). Reads and writes touch only the window's cells, never row
+  padding or bits outside it.
+- **Validity crosses explicitly.** A source that is not `Masked` sets
+  every bit of a masked destination; a `Masked` source panics on a
+  destination without a mask, and a sink that is not `Masked` panics on
+  a masked `src`, rather than dropping validity. A chunked call with a
+  `Masked` source panics unless every sink is `Masked`, like the Tiled
+  functions for a dst without a mask.
+- **Errors.** IO failures are returned; the engine wraps them with the
+  operand and window position (`errors.Is` still matches). Programming
+  errors (regions outside the raster, invalid rasters) panic.
+- **Raw files have no validity of their own.** By default every cell is
+  valid. `RawOptions{Fill, HasFill}` declares a NoData value as an IO
+  adapter would (§31): reading marks cells equal to it invalid (any NaN
+  for a NaN fill), writing puts it under invalid cells. A valid cell
+  holding the fill value does not survive a round trip. There is no
+  sidecar mask: that would be a format.
+- **File handles.** Calls on one `*os.File` queue: Go serialises
+  `ReadAt`/`WriteAt` per handle on Windows (a lock and two seeks per
+  call), and the OS may too. `engine.OpenRawFile` opens a file with
+  several handles and spreads calls over them: 1.6× faster with 12
+  workers. Raw sources and sinks move full-width windows in 1 MiB calls
+  (17–21% faster than a call per row) and other windows a row per call;
+  joining short rows across the gaps between them costs more than the
+  calls it saves.
 
 **Sparse data uses streams**, from v0.6 on:
 
@@ -1066,6 +1104,10 @@ raw little-endian float32 file, row-major, via io.ReaderAt / io.WriterAt
 
 The raw file is not a format parser (§41). It is the minimum needed for a
 larger-than-memory demo (§43).
+
+Status: done for dense data. `MemorySource`, `MemorySink`, `RawSource`,
+`RawSink` and `RawFile` are in package `engine`; chunked entry points
+run over them (§25, §27).
 
 Potential later sources:
 
@@ -1131,6 +1173,13 @@ plain functions for every `Options`. The terrain functions run the same
 kernels as one tile; the algebra functions stay direct to keep their zero
 allocations.
 
+The Chunked functions (`SlopeChunked`, `AspectChunked`,
+`HillshadeChunked`, `GradientChunked`, `AddChunked`, `SubChunked`,
+`MulChunked`, `MinChunked`, `MaxChunked`, `ClampChunked`) take sources and
+sinks instead of rasters and run with bounded memory (§27), through
+`exec.ProcessChunked`. Their sinks receive the bits the plain function
+would write, for every `Options`.
+
 Configuration:
 
 ```go
@@ -1152,8 +1201,8 @@ the default is the fastest shape for every worker count
 (benchmarks/engine/RESULTS.md). Measuring this found that the SIMD row
 kernels paid about 65 ns per row for an SSE/AVX transition (legacy SSE
 instructions while upper YMM bits were dirty), now removed; see the
-kernel-writing rules in docs/adr/0001-simd-backend.md. Tile size is for sources and sinks that
-work a tile at a time.
+kernel-writing rules in docs/adr/0001-simd-backend.md. Tile size matters
+for chunked calls, which hold a tile per worker in memory (§27).
 
 The engine returns errors for IO and cancellation, and panics on
 programming errors, as the rest of strata does. Workers check the context
@@ -1163,8 +1212,18 @@ are a prefix of the plan whatever the worker count. A kernel panic in a
 worker is re-raised on the calling goroutine after every worker has
 stopped.
 
+For chunked calls, cancellation and errors work in whole tiles. Workers
+check the context before each tile, stop taking tiles after an error,
+and finish a tile they have taken (sources and sinks get
+`context.WithoutCancel`). So the tiles taken form a prefix of the plan,
+later tiles are untouched in every sink, and every tile of the prefix is
+written completely, except a tile whose read failed (untouched) or whose
+write failed (unspecified). After a cancellation the sinks hold a prefix
+of whole tiles.
+
 Status: tiled execution over in-memory rasters done, on one or many
-workers (STRATA-8, STRATA-9). Sources and sinks are not started.
+workers (STRATA-8, STRATA-9). Chunked execution over sources and sinks
+done.
 
 ## 26. Parallelism Model
 
@@ -1240,6 +1299,32 @@ Workers × (TileWidth + 2r) × (TileHeight + 2r) × Σ(operand bytes per cell)
 This bound does not depend on the dataset size. The engine demo must
 report measured peak memory against it (§43).
 
+**Implementation.** `exec.ProcessChunked` gives each worker, once per
+call, one buffer per input of at most (TileWidth+2r)×(TileHeight+2r)
+cells (clipped to the raster), one per output of TileWidth×TileHeight,
+and a mask per operand with validity. A worker reads a tile and its halo
+from every source, runs the tile's bands in order through the in-memory
+band code on its buffers (no mask lock: nothing is shared), and writes
+the tile to every sink. The unit of parallelism is the tile: there are
+never more workers than tiles, so the zero `Options` (one tile) runs one
+worker with the whole raster in memory. Set `TileHeight`.
+
+**Measured** (benchmarks/chunked/RESULTS.md, 12-core Zen 2, DDR4-3200):
+
+- Every chunked run's peak private bytes are its bound plus 14–22 MiB of
+  process overhead. On a 20000² DEM (1.49 GiB raw file), full-width
+  strips of 256 rows peak at 54 MiB on 1 worker, 489 MiB on 12 and 964
+  MiB on 24 (bounds 39, 472 and 945); 1024×1024 tiles on 12 workers peak
+  at 113 MiB at 4096² and 114 MiB at 20000² (bound 96). The whole raster
+  in memory peaks at 3076 MiB.
+- Throughput is copy-bound: from 12 workers Slope, Hillshade and Clamp
+  all run at 770–845 M cells/s from raw files and about 1.1 billion from
+  memory sources, whatever their compute cost, because every cell is
+  copied into a buffer and out again. Tile shape matters for files: a
+  source or sink makes a call per row of a narrow tile, so 1024×1024
+  tiles of a 20000-wide file run at about 200 M cells/s with 12 workers
+  and 256×256 tiles at 65–85. Use full-width strips.
+
 ## 28. Memory Bandwidth Awareness
 
 Not every operation will scale dramatically with SIMD.
@@ -1265,6 +1350,10 @@ This has been measured (benchmarks/algebra/RESULTS.md):
   Slope, Hillshade and Clamp all flatten at 19–23 GB/s, whatever their
   single-worker compute cost, and SMT adds nothing. Full-width strips
   stream memory better than 256×256 tiles at every worker count.
+- Chunked execution copies each cell into a tile buffer and out again
+  (benchmarks/chunked/RESULTS.md), so it hits the wall sooner: every
+  operation flattens at about 800 M cells/s from raw files and 1.1
+  billion from memory sources with 12 workers.
 
 More complex workloads should benefit more:
 
@@ -1578,8 +1667,10 @@ Avoid allocating complete temporary rasters for every operation:
 - **Today.** Every `algebra` and `terrain` operation writes into a
   caller-supplied destination. The benchmark suite checks that operations
   make 0 allocations.
-- **Next.** The engine allocates tile and halo buffers once per worker and
-  reuses them across tiles.
+- **Done.** Chunked execution allocates tile and halo buffers once per
+  worker per call and reuses them across tiles, with no pooling (§27).
+  Raw sources and sinks read and write straight into them and allocate
+  nothing.
 
 Possible future concepts:
 
@@ -1614,6 +1705,7 @@ benchmarks/
 ├── cmd/stratabench/    go test -bench output → §42 headline, speedups, §28 class
 ├── algebra/            implemented, RESULTS.md
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
+├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── terrain/            next
 ├── remote_sensing/
@@ -1641,9 +1733,11 @@ parallel scaling
 peak memory
 ```
 
-- Peak memory is not measured by the harness today. The algebra and
-  engine suites' peaks were measured by hand and documented in their
-  `doc.go`. The engine demo must report it against the §27 bound (§43).
+- Peak memory is not measured by the harness's benchmarks. The algebra
+  and engine suites' peaks were measured by hand and documented in their
+  `doc.go`. `suite.ProcessMemory` reads the OS counters, and
+  `cmd/stratademo` reports each run's peak against the §27 bound from a
+  child process of its own (§43).
 - Worker scaling compares SIMD with 1 worker, with one worker per physical
   core, and with one per logical CPU (`suite.Workers`). Only categories
   that run through the engine (`benchmarks/engine`) have `workers` above
@@ -1736,7 +1830,9 @@ strata/
 │
 ├── engine/                    public engine configuration
 │   ├── engine.go              Options (STRATA-8)
-│   └── source.go              planned: RasterSource / RasterSink, memory + raw file
+│   ├── source.go              RasterSource / RasterSink, memory source and sink
+│   ├── raw.go                 raw float32 file source and sink, RawOptions
+│   └── rawfile.go             RawFile: one file, several handles
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
@@ -1746,7 +1842,8 @@ strata/
 │   │   ├── process.go         Process, operand checks
 │   │   ├── tile.go            tile and band planning, cancellation
 │   │   ├── halo.go            halos, edges, validity
-│   │   ├── worker.go          workers, band scheduling, mask lock (STRATA-9)
+│   │   ├── worker.go          workers, band and tile scheduling, mask lock (STRATA-9)
+│   │   ├── chunked.go         ProcessChunked: per-worker tile buffers, sources and sinks
 │   │   └── workspace.go       planned
 │   └── overlap/               Data and mask overlap checks
 │
@@ -1837,11 +1934,11 @@ Hillshade                                   done (STRATA-7)
 single-thread processing                    done
 tiled entry points (single thread)          done (STRATA-8)
 multi-worker tile processing                done (STRATA-9)
-halo handling                               in-memory done, any worker count (STRATA-8/9)
-bounded-memory tiled execution              planned (sources and sinks, §24, §27)
-memory and raw float32 file source/sink     planned
+halo handling                               done: in memory and copied buffers, any worker count
+bounded-memory tiled execution              done (§27; 20000² demo, §43)
+memory and raw float32 file source/sink     done (§24)
 
-benchmark suite                             algebra (STRATA-10), engine (STRATA-9) done; terrain next
+benchmark suite                             algebra (STRATA-10), engine (STRATA-9), chunked done; terrain next
 ```
 
 Arm64 builds run the scalar kernels in v0.1.
@@ -1910,6 +2007,15 @@ whole-raster result (§23). The whole-raster reference may be computed
 once on a machine with enough memory.
 
 This validates the architecture before expanding scope.
+
+Status: done. `benchmarks/cmd/stratademo` generates the DEM, computes
+each operation's reference in memory, runs every chunked case in a
+child process and compares its output file with the reference, cell for
+cell. On a 20000² DEM (1.49 GiB) with SIMD: Slope at 276 M cells/s on 1
+worker and 832 on 12 (121 scalar), Hillshade 334 and 829, Clamp 389 and
+843, in 256-row strips; 12 workers peak at 489 MiB against a §27 bound of
+472 MiB, while the whole raster in memory takes 3076 MiB; and all 126
+runs, at 4096² and 20000², equal the whole-raster result.
 
 ## 44. Second Validation Target
 

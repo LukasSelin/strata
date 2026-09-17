@@ -67,6 +67,15 @@ func HillshadeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts Hil
 	return runTiled(ctx, eopts, newHillshadeKernel(opts), dem, dst)
 }
 
+// HillshadeChunked is Hillshade run by the engine over a source and sinks with
+// bounded memory: it reads the DEM and writes the result a tile at a
+// time, with Workers × tile buffers in memory. It writes the bits
+// Hillshade would write into in-memory rasters, for every engine.Options.
+// See package engine for sources, sinks, memory, cancellation and errors.
+func HillshadeChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts HillshadeOptions, eopts engine.Options) error {
+	return runChunked(ctx, eopts, newHillshadeKernel(opts), dem, dst)
+}
+
 // newHillshadeKernel resolves and checks opts for Hillshade's kernel.
 func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)

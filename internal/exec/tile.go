@@ -19,24 +19,34 @@ import (
 // L2 cache. It is a variable so tests can force one-row bands.
 var bandCells = 1 << 16
 
-// job is one ProcessN call after its checks. Everything a band needs is
-// allocated here, once per call, so bands allocate nothing.
+// job is one ProcessN call after its checks, or one worker's tile of a
+// ProcessChunked call. Everything a band needs is allocated here, once per
+// call, so bands allocate nothing.
 type job struct {
 	k    Kernel
 	r    int
 	edge float32
+	// w and h are the size of the whole raster, whose edge gets the edge
+	// policy.
 	w, h int
 
 	plan plan
 
+	// dst and src are the operands. In a ProcessN call they are the whole
+	// rasters. In a ProcessChunked tile they are buffers: dst covers the
+	// tile and src the tile grown by the radius, clipped to the raster.
 	dst, src []raster.Float32Raster
+	// dx, dy and sx, sy are the raster positions of the first cell of
+	// dst and src; the plan's bands are relative to (dx, dy). All are 0
+	// in a ProcessN call.
+	dx, dy, sx, sy int
 
 	// masked lists the inputs that have a validity mask, dstMasked
 	// whether any output has one.
 	masked    []int
 	dstMasked bool
 	// sameBits[i] is the masked input whose bits are dst[i]'s own (radius
-	// 0 in place), or -1.
+	// 0 in place), or -1. It is set whenever pointwise validity runs.
 	sameBits []int
 
 	// workers holds each worker's views and scratch; workers[0] runs on
@@ -48,70 +58,87 @@ type job struct {
 }
 
 func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options) *job {
-	e := &job{
-		k:    k,
-		r:    r,
-		edge: float32(math.NaN()),
-		w:    dst[0].Width,
-		h:    dst[0].Height,
-		dst:  dst,
-		src:  src,
-	}
-	if ek, ok := k.(EdgeKernel); ok {
-		e.edge = ek.Edge()
-	}
-	e.plan = newPlan(e.w, e.h, opts.TileWidth, opts.TileHeight)
-
-	for _, d := range dst {
-		e.dstMasked = e.dstMasked || d.Valid != nil
-	}
+	e := &job{dst: dst, src: src}
+	var masked []int
 	for j, s := range src {
 		if s.Valid != nil {
-			e.masked = append(e.masked, j)
+			masked = append(masked, j)
 		}
 	}
-	erode := e.dstMasked && len(e.masked) > 0 && r > 0
-	if e.dstMasked && len(e.masked) > 0 && r == 0 {
-		e.sameBits = make([]int, len(dst))
-		for i, d := range dst {
-			e.sameBits[i] = -1
-			for _, j := range e.masked {
-				if overlap.Bits(d, src[j]) == overlap.Same {
-					e.sameBits[i] = j
-					break
-				}
+	dstMasked := false
+	for _, d := range dst {
+		dstMasked = dstMasked || d.Valid != nil
+	}
+	e.setup(k, r, dst[0].Width, dst[0].Height, masked, dstMasked)
+	e.plan = newPlan(e.w, e.h, opts.TileWidth, opts.TileHeight)
+	for i, d := range dst {
+		if e.sameBits == nil {
+			break
+		}
+		for _, j := range masked {
+			if overlap.Bits(d, src[j]) == overlap.Same {
+				e.sameBits[i] = j
+				break
 			}
 		}
 	}
+	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.tileW)
+	return e
+}
 
-	n := opts.Workers
-	if n == 0 {
-		n = runtime.GOMAXPROCS(0)
+// setup sets what a job takes from its kernel and the masks of its
+// operands: the kernel, its radius and edge value, the raster size, the
+// masked inputs and whether any output has a mask.
+func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool) {
+	e.k, e.r, e.w, e.h = k, r, w, h
+	e.edge = float32(math.NaN())
+	if ek, ok := k.(EdgeKernel); ok {
+		e.edge = ek.Edge()
 	}
-	n = max(1, min(n, e.plan.bands))
+	e.masked, e.dstMasked = masked, dstMasked
+	if dstMasked && len(masked) > 0 && r == 0 {
+		e.sameBits = make([]int, len(e.dst))
+		for i := range e.sameBits {
+			e.sameBits[i] = -1
+		}
+	}
+}
+
+// workerCount resolves Options.Workers for a plan of n units of work.
+func workerCount(workers, n int) int {
+	if workers == 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	return max(1, min(workers, n))
+}
+
+// allocWorkers gives the job n workers, with views for its operands and,
+// when validity is eroded, scratch for tiles up to tileW cells wide.
+func (e *job) allocWorkers(n, tileW int) {
+	erode := e.dstMasked && len(e.masked) > 0 && e.r > 0
 	// One backing array per kind for all workers, so a call's allocations
 	// do not grow with the worker count.
 	e.workers = make([]worker, n)
-	dstViews := make([]raster.Float32Raster, n*len(dst))
-	srcViews := make([]raster.Float32Raster, n*len(src))
+	nd, ns := len(e.dst), len(e.src)
+	dstViews := make([]raster.Float32Raster, n*nd)
+	srcViews := make([]raster.Float32Raster, n*ns)
 	var regions []stencil.MaskRegion
 	var scratch []uint64
 	sw := 0
 	if erode {
 		regions = make([]stencil.MaskRegion, n*len(e.masked))
-		sw = stencil.ErodeScratch(e.plan.tileW, r)
+		sw = stencil.ErodeScratch(tileW, e.r)
 		scratch = make([]uint64, n*sw)
 	}
 	for i := range e.workers {
 		wk := &e.workers[i]
-		wk.dstViews = dstViews[i*len(dst) : (i+1)*len(dst)]
-		wk.srcViews = srcViews[i*len(src) : (i+1)*len(src)]
+		wk.dstViews = dstViews[i*nd : (i+1)*nd]
+		wk.srcViews = srcViews[i*ns : (i+1)*ns]
 		if erode {
 			wk.regions = regions[i*len(e.masked) : (i+1)*len(e.masked)]
 			wk.scratch = scratch[i*sw : (i+1)*sw]
 		}
 	}
-	return e
 }
 
 // plan divides a w×h raster into tiles in row-major order and each tile

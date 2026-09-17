@@ -125,6 +125,9 @@ type Matrix[F any] struct {
 	// size, before that size's sub-benchmarks, and should touch every page
 	// it allocates so that page faults are not timed.
 	Fixture func(size int) F
+	// Release, if not nil, frees what Fixture made outside the Go heap,
+	// such as files, once the size's sub-benchmarks are done.
+	Release func(f F)
 	// Workload binds an operation to the fixture for one case.
 	Workload func(f F, c Case) Workload
 	// Sizes lists the raster sizes to run; nil means Sizes. The
@@ -149,6 +152,9 @@ func Run[F any](b *testing.B, m Matrix[F]) {
 			}
 			f := m.Fixture(size)
 			defer release(size)
+			if m.Release != nil {
+				defer m.Release(f)
+			}
 			for _, masked := range []bool{false, true} {
 				b.Run("mask="+onOff(masked), func(b *testing.B) {
 					for _, backend := range Backends {

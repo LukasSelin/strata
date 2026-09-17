@@ -46,6 +46,11 @@ func runTiled(ctx context.Context, eopts engine.Options, k exec.Kernel, dem rast
 	return exec.ProcessN(ctx, outs, []raster.Float32Raster{dem}, k, eopts)
 }
 
+// runChunked is runTiled over a source and sinks.
+func runChunked(ctx context.Context, eopts engine.Options, k exec.Kernel, dem engine.RasterSource, outs ...engine.RasterSink) error {
+	return exec.ProcessChunked(ctx, outs, []engine.RasterSource{dem}, k, eopts)
+}
+
 // horn holds what every Horn kernel shares: radius 1, one DEM input,
 // NaN at the edges and the resolved cell-size factors.
 type horn struct{ kx, ky float32 }

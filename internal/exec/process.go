@@ -35,20 +35,7 @@ func ProcessN(ctx context.Context, dst, src []raster.Float32Raster, k Kernel, op
 }
 
 func check(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options) {
-	if r < 0 {
-		panic(fmt.Sprintf("engine: kernel radius %d is negative", r))
-	}
-	nin, nout := k.Arity()
-	if nin < 0 || nout < 1 {
-		panic(fmt.Sprintf("engine: kernel arity (%d inputs, %d outputs) needs at least one output", nin, nout))
-	}
-	if len(src) != nin || len(dst) != nout {
-		panic(fmt.Sprintf("engine: kernel takes %d inputs and %d outputs, got %d and %d",
-			nin, nout, len(src), len(dst)))
-	}
-	if opts.TileWidth < 0 || opts.TileHeight < 0 || opts.Workers < 0 {
-		panic(fmt.Sprintf("engine: negative Options %+v", opts))
-	}
+	nout := checkKernel(len(dst), len(src), k, r, opts)
 
 	for i, d := range dst {
 		requireRaster("dst", i, d, dst[0])
@@ -98,6 +85,26 @@ func check(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options
 			}
 		}
 	}
+}
+
+// checkKernel checks a kernel's radius and arity against the operand
+// counts, and the Options, and returns the number of outputs.
+func checkKernel(ndst, nsrc int, k Kernel, r int, opts engine.Options) (nout int) {
+	if r < 0 {
+		panic(fmt.Sprintf("engine: kernel radius %d is negative", r))
+	}
+	nin, nout := k.Arity()
+	if nin < 0 || nout < 1 {
+		panic(fmt.Sprintf("engine: kernel arity (%d inputs, %d outputs) needs at least one output", nin, nout))
+	}
+	if nsrc != nin || ndst != nout {
+		panic(fmt.Sprintf("engine: kernel takes %d inputs and %d outputs, got %d and %d",
+			nin, nout, nsrc, ndst))
+	}
+	if opts.TileWidth < 0 || opts.TileHeight < 0 || opts.Workers < 0 {
+		panic(fmt.Sprintf("engine: negative Options %+v", opts))
+	}
+	return nout
 }
 
 func requireRaster(name string, i int, r, ref raster.Float32Raster) {
