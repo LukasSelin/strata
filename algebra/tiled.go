@@ -42,6 +42,11 @@ func MaxTiled(ctx context.Context, dst, a, b raster.Float32Raster, opts engine.O
 	return binaryTiled(ctx, dst, a, b, vec.Max, opts)
 }
 
+// MaskTiled is Mask run by the engine.
+func MaskTiled(ctx context.Context, dst, src, mask raster.Float32Raster, opts engine.Options) error {
+	return exec.ProcessN(ctx, []raster.Float32Raster{dst}, []raster.Float32Raster{src, mask}, maskOp{}, opts)
+}
+
 // ClampTiled is Clamp run by the engine.
 func ClampTiled(ctx context.Context, dst, src raster.Float32Raster, lo, hi float32, opts engine.Options) error {
 	return exec.Process(ctx, dst, src, clampKernel{lo, hi}, opts)
@@ -80,6 +85,13 @@ func MaxChunked(ctx context.Context, dst engine.RasterSink, a, b engine.RasterSo
 	return binaryChunked(ctx, dst, a, b, vec.Max, opts)
 }
 
+// MaskChunked is Mask run by the engine over sources and a sink. The
+// mask source is read like any other, so its validity must come from the
+// source itself: a raw file carries none unless RawOptions.Fill marks it.
+func MaskChunked(ctx context.Context, dst engine.RasterSink, src, mask engine.RasterSource, opts engine.Options) error {
+	return exec.ProcessChunked(ctx, []engine.RasterSink{dst}, []engine.RasterSource{src, mask}, maskOp{}, opts)
+}
+
 // ClampChunked is Clamp run by the engine over a source and a sink.
 func ClampChunked(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, lo, hi float32, opts engine.Options) error {
 	return exec.ProcessChunked(ctx, []engine.RasterSink{dst}, []engine.RasterSource{src}, clampKernel{lo, hi}, opts)
@@ -101,6 +113,19 @@ func (clampKernel) Arity() (inputs, outputs int) { return 1, 1 }
 func (k clampKernel) Process(dst exec.Span, src exec.Window) {
 	d, s := dst.Dst[0], src.Src[0]
 	clampValues(d, s, k.lo, k.hi, compact(d) && compact(s))
+}
+
+// maskOp copies the first input's cells. The second input is the mask:
+// the engine ANDs every input's validity into dst, which is all Mask
+// needs from it, so its values are never read.
+type maskOp struct{}
+
+func (maskOp) Radius() int                  { return 0 }
+func (maskOp) Arity() (inputs, outputs int) { return 2, 1 }
+
+func (maskOp) Process(dst exec.Span, src exec.Window) {
+	d, s := dst.Dst[0], src.Src[0]
+	copyValues(d, s, compact(d) && compact(s))
 }
 
 type binaryOp struct{ kernel binaryKernel }

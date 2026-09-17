@@ -51,7 +51,7 @@ func panicMessage(t *testing.T, id string, f func()) (msg string) {
 	return ""
 }
 
-// FuzzOperations runs Add, Sub, Mul, Min, Max and Clamp as plain, Tiled
+// FuzzOperations runs Add, Sub, Mul, Min, Max, Mask and Clamp as plain, Tiled
 // and Chunked functions on operands built from the fuzz input: compact
 // and strided rasters and windows, with and without masks, in place, and
 // sibling windows of one root that may overlap, over arbitrary values and
@@ -78,6 +78,7 @@ func FuzzOperations(f *testing.F) {
 			{"Mul", true, func(a, b, _, _ float32) float32 { return a * b }},
 			{"Min", true, func(a, b, _, _ float32) float32 { return min(a, b) }},
 			{"Max", true, func(a, b, _, _ float32) float32 { return max(a, b) }},
+			{"Mask", true, func(a, _, _, _ float32) float32 { return a }},
 			{"Clamp", false, func(a, _, lo, hi float32) float32 { return min(max(a, lo), hi) }},
 		}
 		op := ops[d.IntN(len(ops))]
@@ -249,6 +250,8 @@ func FuzzOperations(f *testing.F) {
 					algebra.Min(dv, av, bv)
 				case "Max":
 					algebra.Max(dv, av, bv)
+				case "Mask":
+					algebra.Mask(dv, av, bv)
 				case "Clamp":
 					algebra.Clamp(dv, av, lo, hi)
 				}
@@ -265,6 +268,8 @@ func FuzzOperations(f *testing.F) {
 					mustErr(algebra.MinTiled(ctx, dv, av, bv, opts))
 				case "Max":
 					mustErr(algebra.MaxTiled(ctx, dv, av, bv, opts))
+				case "Mask":
+					mustErr(algebra.MaskTiled(ctx, dv, av, bv, opts))
 				case "Clamp":
 					mustErr(algebra.ClampTiled(ctx, dv, av, lo, hi, opts))
 				}
@@ -282,6 +287,8 @@ func FuzzOperations(f *testing.F) {
 					mustErr(algebra.MinChunked(ctx, sink, sa, engine.NewMemorySource(bv), opts))
 				case "Max":
 					mustErr(algebra.MaxChunked(ctx, sink, sa, engine.NewMemorySource(bv), opts))
+				case "Mask":
+					mustErr(algebra.MaskChunked(ctx, sink, sa, engine.NewMemorySource(bv), opts))
 				case "Clamp":
 					mustErr(algebra.ClampChunked(ctx, sink, sa, lo, hi, opts))
 				}

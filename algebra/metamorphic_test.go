@@ -52,6 +52,9 @@ func relApply(d fuzzdata.Source, name string, lo, hi float32, extraMask bool, in
 	case "Max":
 		err = pick(path, func() { algebra.Max(dst, a, b) }, func() error { return algebra.MaxTiled(ctx, dst, a, b, opts) },
 			func() error { return algebra.MaxChunked(ctx, sink, sa, sb, opts) })
+	case "Mask":
+		err = pick(path, func() { algebra.Mask(dst, a, b) }, func() error { return algebra.MaskTiled(ctx, dst, a, b, opts) },
+			func() error { return algebra.MaskChunked(ctx, sink, sa, sb, opts) })
 	case "Clamp":
 		err = pick(path, func() { algebra.Clamp(dst, a, lo, hi) }, func() error { return algebra.ClampTiled(ctx, dst, a, lo, hi, opts) },
 			func() error { return algebra.ClampChunked(ctx, sink, sa, lo, hi, opts) })
@@ -119,11 +122,12 @@ func requireRelated(t rastertest.TB, id string, got, want raster.Float32Raster, 
 // arbitrary values and masks: commutativity of Add, Mul, Min and Max,
 // associativity of Min and Max, Sub(a, b) = -Sub(b, a), Min(a, b) =
 // -Max(-a, -b), Add(a, a) = Mul(a, 2), Clamp = Min(Max(x, lo), hi) and
-// its idempotence, all with identical validity; that Data under invalid
-// cells never reaches a valid result; and that invalidating one input
-// cell invalidates exactly that output cell.
+// its idempotence, the masking laws of Mask, all with identical
+// validity; that Data under invalid cells never reaches a valid result;
+// and that invalidating one input cell invalidates exactly that output
+// cell.
 func FuzzAlgebraRelations(f *testing.F) {
-	for rel := range 9 {
+	for rel := range 10 {
 		f.Add([]byte{byte(rel), 0, 33, 3, 1, 5, 6})
 		f.Add([]byte{byte(rel), 3, 64, 2, 0, 1, 2, 3})
 	}
@@ -136,7 +140,7 @@ func FuzzAlgebraRelations(f *testing.F) {
 // that relation. FuzzAlgebraRelations drives it with a fuzz input,
 // TestAlgebraRelations with rapid.
 func algebraRelations(t rastertest.TB, d fuzzdata.Source) {
-	rel, choice := d.IntN(9), d.IntN(4)
+	rel, choice := d.IntN(10), d.IntN(4)
 	w, h := d.Range(1, 70), d.Range(1, 6)
 	extraMask := d.Bool()
 	operand := func() raster.Float32Raster {
@@ -180,13 +184,13 @@ func algebraRelations(t rastertest.TB, d fuzzdata.Source) {
 		once := apply("Clamp", a)
 		requireRelated(t, fmt.Sprintf("%s: Clamp(Clamp(x, %v, %v)) = Clamp(x)", id, lo, hi), apply("Clamp", once), once, rastertest.SameFloat)
 	case 7:
-		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
+		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Mask", "Clamp"}[d.IntN(7)]
 		sa, sb := rastertest.Compact(a), rastertest.Compact(b)
 		rastertest.ScrambleInvalid(sa, d)
 		rastertest.ScrambleInvalid(sb, d)
 		requireRelated(t, id+": "+op+" with scrambled invalid cells", apply(op, sa, sb), apply(op, a, b), rastertest.SameFloat)
 	case 8:
-		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
+		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Mask", "Clamp"}[d.IntN(7)]
 		px, py := d.IntN(w), d.IntN(h)
 		holed := rastertest.Compact(a)
 		if holed.Valid == nil {
@@ -205,6 +209,25 @@ func algebraRelations(t rastertest.TB, d fuzzdata.Source) {
 					t.Fatalf("%s: %s with input cell (%d, %d) invalid: valid cell (%d, %d) changed", id, op, px, py, x, y)
 				}
 			}
+		}
+	case 9:
+		// Mask keeps its first input's values and intersects validity,
+		// so masks commute, an all-valid mask changes nothing, masking
+		// twice by the same mask is masking once, and masking an
+		// operand before or after an operation is the same.
+		switch choice {
+		case 0:
+			requireRelated(t, id+": Mask order", apply("Mask", apply("Mask", a, c), b),
+				apply("Mask", apply("Mask", a, b), c), rastertest.SameFloat)
+		case 1:
+			requireRelated(t, id+": Mask by an all-valid raster", apply("Mask", a, constant(w, h, d.Float32())),
+				rastertest.Compact(a), rastertest.SameFloat)
+		case 2:
+			once := apply("Mask", a, b)
+			requireRelated(t, id+": Mask is idempotent", apply("Mask", once, b), once, rastertest.SameFloat)
+		default:
+			requireRelated(t, id+": Mask(Add(a, b), c) = Add(Mask(a, c), b)",
+				apply("Add", apply("Mask", a, c), b), apply("Mask", apply("Add", a, b), c), rastertest.SameFloat)
 		}
 	}
 }

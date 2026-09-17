@@ -32,6 +32,41 @@ func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
 	clamp(dst, src, lo, hi, compact(dst) && compact(src))
 }
 
+// Mask writes src into dst, valid where src and mask are both valid.
+// Only mask's validity is read, never its values; a nil mask on either
+// input means all valid.
+func Mask(dst, src, mask raster.Float32Raster) {
+	const op = "algebra.Mask"
+	check(op, "dst", dst, dst)
+	check(op, "src", dst, src)
+	check(op, "mask", dst, mask)
+	checkMasks(op, dst, src, mask)
+	// Values and validity choose the whole-raster path independently:
+	// the copy never touches mask, and mask's stride only constrains the
+	// bits. Like the other operations, values are written first.
+	copyValues(dst, src, compact(dst) && compact(src))
+	binaryValidity(dst, src, mask, compact(dst) && compact(src) && compact(mask))
+}
+
+// copyValues copies src's cells into dst, the values of Mask. It needs no
+// internal/vec kernel: copy is a memmove, which already moves cells at
+// memory speed, and there is nothing to compute. whole selects one call
+// over all cells, which requires both operands to be compact (see
+// binaryApply); dst's cells being src's own, as in place, copies nothing.
+func copyValues(dst, src raster.Float32Raster, whole bool) {
+	if overlap.Data(dst, src) == overlap.Same {
+		return
+	}
+	if whole {
+		n := dst.Width * dst.Height
+		copy(dst.Data[:n], src.Data[:n])
+		return
+	}
+	for y := range dst.Height {
+		copy(dst.Row(y), src.Row(y))
+	}
+}
+
 // clamp is Clamp after the checks. whole selects one kernel call over all
 // cells, which requires every operand to be compact (see binaryApply).
 func clamp(dst, src raster.Float32Raster, lo, hi float32, whole bool) {
