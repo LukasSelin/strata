@@ -1815,6 +1815,24 @@ go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
+The raw source and sink are tested over files that fail partway through
+a call. `internal/faultio` puts `testing/iotest`'s wrappers under the
+`io.ReaderAt` and `io.WriterAt` they work through, and chooses by file
+offset which calls suffer. Reads that come back in pieces (`HalfReader`,
+`OneByteReader`, `DataErrReader`) must give exactly the cells a whole
+read gives, in the same number of calls, for grouped and per-row reads
+and with and without a fill value; reads that fail (`ErrReader`), time
+out (`TimeoutReader`) or run off the end of a short file must reach the
+caller as that error, named with the rows being read. The same faults
+run under `ProcessChunked` with several workers, on top of the per-tile
+injection of `failingSource`, and leave no goroutine behind. Two of
+them are contract violations a real file can commit: a `ReadAt` that
+returns a short count without an error, and a write that loses its tail
+and reports success (`TruncateWriter`). The first was already refused;
+the second was not, because `RawSink` checked the error and not the
+count, and now fails with `io.ErrShortWrite` instead of losing the rows
+silently.
+
 The tests of `internal/exec`, the only package that starts goroutines, and
 of `engine` fail if any test leaves a goroutine behind (goleak, the
 module's one dependency, used only by tests). `TestNoLeaksOnFailure` ends
