@@ -40,7 +40,7 @@ func TestParseAndRender(t *testing.T) {
 	if got := res.ops["algebra"]; len(got) != 2 || got[0] != "Add" || got[1] != "Mul" {
 		t.Fatalf("ops = %v, want [Add Mul]", got)
 	}
-	k := key{"algebra", "Add", 256, "off", "scalar", 1}
+	k := key{"algebra", "Add", 256, "off", "scalar", 1, ""}
 	if v, _ := res.median(k, "Mcells/s"); v != 1000 {
 		t.Errorf("median Mcells/s = %v, want 1000", v)
 	}
@@ -66,10 +66,56 @@ func TestParseAndRender(t *testing.T) {
 	}
 }
 
-// TestResultsMatch checks that the tables in benchmarks/algebra/RESULTS.md
+const tiledSample = `goversion: go1.27.0
+physicalcores: 12
+logicalcpus: 24
+pkg: strata/benchmarks/engine
+BenchmarkSlope/size=4096/mask=off/backend=scalar/workers=1/tiles=plain-24  1  1 ns/op  2.00 GB/s  250 Mcells/s  4.0 ns/cell  0 B/op  0 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=simd/workers=1/tiles=plain-24  1  1 ns/op  8.00 GB/s  1000 Mcells/s  1.0 ns/cell  0 B/op  9 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=scalar/workers=1/tiles=strips-24  1  1 ns/op  2.00 GB/s  250 Mcells/s  4.0 ns/cell  0 B/op  9 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=simd/workers=1/tiles=strips-24  1  1 ns/op  8.00 GB/s  980 Mcells/s  1.0 ns/cell  0 B/op  9 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=simd/workers=12/tiles=strips-24  1  1 ns/op  80.0 GB/s  9800 Mcells/s  0.1 ns/cell  0 B/op  20 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=simd/workers=24/tiles=strips-24  1  1 ns/op  96.0 GB/s  11760 Mcells/s  0.1 ns/cell  0 B/op  32 allocs/op
+BenchmarkSlope/size=4096/mask=off/backend=simd/workers=1/tiles=256x256-24  1  1 ns/op  8.00 GB/s  900 Mcells/s  1.1 ns/cell  0 B/op  9 allocs/op
+--- SKIP: BenchmarkSlope/size=4096/mask=off/backend=scalar/workers=12/tiles=strips
+PASS
+`
+
+func TestParseAndRenderTiled(t *testing.T) {
+	res, err := parse(strings.NewReader(tiledSample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.tiled["engine"] {
+		t.Fatalf("engine not detected as tiled")
+	}
+	var out bytes.Buffer
+	render(&out, res)
+	got := out.String()
+	for _, want := range []string{
+		"Slope            250      1000        4.00%s                9800               11760",
+		"| 4096 × 4096 | off | plain | 250 | 1000 | – | – | – | – | 8.00 | 9 |",
+		"| 4096 × 4096 | off | strips | 250 | 980 | -2% | 9800 | 11760 | 12.00× at 24 | 96.0 | 32 |",
+		"| 4096 × 4096 | off | 256x256 | – | 900 | -10% | – | – | – | 8.00 | 9 |",
+		"- mask=off, workers: strips over one worker, SIMD: 4096² 10.00× with 12, 12.00× with 24; 24 workers move 96.0 GB/s at 4096².",
+	} {
+		want = strings.ReplaceAll(want, "%s", "×")
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q\n%s", want, got)
+		}
+	}
+}
+
+// TestResultsMatch checks that the tables in each category's RESULTS.md
 // are this command's output for the raw run committed next to it.
 func TestResultsMatch(t *testing.T) {
-	raw, err := os.Open("../../algebra/testdata/bench.txt")
+	for _, category := range []string{"algebra", "engine"} {
+		t.Run(category, func(t *testing.T) { testResultsMatch(t, category) })
+	}
+}
+
+func testResultsMatch(t *testing.T, category string) {
+	raw, err := os.Open("../../" + category + "/testdata/bench.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +127,7 @@ func TestResultsMatch(t *testing.T) {
 	var out bytes.Buffer
 	render(&out, res)
 
-	doc, err := os.ReadFile("../../algebra/RESULTS.md")
+	doc, err := os.ReadFile("../../" + category + "/RESULTS.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +139,7 @@ func TestResultsMatch(t *testing.T) {
 		t.Fatalf("RESULTS.md lacks the %q ... %q markers", strings.TrimSpace(begin), end)
 	}
 	if section != out.String() {
-		t.Errorf("RESULTS.md differs from `go run ./benchmarks/cmd/stratabench < benchmarks/algebra/testdata/bench.txt`;"+
-			" regenerate the section between the markers.\ngot:\n%s", out.String())
+		t.Errorf("RESULTS.md differs from `go run ./benchmarks/cmd/stratabench < benchmarks/%s/testdata/bench.txt`;"+
+			" regenerate the section between the markers.\ngot:\n%s", category, out.String())
 	}
 }

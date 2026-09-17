@@ -13,6 +13,26 @@ func TestCaseName(t *testing.T) {
 	if got, want := c.Name(), "size=4096/mask=on/backend=simd/workers=1"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
+	c.Workers, c.Tiles = 12, "256x256"
+	if got, want := c.Name(), "size=4096/mask=on/backend=simd/workers=12/tiles=256x256"; got != want {
+		t.Errorf("Name() = %q, want %q", got, want)
+	}
+}
+
+func TestWorkers(t *testing.T) {
+	w := Workers()
+	t.Logf("workers: %v", w)
+	if len(w) == 0 || w[0] != 1 {
+		t.Fatalf("Workers() = %v, want 1 first", w)
+	}
+	for i := 1; i < len(w); i++ {
+		if w[i] <= w[i-1] {
+			t.Fatalf("Workers() = %v, want increasing", w)
+		}
+	}
+	if physical, logical := CPUs(); physical > 0 && logical > 0 && w[len(w)-1] != logical {
+		t.Errorf("Workers() = %v, want %d logical CPUs last", w, logical)
+	}
 }
 
 func TestCPUs(t *testing.T) {

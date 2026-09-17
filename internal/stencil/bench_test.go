@@ -1,6 +1,7 @@
 package stencil
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"testing"
@@ -67,4 +68,47 @@ func BenchmarkSlopeRow(b *testing.B) {
 		}
 		report(b)
 	})
+}
+
+// BenchmarkRowWidth times one call of each row kernel at widths from a
+// lane to a 4096-cell raster's interior, to separate the per-call cost
+// from the per-cell cost. The engine calls a row kernel once per output
+// row of a tile, so a kernel with a large per-call cost is slower in
+// narrow tiles. ns/call - width·ns/cell(4094) estimates the fixed cost.
+//
+//	GOEXPERIMENT=simd go test -run - -bench RowWidth ./internal/stencil
+func BenchmarkRowWidth(b *testing.B) {
+	const maxN = 4094
+	rng := rand.New(rand.NewPCG(9, 10))
+	rows := make([][]float32, 3)
+	for k := range rows {
+		rows[k] = make([]float32, maxN+2)
+		for i := range rows[k] {
+			rows[k][i] = float32(800 + 20*rng.NormFloat64())
+		}
+	}
+	dst, dst2 := make([]float32, maxN), make([]float32, maxN)
+	kx, ky := HornScales(10, 10, 1)
+	deg := float32(180 / math.Pi)
+	ops := []struct {
+		name string
+		row  func(n int)
+	}{
+		{"slope-percent", func(n int) { HornSlopeRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, 100, false) }},
+		{"slope-degrees", func(n int) { HornSlopeRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, deg, true) }},
+		{"aspect", func(n int) { HornAspectRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, -1, false) }},
+		{"hillshade", func(n int) { HornHillshadeRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, 180, -127, 127) }},
+		{"gradient", func(n int) { HornGradientRow(dst[:n], dst2[:n], rows[0], rows[1], rows[2], kx, ky) }},
+	}
+	b.Logf("backend: %s", Backend())
+	for _, op := range ops {
+		for _, n := range []int{8, 12, 16, 64, 254, 255, 256, 1022, 4094} {
+			b.Run(fmt.Sprintf("op=%s/width=%d", op.name, n), func(b *testing.B) {
+				for b.Loop() {
+					op.row(n)
+				}
+				b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n)/float64(b.N), "ns/cell")
+			})
+		}
+	}
 }

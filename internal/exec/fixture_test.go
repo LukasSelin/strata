@@ -29,12 +29,28 @@ var hazards = []float32{
 // DEM-like with some hazards; masks have about 5% of cells invalid, and
 // root bits outside the window are random.
 func newOperand(rng *rand.Rand, w, h int, windowed, masked bool) operand {
+	return newOperandPad(rng, w, h, windowed, masked, -1)
+}
+
+// newOperandPad is newOperand with the window's row padding, Stride minus
+// its root's width, chosen: pad >= 0 pads by pad cells, adding one if that
+// would make Stride a multiple of 64, and the mask offset is odd; pad < 0
+// picks both at random.
+func newOperandPad(rng *rand.Rand, w, h int, windowed, masked bool, pad int) operand {
 	rootW, rootH, stride, x, y, validOffset := w, h, w, 0, 0, 0
 	if windowed {
 		x, y = 1+rng.IntN(3), 1+rng.IntN(2)
 		rootW, rootH = w+x+2, h+y+2
-		stride = rootW + rng.IntN(70)
-		validOffset = rng.IntN(100)
+		if pad < 0 {
+			stride = rootW + rng.IntN(70)
+			validOffset = rng.IntN(100)
+		} else {
+			stride = rootW + pad
+			if stride%64 == 0 {
+				stride++
+			}
+			validOffset = 1 + 2*rng.IntN(50)
+		}
 	}
 	n := (rootH-1)*stride + rootW
 	root := raster.NewFloat32Stride(rootW, rootH, stride, make([]float32, n))
@@ -106,24 +122,30 @@ func (l layout) String() string { return fmt.Sprintf("windowedIn=%v windowedOut=
 // engineRun is one way to run the engine. Every one must give the same
 // bits as a whole-raster run.
 type engineRun struct {
-	opts     engine.Options
-	oneRow   bool // one-row bands
-	cancelOK bool // a cancellable context that is never cancelled
+	opts      engine.Options
+	bandCells int  // band size target, 0 for the default
+	cancelOK  bool // a cancellable context that is never cancelled
 }
 
 func (run engineRun) String() string {
-	return fmt.Sprintf("opts=%+v oneRow=%v cancellable=%v", run.opts, run.oneRow, run.cancelOK)
+	return fmt.Sprintf("opts=%+v bandCells=%d cancellable=%v", run.opts, run.bandCells, run.cancelOK)
 }
 
+// engineRuns are the runs of the broad tests: tiles of many shapes, bands
+// of one row (so that small rasters have many bands and workers share
+// them) and several worker counts. TestTilesAndWorkers covers the full
+// cross product on fewer fixtures.
 var engineRuns = []engineRun{
-	{engine.Options{}, false, false},
-	{engine.Options{}, true, true},
-	{engine.Options{TileWidth: 1, TileHeight: 1}, false, false},
-	{engine.Options{TileWidth: 2, TileHeight: 3, Workers: 4}, true, false},
-	{engine.Options{TileWidth: 3, TileHeight: 2}, false, true},
-	{engine.Options{TileWidth: 5, TileHeight: 4}, true, false},
-	{engine.Options{TileWidth: 64, TileHeight: 1}, false, false},
-	{engine.Options{TileWidth: 7, TileHeight: 1000, Workers: 1}, false, false},
+	{engine.Options{Workers: 1}, 0, false},
+	{engine.Options{Workers: 1}, 1, true},
+	{engine.Options{}, 1, false},
+	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 1}, 0, false},
+	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 3}, 0, false},
+	{engine.Options{TileWidth: 2, TileHeight: 3, Workers: 4}, 1, false},
+	{engine.Options{TileWidth: 3, TileHeight: 2, Workers: 2}, 0, true},
+	{engine.Options{TileWidth: 5, TileHeight: 4, Workers: 1}, 1, false},
+	{engine.Options{TileWidth: 64, TileHeight: 1}, 0, false},
+	{engine.Options{TileWidth: 7, TileHeight: 1000, Workers: 2}, 3, false},
 }
 
 // process runs ProcessN the way run says and fails the test on an error.
@@ -138,8 +160,8 @@ func process(t *testing.T, run engineRun, dst, src []raster.Float32Raster, k exe
 // such as a tiled entry point.
 func processWith(t *testing.T, run engineRun, f func(context.Context, engine.Options) error) {
 	t.Helper()
-	if run.oneRow {
-		defer exec.SetBandCells(1)()
+	if run.bandCells > 0 {
+		defer exec.SetBandCells(run.bandCells)()
 	}
 	ctx := context.Background()
 	if run.cancelOK {

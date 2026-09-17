@@ -6,13 +6,16 @@ spikes that informed the design.
 | path | what |
 |---|---|
 | `algebra/` | suite: `strata/algebra` Add, Sub, Mul, Min, Max, Clamp. Numbers in [`algebra/RESULTS.md`](algebra/RESULTS.md) |
+| `engine/` | suite: Slope, Hillshade and Clamp, plain and through the engine, by worker count and tile shape. Numbers in [`engine/RESULTS.md`](engine/RESULTS.md) |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole
-raster vs. per row vs. strided) and `internal/stencil/bench_test.go`, stay
-next to their code. They compare internal paths. The suite measures the
+raster vs. per row vs. strided), `internal/stencil/bench_test.go` and
+`internal/vec/bench_test.go` (per-call cost by row width) and
+`internal/exec/bench_test.go` (tile shapes on one worker), stay next to
+their code. They compare internal paths. The suite measures the
 public API at the §38 sizes and backends.
 
 ## Running
@@ -52,18 +55,19 @@ go run ./benchmarks/cmd/stratabench < bench.txt
   binary, so put it after the package.
 - **`-bench 'Add/size=4096/mask=off'`** selects part of the matrix; each
   `/` level is matched separately.
-- **Stable numbers.** Published runs pin the test binary to one logical
-  CPU, with `GOMAXPROCS=1` and high priority, on an otherwise quiet
-  machine. `RESULTS.md` records the exact commands. Memory-bandwidth-bound
-  results are sensitive to anything else moving memory, including other
-  builds.
+- **Stable numbers.** Published one-worker runs pin the test binary to
+  one logical CPU, with `GOMAXPROCS=1` and high priority, on an otherwise
+  quiet machine. Runs with `workers` above 1 (the engine category) must not
+  be pinned: they run at high priority with the default `GOMAXPROCS`.
+  `RESULTS.md` records the exact commands. Memory-bandwidth-bound results
+  are sensitive to anything else moving memory, including other builds.
 - **benchstat** works on the output as is, since sub-benchmark names are
   `key=value`: `benchstat -col /backend -filter '.unit:Mcells/s' bench.txt`.
 
 ## Benchmark names
 
 ```text
-Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>
+Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>[/tiles=<T>]
 ```
 
 | key | values |
@@ -71,7 +75,8 @@ Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>
 | `size` | square raster side: 256, 1024, 4096, 16384 (§38) |
 | `mask` | `off`: no operand has a validity mask. `on`: every input has an independent mask with about 10% of cells invalid, and dst has one |
 | `backend` | `scalar` or `simd`, switched in one binary |
-| `workers` | only `1` for now. Multi-worker tiling needs the engine (STRATA-8/9) |
+| `workers` | `1` for categories that call plain functions. Engine categories run `suite.Workers()`: 1, one per physical core, one per logical CPU |
+| `tiles` | engine categories only: the tile shape, e.g. `plain` (the plain function), `strips` (default `engine.Options`), `256x256` |
 
 Before the results, `suite.Main` prints `key: value` configuration lines
 (`goversion`, `goexperiment`, `goamd64`, `gomaxprocs`, `usablecpus`,
@@ -90,9 +95,12 @@ Every leaf reports:
 | `Mcells/s` | million cells per second (§42's "M cells/sec") |
 | `ns/cell` | nanoseconds per cell, `1000 / Mcells/s` |
 | `GB/s` | memory the operation touches per second, in 10⁹ bytes: cells/s × bytes per cell over **all operands including dst**, 4 bytes per float32 raster plus ⅛ byte per validity mask. Add with masks touches 3 × 4.125 = 12.375 bytes per cell, Clamp without masks 2 × 4 = 8 |
-| `B/op`, `allocs/op` | from `b.ReportAllocs`. Must be 0 |
+| `B/op`, `allocs/op` | from `b.ReportAllocs`. Must be 0 for plain functions; engine calls allocate a few slices and their goroutines per call, never per tile |
 
-`stratabench` adds:
+`stratabench` adds (for categories with a `tiles` level it prints one row
+per size, mask and tile shape with a column per worker count, the one-worker
+SIMD cost against `plain`, the best scaling, and a note per mask with the
+speedup of `strips` over one worker at each size):
 
 - **SIMD/scalar**: median SIMD M cells/s over median scalar M cells/s.
 - **Run-to-run spread**: (max − min)/median of M cells/s over the `-count`
@@ -151,12 +159,13 @@ Rules:
   `testdata/bench.txt`. Then extend `TestResultsMatch` in
   `cmd/stratabench` to cover it.
 
-### Workers
+### Workers and tiles
 
-When the engine lands (STRATA-8/9), `suite.Workers` returns 1, the
-physical core count and the logical CPU count (§38: SIMD + 1 worker, SIMD +
-physical cores, SIMD + logical cores). Workloads then read `c.Workers` and
-run through the engine. The benchmark names already carry `workers=N`, and
-`stratabench` adds a "SIMD + N workers" column for every N > 1 it finds.
-Do not add ad-hoc goroutine tiling here before then. Scaling runs must not
-be pinned to one CPU.
+A category that runs through the engine sets `Matrix.Workers` to
+`suite.Workers()` (1, the physical core count and the logical CPU count,
+without duplicates) and `Matrix.Tiles` to its tile shapes, and reads
+`c.Workers` and `c.Tiles` in its workload. A workload returns a `Workload`
+with a nil `Run` for combinations that do not apply, such as a plain
+function with more than one worker; the leaf is skipped. `stratabench`
+recognises such a category by its `tiles` level. See `engine/bench_test.go`.
+Scaling runs must not be pinned to one CPU.

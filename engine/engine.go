@@ -1,16 +1,18 @@
 package engine
 
 // Options configures how a tiled operation divides and schedules its
-// work. The zero value runs the whole raster as one tile. Options never
-// change the result.
+// work. The zero value runs the whole raster as one tile on
+// runtime.GOMAXPROCS(0) workers, which is the fastest setting for rasters
+// in memory. Options never change the result.
 type Options struct {
 	// TileWidth and TileHeight are the tile size in cells. 0 means the
-	// raster's width or height. Tiles are processed in row-major order.
+	// raster's width or height. Tiles are planned in row-major order and
+	// split into bands of rows; see the package documentation for why
+	// narrow tiles are slower.
 	TileWidth  int
 	TileHeight int
-	// Workers is the number of goroutines that process tiles. 0 lets the
-	// engine choose. This version runs every tile on the calling
-	// goroutine whatever the value, so callers can already pass the
-	// setting STRATA-9's worker pool will use.
+	// Workers is the number of goroutines that run bands, the calling
+	// goroutine included. 0 means runtime.GOMAXPROCS(0); 1 starts no
+	// goroutines. A call never uses more workers than it has bands.
 	Workers int
 }

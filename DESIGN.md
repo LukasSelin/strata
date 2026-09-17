@@ -1007,16 +1007,22 @@ Algorithms should not implement tile-boundary coordination individually.
   the edge of a whole-raster call, with no per-kernel border code.
 - **Contract.** Tiled output must equal the whole-raster call on the same
   data bit for bit, in Data and in validity, for every tile size and
-  worker count. Tests enforce this (§39).
+  worker count. Tests enforce this (§39): `internal/exec`'s
+  `TestTilesAndWorkers` runs every tile width and height in {1, 7, 64,
+  256, full, larger than the raster} with 1, 2, 3 and GOMAXPROCS workers,
+  for Clamp, Add, Slope, Aspect, Hillshade, Gradient and a radius-2
+  kernel, with and without masks, on windows whose stride is not a
+  multiple of 64.
 - **Buffers.** Tile and halo buffers are allocated with `Stride` rounded
   up to a multiple of 64, so each row's mask bits start on a word
   boundary and mask copies are plain word copies
   (benchmarks/nodata/RESULTS.md).
 
-Status: in-memory halos done (STRATA-8). Tiles of in-memory rasters read
-their halos as views of the input, and the engine writes the edge policy
-itself instead of calling the kernel for edge cells. Copied tile and halo
-buffers for sources are STRATA-9.
+Status: in-memory halos done (STRATA-8), with any number of workers
+(STRATA-9). Tiles of in-memory rasters read their halos as views of the
+input, and the engine writes the edge policy itself instead of calling
+the kernel for edge cells. Copied tile and halo buffers belong with
+sources and sinks (§24, §27), not started.
 
 ## 24. Chunk-Oriented Execution
 
@@ -1135,14 +1141,30 @@ type Options struct {
 }
 ```
 
-The engine returns errors for IO and cancellation, and panics on
-programming errors, as the rest of strata does. Context cancellation is
-checked between bands of rows; a cancelled call leaves every output cell
-either final or untouched.
+The zero value is the default for in-memory rasters: one tile as wide as
+the raster and `Workers` = `GOMAXPROCS`. The engine plans tiles in
+row-major order and splits each into bands of whole rows of about 2¹⁶
+cells, the unit of scheduling and cancellation. Narrow tiles are correct
+but slower, because row kernels pay a fixed cost per row and pointwise
+kernels lose their one-call-per-band fast path: on one worker 256×256
+tiles cost 15–52% over the default, depending on operation and size, and
+the default is the fastest shape for every worker count
+(benchmarks/engine/RESULTS.md). Measuring this found that the SIMD row
+kernels paid about 65 ns per row for an SSE/AVX transition (legacy SSE
+instructions while upper YMM bits were dirty), now removed; see the
+kernel-writing rules in docs/adr/0001-simd-backend.md. Tile size is for sources and sinks that
+work a tile at a time.
 
-Status: single-thread tiled execution over in-memory rasters done
-(STRATA-8). `Workers` is accepted and ignored; worker pools, sources and
-sinks are STRATA-9.
+The engine returns errors for IO and cancellation, and panics on
+programming errors, as the rest of strata does. Workers check the context
+before each band and finish a band they have started, so a cancelled call
+leaves every output cell either final or untouched, and the finished bands
+are a prefix of the plan whatever the worker count. A kernel panic in a
+worker is re-raised on the calling goroutine after every worker has
+stopped.
+
+Status: tiled execution over in-memory rasters done, on one or many
+workers (STRATA-8, STRATA-9). Sources and sinks are not started.
 
 ## 26. Parallelism Model
 
@@ -1170,6 +1192,22 @@ Low-level kernels remain synchronous. `internal/vec`, `internal/stencil`,
 `algebra` and `terrain` create no goroutines.
 
 Concurrency belongs in the execution engine.
+
+**Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
+goroutines per call and uses the calling goroutine as the last worker;
+there is no global pool. Workers take bands from the plan in order with an
+atomic counter, each with its own views and erosion scratch, and the call
+joins them before it returns. Kernels run concurrently on disjoint bands.
+Validity words can be shared between bands (cells side by side, row ends
+when the stride is not a multiple of 64, inputs and outputs in one mask),
+so all mask work runs under one lock per call, after the band's Data.
+With masks, workers scale within 10% of the same runs without.
+
+Measured scaling (benchmarks/engine/RESULTS.md, 12-core Zen 2, dual-channel
+DDR4-3200): at 1024², in cache, 12 workers run Slope 5.5× and Hillshade
+4.4× faster than one. From 4096² every operation flattens at 2.4–2.9
+billion cells/s, 19–23 GB/s of memory traffic: Slope 3.7×, Hillshade
+2.1×, Clamp 1.2–1.7×. 24 workers (SMT) are no faster than 12.
 
 ## 27. Bounded-Memory Execution
 
@@ -1223,6 +1261,10 @@ This has been measured (benchmarks/algebra/RESULTS.md):
 - At 16384² throughput drops further, likely from TLB and prefetcher
   effects. That argues for tiled execution even for pointwise
   operations.
+- Workers hit the same wall (benchmarks/engine/RESULTS.md): from 4096²
+  Slope, Hillshade and Clamp all flatten at 19–23 GB/s, whatever their
+  single-worker compute cost, and SMT adds nothing. Full-width strips
+  stream memory better than 256×256 tiles at every worker count.
 
 More complex workloads should benefit more:
 
@@ -1571,6 +1613,7 @@ benchmarks/
 ├── internal/suite/     shared harness: sizes, backend switching, metrics
 ├── cmd/stratabench/    go test -bench output → §42 headline, speedups, §28 class
 ├── algebra/            implemented, RESULTS.md
+├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── terrain/            next
 ├── remote_sensing/
@@ -1582,7 +1625,7 @@ benchmarks/
 Benchmark names:
 
 ```text
-Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>
+Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>[/tiles=<T>]
 ```
 
 Metrics:
@@ -1598,12 +1641,13 @@ parallel scaling
 peak memory
 ```
 
-- Peak memory is not measured by the harness today. The algebra suite's
-  peak was measured by hand and documented in its `doc.go`. The engine
-  benchmarks must report it (§43).
+- Peak memory is not measured by the harness today. The algebra and
+  engine suites' peaks were measured by hand and documented in their
+  `doc.go`. The engine demo must report it against the §27 bound (§43).
 - Worker scaling compares SIMD with 1 worker, with one worker per physical
-  core, and with one per logical CPU. `workers` stays 1 until the engine
-  exists.
+  core, and with one per logical CPU (`suite.Workers`). Only categories
+  that run through the engine (`benchmarks/engine`) have `workers` above
+  1; they add a `tiles` level for the tile shape.
 - Published numbers come from a `GOEXPERIMENT=simd` build (§3).
 
 Raster sizes:
@@ -1702,7 +1746,7 @@ strata/
 │   │   ├── process.go         Process, operand checks
 │   │   ├── tile.go            tile and band planning, cancellation
 │   │   ├── halo.go            halos, edges, validity
-│   │   ├── worker.go          planned (STRATA-9)
+│   │   ├── worker.go          workers, band scheduling, mask lock (STRATA-9)
 │   │   └── workspace.go       planned
 │   └── overlap/               Data and mask overlap checks
 │
@@ -1792,12 +1836,12 @@ Hillshade                                   done (STRATA-7)
 
 single-thread processing                    done
 tiled entry points (single thread)          done (STRATA-8)
-multi-worker tile processing                planned (STRATA-9)
-halo handling                               in-memory done (STRATA-8)
-bounded-memory tiled execution              planned (STRATA-9)
+multi-worker tile processing                done (STRATA-9)
+halo handling                               in-memory done, any worker count (STRATA-8/9)
+bounded-memory tiled execution              planned (sources and sinks, §24, §27)
 memory and raw float32 file source/sink     planned
 
-benchmark suite                             algebra done (STRATA-10); terrain, engine next
+benchmark suite                             algebra (STRATA-10), engine (STRATA-9) done; terrain next
 ```
 
 Arm64 builds run the scalar kernels in v0.1.

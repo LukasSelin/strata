@@ -48,11 +48,12 @@
 // # Tiled execution
 //
 // AddTiled, SubTiled, MulTiled, MinTiled, MaxTiled and ClampTiled run the
-// same operations in tiles with engine.Options and a context, and return
-// ctx.Err() if cancelled (see package engine). They apply the same
-// operand, in-place and validity rules (and also reject a dst whose mask
-// bits partly overlap an input's) and give the same bits for every
-// tiling. The plain functions do not go through the engine: they keep
+// same operations in tiles on engine.Options.Workers goroutines (by
+// default one per GOMAXPROCS) with a context, and return ctx.Err() if
+// cancelled (see package engine). They apply the same operand, in-place
+// and validity rules (and also reject a dst whose mask bits partly
+// overlap an input's) and give the same bits for every tiling and worker
+// count. The plain functions do not go through the engine: they keep
 // their promise to allocate nothing, which the engine's per-call setup
 // cannot.
 package algebra
