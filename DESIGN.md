@@ -467,7 +467,7 @@ type Float32Raster struct {
   `Validate` checks a hand-built raster without panicking.
 - **Other data types.** Storage may keep integer or float64 data, but
   source adapters convert it to `float32` plus a validity mask at the IO
-  boundary. A generic element type is deferred to the Array work (v0.2,
+  boundary. A generic element type is deferred to the Array work (v0.3,
   §10). At that point, decide whether `Float32Raster` becomes a 2D
   specialization of `Array`.
 
@@ -534,7 +534,7 @@ Arrays need the same validity bitmap as rasters (§31). Note that `Stride`
 here is per dimension, while `Float32Raster.Stride` is the row stride in
 elements.
 
-Status: not started (v0.2).
+Status: not started (v0.3).
 
 ## 11. Point-Cloud Model
 
@@ -568,7 +568,7 @@ type PointCloud struct {
 ```
 
 Coordinates may need `float64`, or `float32` offsets from a batch origin,
-for large coordinate ranges (§39). That decision belongs to v0.6.
+for large coordinate ranges (§39). That decision belongs to v0.7.
 
 This enables operations such as:
 
@@ -583,7 +583,7 @@ aggregation
 
 to map naturally onto SIMD.
 
-Status: not started (v0.6).
+Status: not started (v0.7).
 
 ## 12. Dense vs Sparse Scheduling
 
@@ -823,7 +823,7 @@ Later:
 
 ```go
 algebra.Scale(dst, src, 1.25)  // MulScalar / AddScalar exist in internal/vec
-algebra.Normalize(dst, src)     // needs a reduction pass first (v0.2)
+algebra.Normalize(dst, src)     // needs the reduction pass of §49 (v0.2)
 ```
 
 `Normalize` is not a pointwise operation. It needs global statistics (min
@@ -1087,7 +1087,7 @@ type RasterSink interface {
   joining short rows across the gaps between them costs more than the
   calls it saves.
 
-**Sparse data uses streams**, from v0.6 on:
+**Sparse data uses streams**, from v0.7 on:
 
 ```go
 type PointSource interface {
@@ -1917,6 +1917,7 @@ strata/
 │   │   ├── halo.go            halos, edges, validity
 │   │   ├── worker.go          workers, band and tile scheduling, mask lock (STRATA-9)
 │   │   ├── chunked.go         ProcessChunked: per-worker tile buffers, sources and sinks
+│   │   ├── reduce.go          planned: partials and their combination (§49)
 │   │   └── workspace.go       planned
 │   └── overlap/               Data and mask overlap checks
 │
@@ -1927,6 +1928,7 @@ strata/
 Later:
 
 ```text
+reduce/                        v0.2 (§49)
 array/
 pointcloud/
 voxel/
@@ -2144,18 +2146,29 @@ bounded memory over windowed sources (memory, raw float32 file)
 benchmarks
 ```
 
-**v0.2: Array foundation**
+**v0.2: Reductions and statistics** (§49)
+
+```text
+Sum, Mean, Min, Max, MinMax, Count over valid cells
+order-independent accumulation: the same bits for every tiling,
+  worker count and backend
+tiled and chunked entry points
+algebra.Normalize on top of the reduction pass
+benchmarks against the §28 bandwidth ceiling
+```
+
+**v0.3: Array foundation**
 
 ```text
 N-dimensional arrays (generic element type decided here, §9)
 strides
 views
-reductions
+axis reductions (§49 extended to N-D)
 broadcast-style operations
-Normalize, Scale
+Scale
 ```
 
-**v0.3: Streaming and pipelines**
+**v0.4: Streaming and pipelines**
 
 ```text
 general Source / Sink APIs beyond raw files
@@ -2164,7 +2177,7 @@ workspace reuse
 pipeline execution
 ```
 
-**v0.4: Zarr integration**
+**v0.5: Zarr integration**
 
 ```text
 chunk-native datasets
@@ -2172,7 +2185,7 @@ environmental time series
 large N-D arrays
 ```
 
-**v0.5: Raster interoperability**
+**v0.6: Raster interoperability**
 
 ```text
 GeoTIFF
@@ -2180,7 +2193,7 @@ COG
 external adapters
 ```
 
-**v0.6: Point-cloud foundation**
+**v0.7: Point-cloud foundation**
 
 ```text
 PointBatch
@@ -2191,7 +2204,7 @@ aggregation
 rasterization
 ```
 
-**v0.7: Spatial processing**
+**v0.8: Spatial processing**
 
 ```text
 resampling
@@ -2200,7 +2213,7 @@ mosaics
 interpolation
 ```
 
-**v0.8: Pipeline optimization**
+**v0.9: Pipeline optimization**
 
 ```text
 operation fusion
@@ -2208,7 +2221,7 @@ lazy planning
 kernel scheduling
 ```
 
-**v0.9: 3D experimentation**
+**v0.10: 3D experimentation**
 
 ```text
 voxel grids
@@ -2313,3 +2326,155 @@ The following principles should survive every future expansion:
 The shortest expression of the architecture is:
 
 > Sources provide chunks. Representations organize spatial data. The engine schedules work. Kernels operate on spans or batches. SIMD performs the numerical work.
+
+## 49. Reductions
+
+Every operation so far is raster → raster. Nothing in the API produces a
+number, so a caller cannot ask for the mean of a slope raster, the range
+of a DEM, or how many cells of a chunked output are valid, without
+writing the loop themselves. Three things need one:
+
+- `algebra.Normalize` (§18), which is a map pass over statistics the
+  engine has to gather first.
+- Contrast stretching, classification breakpoints and quantiles, which
+  are what turn a computed surface into something to look at or act on.
+- Checking a chunked run: today the only way to verify a 20000² output
+  file (§43) is to read it back in full.
+
+Reductions are also the first operation whose result does not live in a
+raster, so they settle how the engine returns a value rather than filling
+a sink.
+
+### Operations
+
+```go
+type Stats struct {
+    Count int64   // valid cells
+    Sum   float64
+    Min   float32
+    Max   float32
+}
+
+reduce.Sum(src raster.Float32Raster) (sum float64, count int64)
+reduce.MinMax(src raster.Float32Raster) (min, max float32, count int64)
+reduce.Stats(src raster.Float32Raster) Stats
+```
+
+with `Tiled` and `Chunked` counterparts beside them, as in `algebra` and
+`terrain`:
+
+```go
+reduce.StatsTiled(ctx, src, engine.Options{}) (Stats, error)
+reduce.StatsChunked(ctx, src engine.RasterSource, engine.Options{}) (Stats, error)
+```
+
+`Mean` is `Sum/Count` and needs no pass of its own. Standard deviation
+needs a second accumulator (sum of squares, or Welford) and can follow.
+Histograms and quantiles are a later operation: they return a vector
+rather than a scalar, and their bin edges are a policy question of their
+own.
+
+Named operations, not a per-cell callback (§19). `Sum` returns `float64`
+whatever the input's element type: a float32 accumulator loses the answer
+on a raster of any size, and the result is one number, so the wider type
+costs nothing.
+
+### Validity and values
+
+Only valid cells take part, as everywhere else (§31). A nil mask means
+every cell counts. `Count` is always returned beside the value, so an
+empty reduction is visible rather than disguised: with no valid cells
+`Sum` is 0 and `Min`, `Max` and `Mean` are NaN.
+
+Validity is still never inferred from data. A NaN in a valid cell is an
+ordinary value: it propagates into `Sum` and `Mean`, and through `Min`
+and `Max` with the semantics of Go's builtins, as in `algebra`. A caller
+who wants NoData skipped clears the bit; a caller who writes NaN into a
+valid cell gets NaN out. -0 and +0 follow the builtins too.
+
+### Determinism
+
+The engine's promise is that a tiled or chunked call gives the same bits
+as its plain counterpart, for every tile size and worker count (§25). A
+reduction cannot keep that promise by fixing an evaluation order, because
+float addition is not associative and tiles do not cut the raster in the
+same places for every `Options` value: two tilings sum different subsets
+before combining them.
+
+The same problem appears one level down. A SIMD reduction keeps several
+accumulator lanes and adds them at the end, so it sums in a different
+order from the scalar loop, and §15 requires the two to agree bit for
+bit.
+
+So the guarantee is stated on the value rather than on the order:
+
+> A reduction returns the correctly rounded result of the exact
+> arithmetic over the valid cells, for every tiling, worker count and
+> backend.
+
+Exact accumulation is order-independent by construction, which makes
+tiling, worker count and vector lanes free: partials combine in any
+order, and no plan-order bookkeeping is needed. It is also the most
+accurate answer available, which suits a project whose scalar path
+defines correctness.
+
+`Min` and `Max` are associative and commutative already, NaN and -0
+included, so they carry none of this and can land first.
+
+The accumulator representation is a benchmarked decision, recorded like
+the NoData choice (STRATA-3) in `benchmarks/reduce/RESULTS.md`:
+
+```text
+float64 accumulator               fast, inexact, order-dependent
+Neumaier compensated float64      near-exact, still order-dependent
+error-free transformation (2Sum)  exact pair, order-dependent carry
+binned / superaccumulator         exact and order-independent
+```
+
+Only the last satisfies the guarantee as written. What it costs per cell,
+against a pass that is otherwise pure memory bandwidth (§28), is what the
+benchmark has to show. If it is too expensive, the answer is to weaken
+the guarantee to a documented, plan-independent evaluation order and say
+so — not to let the result depend on `Options`.
+
+### Engine
+
+A reduction is a new driver shape in `internal/exec` rather than a new
+kernel over the existing one: there is no `dst` and no sink, each band or
+tile yields a partial, and the partials combine into one result on the
+calling goroutine once every worker has stopped. Operand checks, tile and
+band planning, halos (radius 0), the worker pool and the panic re-raise
+are the ones already there.
+
+Cancellation differs from a map pass. A cancelled chunked map leaves a
+prefix of whole tiles in its sinks, which is useful. A partial sum over
+an unknown subset of a raster is not, so a cancelled or failed reduction
+returns `ctx.Err()`, or the source's error, and no value.
+
+A chunked `Normalize` is therefore two passes over the source: reduce,
+then map. That is a full extra read of the file, and the clearest case
+for fusion (§29) so far — worth recording now, not worth building yet.
+
+### Testing
+
+As §39, against an exact reference: `math/big.Float` accumulates the
+valid cells at enough precision to round once, which is the definition
+above, so the fuzz target compares against the answer rather than against
+another implementation of the same mistake. Beyond the table in §39, test
+sums that cancel catastrophically (large values either side of a small
+one), sums that overflow float32 but not float64, all-invalid and
+single-valid rasters, and rasters whose plan splits a run of cells that
+the plain path sums consecutively.
+
+Metamorphic relations (`FuzzReduceRelations`): a permutation of the cells
+reduces to the same bits, `Sum(a) + Sum(b)` equals `Sum(a+b)` under exact
+accumulation, scaling by a power of two scales the sum exactly, and `Min`
+and `Max` commute with the grid symmetries in `internal/rastertest`. Each
+side runs through its own execution path, as elsewhere.
+
+A reduction writes nothing per cell, so `benchmarks/reduce` reports GB/s
+against the machine's measured read bandwidth (§28, §38) rather than
+cells/s alone: the interesting number is how close an exact accumulator
+stays to a bandwidth-bound pass.
+
+Status: not started (v0.2).
