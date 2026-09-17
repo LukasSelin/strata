@@ -2,6 +2,7 @@ package vec
 
 import (
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -180,4 +181,46 @@ func TestInPlace(t *testing.T) {
 	want := []float32{11, 22, 33, 44}
 	Add(a, a, b)
 	assertSlicesEqual(t, "Add in-place", a, want)
+}
+
+// kernelsInUse returns the function variables currently installed.
+func kernelsInUse() kernelSet {
+	return kernelSet{
+		add: addFloat32, sub: subFloat32, mul: mulFloat32, div: divFloat32,
+		addScalar: addScalarFloat32, mulScalar: mulScalarFloat32,
+		min: minFloat32, max: maxFloat32, clamp: clampFloat32,
+		abs: absFloat32, sqrt: sqrtFloat32,
+	}
+}
+
+// assertKernels fails unless every function variable in got is the same
+// function as in want. Functions are compared by code pointer.
+func assertKernels(t *testing.T, name string, got, want kernelSet) {
+	t.Helper()
+	g, w := reflect.ValueOf(got), reflect.ValueOf(want)
+	for i := range g.NumField() {
+		if g.Field(i).Pointer() != w.Field(i).Pointer() {
+			t.Errorf("%s: %s kernel is not the expected function", name, g.Type().Field(i).Name)
+		}
+	}
+}
+
+func TestUseScalar(t *testing.T) {
+	defer UseScalar(false)
+	initial := Backend()
+	if initial != "scalar" && initial != "avx2" {
+		t.Fatalf("Backend() = %q, want scalar or avx2", initial)
+	}
+	UseScalar(true)
+	if Backend() != "scalar" {
+		t.Fatalf("after UseScalar(true), Backend() = %q", Backend())
+	}
+	assertKernels(t, "UseScalar(true)", kernelsInUse(), scalarKernels)
+	UseScalar(false)
+	if Backend() != initial {
+		t.Fatalf("after UseScalar(false), Backend() = %q, want %q", Backend(), initial)
+	}
+	if simdKernels == nil {
+		assertKernels(t, "UseScalar(false) without SIMD", kernelsInUse(), scalarKernels)
+	}
 }
