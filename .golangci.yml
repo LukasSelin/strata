@@ -1,0 +1,43 @@
+# golangci-lint configuration (see DESIGN.md §39). Run it for both builds,
+# the default one and GOEXPERIMENT=simd, since the SIMD kernels are behind
+# a build tag and are otherwise never linted.
+#
+# golangci-lint must be built with this module's Go version, or it cannot
+# load the packages:
+#
+#	GOTOOLCHAIN=go1.27.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck and unused.
+  default: standard
+  enable:
+    - gosec
+    - errorlint # errors compared without errors.Is, %v instead of %w
+    - unconvert # redundant conversions, easy to leave behind in float32 code
+    - nolintlint # //nolint directives without a reason, or unused
+
+  settings:
+    staticcheck:
+      # Every check, including the style ones golangci-lint leaves out.
+      checks: ["all"]
+    gosec:
+      # G103 flags every use of unsafe and G404 every use of math/rand.
+      # Both are by design here: unsafe is confined to address comparisons
+      # (internal/overlap, algebra), the byte views of raw IO (engine) and
+      # Windows system calls (benchmarks), each reviewed; math/rand only
+      # builds test fixtures. Everything else accepted carries a #nosec
+      # comment with its reason.
+      excludes:
+        - G103
+        - G404
+
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Test fixtures build values from arbitrary bits on purpose, and
+      # read files the test itself created.
+      - path: _test\.go
+        linters:
+          - gosec

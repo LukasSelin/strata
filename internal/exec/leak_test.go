@@ -140,7 +140,7 @@ func TestNoLeaksOnFailure(t *testing.T) {
 			}, errBoom, nil},
 			{"ProcessN cancelled from a kernel", func() func() error {
 				ctx, cancel := context.WithCancel(context.Background())
-				k := countCalls{box, 5, new(atomic.Int64), cancel, nil, nil}
+				k := countCalls{box, 5, new(atomic.Int64), cancel}
 				return func() error { return exec.Process(ctx, out(), dem.r, k, engine.Options{Workers: workers}) }
 			}, context.Canceled, nil},
 			{"ProcessN cancelled while workers are mid-call", func() func() error {

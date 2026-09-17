@@ -19,10 +19,3 @@ func Bands(w, h, tileW, tileH int) [][4]int {
 	}
 	return out
 }
-
-// SetStoppedHook sets a function run right after a failed unit of work
-// stops the workers, and returns a function that removes it.
-func SetStoppedHook(f func()) (restore func()) {
-	stoppedHook = f
-	return func() { stoppedHook = nil }
-}

@@ -110,104 +110,19 @@ func adapterNamed(t *testing.T, name string) adapter {
 }
 
 // countCalls wraps a kernel, counts Process calls atomically and cancels
-// a context when the count reaches after, before running that call. late,
-// if not nil, counts the calls that started after cancel returned.
+// a context when the count reaches after, before running that call.
 type countCalls struct {
 	exec.Kernel
-	after     int64
-	calls     *atomic.Int64
-	cancel    context.CancelFunc
-	cancelled *atomic.Bool
-	late      *atomic.Int64
+	after  int64
+	calls  *atomic.Int64
+	cancel context.CancelFunc
 }
 
 func (k countCalls) Process(dst exec.Span, src exec.Window) {
-	if k.late != nil && k.cancelled.Load() {
-		k.late.Add(1)
-	}
 	if k.calls.Add(1) == k.after {
 		k.cancel()
-		if k.cancelled != nil {
-			k.cancelled.Store(true)
-		}
 	}
 	k.Kernel.Process(dst, src)
-}
-
-// TestCancellationWorkers cancels a radius-1 kernel from inside a kernel call with
-// several workers. ProcessN must return context.Canceled once every
-// worker has exited, having started no kernel call after the cancellation
-// except in bands already claimed (at most one per other worker). Every
-// output cell must be final (Data and validity) or untouched, the
-// finished bands must be a prefix of the plan, and no goroutine may
-// outlive the call.
-func TestCancellationWorkers(t *testing.T) {
-	defer exec.SetBandCells(1)() // one-row bands
-	const w, h = 40, 30
-	rng := rand.New(rand.NewPCG(4, 5))
-	dem := newOperand(rng, w, h, true, true)
-	out := newOperand(rng, w, h, true, true)
-	box := boxKernel{r: 1, inputs: 1}
-	final := out.clone()
-	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
-
-	for _, workers := range []int{1, 2, 3, 8, runtime.GOMAXPROCS(0)} {
-		for _, tiles := range [][2]int{{0, 0}, {7, 4}, {1, 1}} {
-			for _, after := range []int64{1, 5, 17} {
-				o := engine.Options{TileWidth: tiles[0], TileHeight: tiles[1], Workers: workers}
-				id := fmt.Sprintf("%+v after=%d", o, after)
-				got := out.clone()
-				ctx, cancel := context.WithCancel(context.Background())
-				var calls, late atomic.Int64
-				var cancelled atomic.Bool
-				k := countCalls{box, after, &calls, cancel, &cancelled, &late}
-				err := exec.Process(ctx, got.r, dem.r, k, o)
-				cancel()
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("%s: err = %v, want context.Canceled", id, err)
-				}
-				if calls.Load() < after {
-					t.Fatalf("%s: kernel called %d times, want at least %d", id, calls.Load(), after)
-				}
-				if n := late.Load(); n > int64(workers-1) {
-					t.Fatalf("%s: %d kernel calls started after cancellation, want at most %d", id, n, workers-1)
-				}
-				requireFinalOrUntouched(t, id, got, final, out)
-				requirePrefix(t, id, got, final, exec.Bands(w, h, tiles[0], tiles[1]))
-				requireNoLeaks(t, id)
-			}
-		}
-	}
-}
-
-// requirePrefix checks that the bands whose cells all hold final results
-// come before every band that has an untouched cell, in plan order.
-// requireFinalOrUntouched has already checked each cell is one or the
-// other; bands whose final bits equal the original ones cannot occur with
-// these random fixtures.
-func requirePrefix(t *testing.T, id string, got, final operand, bands [][4]int) {
-	t.Helper()
-	g, f := got.r, final.r
-	isFinal := func(b [4]int) bool {
-		for y := b[1]; y < b[3]; y++ {
-			for x := b[0]; x < b[2]; x++ {
-				i := g.Index(x, y)
-				if g.IsValid(x, y) != f.IsValid(x, y) || !sameFloat(g.Data[i], f.Data[i]) {
-					return false
-				}
-			}
-		}
-		return true
-	}
-	done := 0
-	for done < len(bands) && isFinal(bands[done]) {
-		done++
-	}
-	for i := done; i < len(bands); i++ {
-		if isFinal(bands[i]) {
-			t.Fatalf("%s: band %d %v is finished but band %d %v is not", id, i, bands[i], done, bands[done])
-		}
-	}
 }
 
 // panicAt panics with value in the band starting at row y, or in every

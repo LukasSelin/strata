@@ -198,7 +198,7 @@ func TestCancellation(t *testing.T) {
 			got := out.clone()
 			ctx, cancel := context.WithCancel(context.Background())
 			var calls atomic.Int64
-			k := countCalls{box, after, &calls, cancel, nil, nil}
+			k := countCalls{box, after, &calls, cancel}
 			err := exec.Process(ctx, got.r, dem.r, k, tiles)
 			cancel()
 			if !errors.Is(err, context.Canceled) {
@@ -224,7 +224,7 @@ func TestCancellation(t *testing.T) {
 		got := out.clone()
 		ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
 		var calls atomic.Int64
-		k := countCalls{box, -1, &calls, cancel, nil, nil}
+		k := countCalls{box, -1, &calls, cancel}
 		err := exec.Process(ctx, got.r, dem.r, k, engine.Options{Workers: workers})
 		cancel()
 		if !errors.Is(err, context.DeadlineExceeded) {

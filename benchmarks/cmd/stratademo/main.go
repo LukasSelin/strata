@@ -471,8 +471,8 @@ func sameFiles(a, b string) (bool, error) {
 				}
 			}
 		}
-		if ea == io.EOF || ea == io.ErrUnexpectedEOF {
-			return eb == ea, nil
+		if errors.Is(ea, io.EOF) || errors.Is(ea, io.ErrUnexpectedEOF) {
+			return errors.Is(eb, ea), nil
 		}
 		if ea != nil {
 			return false, ea

@@ -226,7 +226,7 @@ func TestClearBorder(t *testing.T) {
 		want := true
 		if j := i - off; j >= 0 && j < (h-1)*stride+w && j%stride < w {
 			x, y := j%stride, j/stride
-			want = !(x == 0 || y == 0 || x == w-1 || y == h-1)
+			want = x != 0 && y != 0 && x != w-1 && y != h-1
 		}
 		if set != want {
 			t.Fatalf("bit %d = %v, want %v", i, set, want)
