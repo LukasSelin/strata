@@ -11,6 +11,16 @@ import (
 	"strata/raster"
 )
 
+// TB is what a metamorphic test needs of the testing package: the part
+// of testing.TB its relations use, which rapid.T has too. A relation
+// written against it runs under a fuzz target and under rapid
+// (internal/rapidsource).
+type TB interface {
+	Helper()
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+}
+
 // Dihedral is one of the eight symmetries of the square grid, acting on a
 // raster as t(r)(x, y) = r(u, v): with (x0, y0) = (x, y) mirrored
 // horizontally by FlipX and vertically by FlipY in the result's

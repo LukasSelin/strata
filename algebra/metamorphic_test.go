@@ -17,7 +17,7 @@ import (
 // layouts, through the plain function, the Tiled one or the Chunked one
 // as decoded from d, and returns a compact copy of the result. The output
 // has a mask if extraMask is set or an input has one.
-func relApply(d *fuzzdata.Reader, name string, lo, hi float32, extraMask bool, inputs ...raster.Float32Raster) raster.Float32Raster {
+func relApply(d fuzzdata.Source, name string, lo, hi float32, extraMask bool, inputs ...raster.Float32Raster) raster.Float32Raster {
 	masked := extraMask
 	placed := make([]raster.Float32Raster, len(inputs))
 	for i, in := range inputs {
@@ -97,7 +97,7 @@ func constant(w, h int, v float32) raster.Float32Raster {
 
 // requireRelated fails unless got and want have the same validity in
 // every cell and related Data (by same) in every valid cell.
-func requireRelated(t *testing.T, id string, got, want raster.Float32Raster, same func(g, w float32) bool) {
+func requireRelated(t rastertest.TB, id string, got, want raster.Float32Raster, same func(g, w float32) bool) {
 	t.Helper()
 	for y := range want.Height {
 		for x := range want.Width {
@@ -128,77 +128,83 @@ func FuzzAlgebraRelations(f *testing.F) {
 		f.Add([]byte{byte(rel), 3, 64, 2, 0, 1, 2, 3})
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		d := fuzzdata.New(data)
-		rel, choice := d.IntN(9), d.IntN(4)
-		w, h := d.Range(1, 70), d.Range(1, 6)
-		extraMask := d.Bool()
-		operand := func() raster.Float32Raster {
-			r := raster.NewFloat32(w, h, make([]float32, w*h))
-			for i := range r.Data {
-				r.Data[i] = d.Float32()
-			}
-			if d.IntN(3) != 0 {
-				r.Valid = raster.NewMask(w * h)
-				for i := range r.Data {
-					raster.MaskSet(r.Valid, i, d.IntN(6) != 0)
-				}
-			}
-			return r
-		}
-		a, b, c := operand(), operand(), operand()
-		lo, hi := d.Float32(), d.Float32()
-		apply := func(name string, inputs ...raster.Float32Raster) raster.Float32Raster {
-			return relApply(d, name, lo, hi, extraMask, inputs...)
-		}
-		id := fmt.Sprintf("relation %d choice %d %d×%d", rel, choice, w, h)
-
-		switch rel {
-		case 0:
-			op := []string{"Add", "Mul", "Min", "Max"}[choice]
-			requireRelated(t, id+": "+op+" commutes", apply(op, b, a), apply(op, a, b), rastertest.SameFloat)
-		case 1:
-			op := []string{"Min", "Max"}[choice%2]
-			requireRelated(t, id+": "+op+" associates", apply(op, a, apply(op, b, c)), apply(op, apply(op, a, b), c), rastertest.SameFloat)
-		case 2:
-			requireRelated(t, id+": Sub(a, b) = -Sub(b, a)", negated(apply("Sub", b, a)), apply("Sub", a, b), rastertest.SameValue)
-		case 3:
-			requireRelated(t, id+": Min(a, b) = -Max(-a, -b)", negated(apply("Max", negated(a), negated(b))), apply("Min", a, b), rastertest.SameFloat)
-			requireRelated(t, id+": Max(a, b) = -Min(-a, -b)", negated(apply("Min", negated(a), negated(b))), apply("Max", a, b), rastertest.SameFloat)
-		case 4:
-			requireRelated(t, id+": Add(a, a) = Mul(a, 2)", apply("Mul", a, constant(w, h, 2)), apply("Add", a, a), rastertest.SameFloat)
-		case 5:
-			requireRelated(t, fmt.Sprintf("%s: Clamp(x, %v, %v) = Min(Max(x, lo), hi)", id, lo, hi),
-				apply("Min", apply("Max", a, constant(w, h, lo)), constant(w, h, hi)), apply("Clamp", a), rastertest.SameFloat)
-		case 6:
-			once := apply("Clamp", a)
-			requireRelated(t, fmt.Sprintf("%s: Clamp(Clamp(x, %v, %v)) = Clamp(x)", id, lo, hi), apply("Clamp", once), once, rastertest.SameFloat)
-		case 7:
-			op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
-			sa, sb := rastertest.Compact(a), rastertest.Compact(b)
-			rastertest.ScrambleInvalid(sa, d)
-			rastertest.ScrambleInvalid(sb, d)
-			requireRelated(t, id+": "+op+" with scrambled invalid cells", apply(op, sa, sb), apply(op, a, b), rastertest.SameFloat)
-		case 8:
-			op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
-			px, py := d.IntN(w), d.IntN(h)
-			holed := rastertest.Compact(a)
-			if holed.Valid == nil {
-				holed.Valid = raster.NewMask(w * h)
-				a = rastertest.Compact(holed) // the same cells, all valid
-			}
-			holed.SetValid(px, py, false)
-			before, after := apply(op, a, b), apply(op, holed, b)
-			for y := range h {
-				for x := range w {
-					want := before.IsValid(x, y) && (x != px || y != py)
-					if got := after.IsValid(x, y); got != want {
-						t.Fatalf("%s: %s with input cell (%d, %d) invalid: cell (%d, %d) valid = %v, want %v", id, op, px, py, x, y, got, want)
-					}
-					if want && !rastertest.SameFloat(after.Data[after.Index(x, y)], before.Data[before.Index(x, y)]) {
-						t.Fatalf("%s: %s with input cell (%d, %d) invalid: valid cell (%d, %d) changed", id, op, px, py, x, y)
-					}
-				}
-			}
-		}
+		algebraRelations(t, fuzzdata.New(data))
 	})
+}
+
+// algebraRelations decodes a relation and its operands from d and checks
+// that relation. FuzzAlgebraRelations drives it with a fuzz input,
+// TestAlgebraRelations with rapid.
+func algebraRelations(t rastertest.TB, d fuzzdata.Source) {
+	rel, choice := d.IntN(9), d.IntN(4)
+	w, h := d.Range(1, 70), d.Range(1, 6)
+	extraMask := d.Bool()
+	operand := func() raster.Float32Raster {
+		r := raster.NewFloat32(w, h, make([]float32, w*h))
+		for i := range r.Data {
+			r.Data[i] = d.Float32()
+		}
+		if d.IntN(3) != 0 {
+			r.Valid = raster.NewMask(w * h)
+			for i := range r.Data {
+				raster.MaskSet(r.Valid, i, d.IntN(6) != 0)
+			}
+		}
+		return r
+	}
+	a, b, c := operand(), operand(), operand()
+	lo, hi := d.Float32(), d.Float32()
+	apply := func(name string, inputs ...raster.Float32Raster) raster.Float32Raster {
+		return relApply(d, name, lo, hi, extraMask, inputs...)
+	}
+	id := fmt.Sprintf("relation %d choice %d %d×%d", rel, choice, w, h)
+
+	switch rel {
+	case 0:
+		op := []string{"Add", "Mul", "Min", "Max"}[choice]
+		requireRelated(t, id+": "+op+" commutes", apply(op, b, a), apply(op, a, b), rastertest.SameFloat)
+	case 1:
+		op := []string{"Min", "Max"}[choice%2]
+		requireRelated(t, id+": "+op+" associates", apply(op, a, apply(op, b, c)), apply(op, apply(op, a, b), c), rastertest.SameFloat)
+	case 2:
+		requireRelated(t, id+": Sub(a, b) = -Sub(b, a)", negated(apply("Sub", b, a)), apply("Sub", a, b), rastertest.SameValue)
+	case 3:
+		requireRelated(t, id+": Min(a, b) = -Max(-a, -b)", negated(apply("Max", negated(a), negated(b))), apply("Min", a, b), rastertest.SameFloat)
+		requireRelated(t, id+": Max(a, b) = -Min(-a, -b)", negated(apply("Min", negated(a), negated(b))), apply("Max", a, b), rastertest.SameFloat)
+	case 4:
+		requireRelated(t, id+": Add(a, a) = Mul(a, 2)", apply("Mul", a, constant(w, h, 2)), apply("Add", a, a), rastertest.SameFloat)
+	case 5:
+		requireRelated(t, fmt.Sprintf("%s: Clamp(x, %v, %v) = Min(Max(x, lo), hi)", id, lo, hi),
+			apply("Min", apply("Max", a, constant(w, h, lo)), constant(w, h, hi)), apply("Clamp", a), rastertest.SameFloat)
+	case 6:
+		once := apply("Clamp", a)
+		requireRelated(t, fmt.Sprintf("%s: Clamp(Clamp(x, %v, %v)) = Clamp(x)", id, lo, hi), apply("Clamp", once), once, rastertest.SameFloat)
+	case 7:
+		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
+		sa, sb := rastertest.Compact(a), rastertest.Compact(b)
+		rastertest.ScrambleInvalid(sa, d)
+		rastertest.ScrambleInvalid(sb, d)
+		requireRelated(t, id+": "+op+" with scrambled invalid cells", apply(op, sa, sb), apply(op, a, b), rastertest.SameFloat)
+	case 8:
+		op := []string{"Add", "Sub", "Mul", "Min", "Max", "Clamp"}[d.IntN(6)]
+		px, py := d.IntN(w), d.IntN(h)
+		holed := rastertest.Compact(a)
+		if holed.Valid == nil {
+			holed.Valid = raster.NewMask(w * h)
+			a = rastertest.Compact(holed) // the same cells, all valid
+		}
+		holed.SetValid(px, py, false)
+		before, after := apply(op, a, b), apply(op, holed, b)
+		for y := range h {
+			for x := range w {
+				want := before.IsValid(x, y) && (x != px || y != py)
+				if got := after.IsValid(x, y); got != want {
+					t.Fatalf("%s: %s with input cell (%d, %d) invalid: cell (%d, %d) valid = %v, want %v", id, op, px, py, x, y, got, want)
+				}
+				if want && !rastertest.SameFloat(after.Data[after.Index(x, y)], before.Data[before.Index(x, y)]) {
+					t.Fatalf("%s: %s with input cell (%d, %d) invalid: valid cell (%d, %d) changed", id, op, px, py, x, y)
+				}
+			}
+		}
+	}
 }

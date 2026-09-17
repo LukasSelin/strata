@@ -1815,19 +1815,24 @@ go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
-The same relations also run as property tests, under rapid, the other
-dependency: `TestTerrainRelations` drives the body of
-`FuzzTerrainRelations` with rapid's generators in place of a fuzz input.
-Both drivers go through `fuzzdata.Source`, an interface over the values
-a test builds operands from, so each relation has one implementation and
-two ways of searching for a case that breaks it:
-`internal/fuzzdata` decodes them from the bytes of a corpus entry, and
-`internal/rapidsource` draws each one from rapid, which shrinks a failing
-case draw by draw and prints what is left, along with a seed that reruns
-it. Fuzzing searches deeper, for as long as it is given; rapid runs with
-`go test`, needs no corpus, and says what broke rather than which bytes
-broke it. Swapping the two axis scales in `terrain/stencil.go`, which the
-range checks of `FuzzTerrain` cannot see, fails it within ten cases.
+Every metamorphic target also runs as a property test, under rapid, the
+other dependency: `TestTerrainRelations`, `TestAlgebraRelations` and
+`TestProcessRelations` drive the bodies of the three `Fuzz*Relations`
+targets with rapid's generators in place of a fuzz input. Both drivers go
+through `fuzzdata.Source`, an interface over the values a test builds its
+operands from, and report through `rastertest.TB`, the part of testing.TB
+the relations use and rapid.T also has, so each relation has one
+implementation and two ways of searching for a case that breaks it:
+`internal/fuzzdata` decodes the values from the bytes of a corpus entry,
+and `internal/rapidsource` draws each one from rapid, which shrinks a
+failing case draw by draw and prints what is left, along with a seed that
+reruns it. Fuzzing searches deeper, for as long as it is given; rapid runs
+with `go test`, needs no corpus, and says what broke rather than which
+bytes broke it. Three mutations show the difference: swapping the two axis
+scales in `terrain/stencil.go`, which the range checks of `FuzzTerrain`
+cannot see, fails within ten cases; a `Min` that answers the wrong operand
+for a NaN shrinks to a 1×1 raster; and eroding validity by one less than
+the radius shrinks to a 3×5 raster with one input and one output.
 
 The raw source and sink are tested over files that fail partway through
 a call. `internal/faultio` puts `testing/iotest`'s wrappers under the
