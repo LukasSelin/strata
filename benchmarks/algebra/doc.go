@@ -1,5 +1,5 @@
 // Package algebra is the algebra category of the project benchmark suite
-// (DESIGN.md §27, STRATA-10). It holds no code of its own: bench_test.go
+// (DESIGN.md §38, STRATA-10). It holds no code of its own: bench_test.go
 // times the six v0.1 operations of strata/algebra (Add, Sub, Mul, Min,
 // Max, Clamp) through their public API, over the benchmarks/internal/suite
 // matrix:
@@ -14,7 +14,7 @@
 //
 // The package-level micro-benchmarks in algebra/bench_test.go stay where
 // they are: they compare internal paths (whole raster, per row, strided).
-// This suite measures what a caller sees, at the §27 sizes and backends.
+// This suite measures what a caller sees, at the §38 sizes and backends.
 //
 // Fixtures hold only the operands an operation uses. At 16384² the
 // measured peak is 3.15 GiB of private memory for the two-input operations

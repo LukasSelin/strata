@@ -50,7 +50,7 @@ Why, in one paragraph: vectorized with `simd/archsimd`, the mask costs
 about the same as NaN on Add (+0–6% at 1024²) and 0–20% more on the 3×3
 slope. Sentinel costs 14–25% more on both. Only the mask has none of the
 correctness hazards below. It works unchanged for integer rasters, which
-have no NaN. It carries validity through fused pipelines (§20) as one
+have no NaN. It carries validity through fused pipelines (§29) as one
 cheap side pass, not per-op logic. NaN is the fastest option but not by
 enough to justify its hazards: it cannot tell missing apart from computed
 NaN, it silently fails to propagate through stencils that skip a cell and
@@ -224,7 +224,7 @@ A nil mask (no NoData) costs nothing.
   mask doesn't.** At 1024² Add is 0.18–0.19 ns/cell for NaN and mask, and
   0.22 for sentinel-blend (+18–25%). archsimd's `IfElse` lowers to a
   byte-wise `VPBLENDVB`. At 4096² all three are memory-bandwidth-bound
-  (§19) at 0.55–0.68 ns/cell. There the mask row's extra 0.12 is mostly
+  (§28) at 0.55–0.68 ns/cell. There the mask row's extra 0.12 is mostly
   the input-array placement effect described above; the AND pass itself
   is 16 k words (about 6 µs, 0.005 ns/cell at 1024²).
 - **For stencils the compare cost shows more.** Sentinel-blend slope
@@ -304,7 +304,7 @@ single-function kernels are exposed to the same failure.
   trap.
 - *Comparisons swallow NaN:* `slope > 0.5` is `false`, so NoData is
   classified "not steep". Thresholds, reclassification, `Select` and
-  `Compare` (§9 future ops) all need explicit NaN handling.
+  `Compare` (§16 future ops) all need explicit NaN handling.
 - *Integer rasters have no NaN* (uint8 land cover, int16 SRTM with
   `-32768`, uint16 counts). A NaN design needs a second mechanism for
   them anyway, and `int32(NaN)` on amd64 gives `-2147483648`, a
@@ -354,7 +354,7 @@ single-function kernels are exposed to the same failure.
 - **Skipping work:** a mask exposes sparsity cheaply. All-zero words
   (clustered voids, ocean) or all-zero tiles can skip compute, and nil
   marks all-valid tiles. NaN can't show that without scanning the data.
-- **Fusion (§20):** with a mask, the fused data kernel is the same
+- **Fusion (§29):** with a mask, the fused data kernel is the same
   branch-free arithmetic NaN would use (the easiest thing to generate
   and vectorize). Validity is a separate stream computed *once* for the
   whole chain: AND of the leaf masks for pointwise chains, independent

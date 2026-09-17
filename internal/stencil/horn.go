@@ -7,9 +7,9 @@
 // least n+2 cells, so dst[i] is centred on r1[i+1]. Kernels know nothing
 // about rasters, strides, masks or borders: callers slice rows out of
 // their data and handle edges. That keeps them wrappable by the Kernel
-// abstraction (DESIGN.md §15) and by tiled execution with halos (§16–17).
+// abstraction (DESIGN.md §22) and by tiled execution with halos (§23, §25).
 //
-// This file holds the scalar backend, which is canonical (DESIGN.md §5.3).
+// This file holds the scalar backend, which is canonical (DESIGN.md §15).
 // SIMD backends (simd_amd64.go, built with GOEXPERIMENT=simd) must agree
 // with it bit-for-bit, any NaN matching any NaN. To make that possible the
 // scalar code fixes its evaluation order and wraps every product in an

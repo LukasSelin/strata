@@ -1,6 +1,6 @@
 // Command stratabench turns `go test -bench` output from the benchmark
 // suite (benchmarks/internal/suite) into a Markdown summary in the terms
-// of DESIGN.md §31: million cells per second for the scalar and SIMD
+// of DESIGN.md §42: million cells per second for the scalar and SIMD
 // backends at each raster size, and the SIMD/scalar speedup.
 //
 //	GOEXPERIMENT=simd go test ./benchmarks/algebra -run '^$' -bench . -count 5 -timeout 2h > bench.txt
@@ -10,9 +10,9 @@
 // other tools. Every figure is the median over the -count runs, as
 // benchstat reports it.
 //
-// For each package it prints the machine configuration, a §31 headline for
+// For each package it prints the machine configuration, a §42 headline for
 // 4096 × 4096, and one table per operation. Under each table every mask
-// setting is classified by the workload classes of DESIGN.md §19, from the
+// setting is classified by the workload classes of DESIGN.md §28, from the
 // measured throughput of the SIMD backend (the scalar one if the build has
 // no SIMD):
 //
@@ -202,7 +202,7 @@ func orUnknown(s string) string {
 	return s
 }
 
-// renderHeadline prints the §31 block for one size, unmasked, one worker.
+// renderHeadline prints the §42 block for one size, unmasked, one worker.
 func renderHeadline(w io.Writer, res *results, pkg string, size int) {
 	var lines []string
 	for _, op := range res.ops[pkg] {
@@ -313,13 +313,13 @@ func renderOp(w io.Writer, res *results, pkg, op string) {
 	}
 }
 
-// Thresholds of the §19 classification; see the package comment.
+// Thresholds of the §28 classification; see the package comment.
 const (
 	holdFraction    = 0.80
 	speedupFraction = 2.0 / 3
 )
 
-// classify labels one operation and mask setting by §19 workload class.
+// classify labels one operation and mask setting by §28 workload class.
 func classify(res *results, pkg, op, mask string, sizes []int) string {
 	type point struct {
 		size                 int

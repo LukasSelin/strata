@@ -4,7 +4,7 @@ import "fmt"
 
 // CRS identifies a coordinate reference system. It is a placeholder: the
 // engine carries it along with a Grid but never interprets or transforms
-// it (DESIGN.md §30).
+// it (DESIGN.md §36, §41).
 type CRS struct {
 	// Code is an opaque identifier such as "EPSG:25833", or empty if
 	// unknown.

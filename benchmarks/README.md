@@ -1,19 +1,19 @@
 # Benchmarks
 
-This directory is the project benchmark suite (DESIGN.md §27, §31) and the
+This directory is the project benchmark suite (DESIGN.md §38, §42) and the
 spikes that informed the design.
 
 | path | what |
 |---|---|
 | `algebra/` | suite: `strata/algebra` Add, Sub, Mul, Min, Max, Clamp. Numbers in [`algebra/RESULTS.md`](algebra/RESULTS.md) |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
-| `cmd/stratabench/` | turns `go test -bench` output into the §31 summary |
+| `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole
 raster vs. per row vs. strided) and `internal/stencil/bench_test.go`, stay
 next to their code. They compare internal paths. The suite measures the
-public API at the §27 sizes and backends.
+public API at the §38 sizes and backends.
 
 ## Running
 
@@ -68,7 +68,7 @@ Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>
 
 | key | values |
 |---|---|
-| `size` | square raster side: 256, 1024, 4096, 16384 (§27) |
+| `size` | square raster side: 256, 1024, 4096, 16384 (§38) |
 | `mask` | `off`: no operand has a validity mask. `on`: every input has an independent mask with about 10% of cells invalid, and dst has one |
 | `backend` | `scalar` or `simd`, switched in one binary |
 | `workers` | only `1` for now. Multi-worker tiling needs the engine (STRATA-8/9) |
@@ -87,7 +87,7 @@ Every leaf reports:
 | metric | meaning |
 |---|---|
 | `ns/op` | one operation over the whole raster |
-| `Mcells/s` | million cells per second (§31's "M cells/sec") |
+| `Mcells/s` | million cells per second (§42's "M cells/sec") |
 | `ns/cell` | nanoseconds per cell, `1000 / Mcells/s` |
 | `GB/s` | memory the operation touches per second, in 10⁹ bytes: cells/s × bytes per cell over **all operands including dst**, 4 bytes per float32 raster plus ⅛ byte per validity mask. Add with masks touches 3 × 4.125 = 12.375 bytes per cell, Clamp without masks 2 × 4 = 8 |
 | `B/op`, `allocs/op` | from `b.ReportAllocs`. Must be 0 |
@@ -97,7 +97,7 @@ Every leaf reports:
 - **SIMD/scalar**: median SIMD M cells/s over median scalar M cells/s.
 - **Run-to-run spread**: (max − min)/median of M cells/s over the `-count`
   runs of each case.
-- **§19 class** for each operation and mask setting, from the measured
+- **§28 class** for each operation and mask setting, from the measured
   throughput. *Compute-bound*: SIMD throughput stays within 20% of the
   smallest size's at every size. Otherwise the first size below 80% is
   where it starts to be *memory-bandwidth-bound*, if the SIMD/scalar
@@ -109,7 +109,7 @@ Every leaf reports:
 ## Adding a category
 
 A category is a package `benchmarks/<name>` (terrain, convolution,
-resampling, nd, per §27) with a `doc.go` and a `bench_test.go` that uses
+remote_sensing, pointcloud, nd, per §38) with a `doc.go` and a `bench_test.go` that uses
 `internal/suite`:
 
 ```go
@@ -154,7 +154,7 @@ Rules:
 ### Workers
 
 When the engine lands (STRATA-8/9), `suite.Workers` returns 1, the
-physical core count and the logical CPU count (§27: SIMD + 1 worker, SIMD +
+physical core count and the logical CPU count (§38: SIMD + 1 worker, SIMD +
 physical cores, SIMD + logical cores). Workloads then read `c.Workers` and
 run through the engine. The benchmark names already carry `workers=N`, and
 `stratabench` adds a "SIMD + N workers" column for every N > 1 it finds.
