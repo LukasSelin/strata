@@ -19,3 +19,6 @@ vendor/
 *.swp
 .DS_Store
 Thumbs.db
+
+# rapid writes a failing property test's case here, to replay locally
+testdata/rapid/

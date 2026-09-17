@@ -1815,6 +1815,20 @@ go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
+The same relations also run as property tests, under rapid, the other
+dependency: `TestTerrainRelations` drives the body of
+`FuzzTerrainRelations` with rapid's generators in place of a fuzz input.
+Both drivers go through `fuzzdata.Source`, an interface over the values
+a test builds operands from, so each relation has one implementation and
+two ways of searching for a case that breaks it:
+`internal/fuzzdata` decodes them from the bytes of a corpus entry, and
+`internal/rapidsource` draws each one from rapid, which shrinks a failing
+case draw by draw and prints what is left, along with a seed that reruns
+it. Fuzzing searches deeper, for as long as it is given; rapid runs with
+`go test`, needs no corpus, and says what broke rather than which bytes
+broke it. Swapping the two axis scales in `terrain/stencil.go`, which the
+range checks of `FuzzTerrain` cannot see, fails it within ten cases.
+
 The raw source and sink are tested over files that fail partway through
 a call. `internal/faultio` puts `testing/iotest`'s wrappers under the
 `io.ReaderAt` and `io.WriterAt` they work through, and chooses by file
@@ -1834,8 +1848,8 @@ count, and now fails with `io.ErrShortWrite` instead of losing the rows
 silently.
 
 The tests of `internal/exec`, the only package that starts goroutines, and
-of `engine` fail if any test leaves a goroutine behind (goleak, the
-module's one dependency, used only by tests). `TestNoLeaksOnFailure` ends
+of `engine` fail if any test leaves a goroutine behind (goleak, one of
+the module's two dependencies, both test-only). `TestNoLeaksOnFailure` ends
 calls in every early way (kernel, source and sink panics, IO errors,
 cancellation while workers are mid-call) with several workers.
 
