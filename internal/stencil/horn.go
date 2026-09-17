@@ -116,14 +116,28 @@ func hornDY(z1, z2, z3, z7, z8, z9 float32) float32 {
 	return ((z7 + z9) + (z8 + z8)) - ((z1 + z3) + (z2 + z2))
 }
 
+// hornViews returns the eight views of the input rows that a 3×3 kernel
+// reads, one per cell of the window except the unused centre: vN[i] is
+// cell N of the window centred on dst[i]. Indexing every operand with
+// the loop variable alone is what lets the compiler drop the bounds
+// checks; it cannot prove r0[i+1] and r0[i+2] in bounds from a range
+// over a slice two cells shorter, and charged two checks per cell for
+// them (TestNoBoundsChecksInLoops, DESIGN.md §39). The eight reslices
+// here are checked once per row.
+func hornViews(n int, r0, r1, r2 []float32) (v1, v2, v3, v4, v6, v7, v8, v9 []float32) {
+	return r0[0:n], r0[1 : n+1], r0[2 : n+2],
+		r1[0:n], r1[2 : n+2],
+		r2[0:n], r2[1 : n+1], r2[2 : n+2]
+}
+
 func scalarHornGradientRow(dx, dy, r0, r1, r2 []float32, kx, ky float32) {
 	n := len(dx)
 	dy = dy[:n]
-	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	v1, v2, v3, v4, v6, v7, v8, v9 := hornViews(n, r0, r1, r2)
 	for i := range dx {
-		z1, z2, z3 := r0[i], r0[i+1], r0[i+2]
-		z4, z6 := r1[i], r1[i+2]
-		z7, z8, z9 := r2[i], r2[i+1], r2[i+2]
+		z1, z2, z3 := v1[i], v2[i], v3[i]
+		z4, z6 := v4[i], v6[i]
+		z7, z8, z9 := v7[i], v8[i], v9[i]
 		dx[i] = float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		dy[i] = float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
 	}
@@ -147,12 +161,11 @@ func scalarHornSlopeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan b
 }
 
 func scalarHornMagnitudeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32) {
-	n := len(dst)
-	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	v1, v2, v3, v4, v6, v7, v8, v9 := hornViews(len(dst), r0, r1, r2)
 	for i := range dst {
-		z1, z2, z3 := r0[i], r0[i+1], r0[i+2]
-		z4, z6 := r1[i], r1[i+2]
-		z7, z8, z9 := r2[i], r2[i+1], r2[i+2]
+		z1, z2, z3 := v1[i], v2[i], v3[i]
+		z4, z6 := v4[i], v6[i]
+		z7, z8, z9 := v7[i], v8[i], v9[i]
 		gx := float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		gy := float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
 		dst[i] = float32(float32(math.Sqrt(float64(float32(gx*gx)+float32(gy*gy)))) * scale)

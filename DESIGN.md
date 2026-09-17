@@ -1848,13 +1848,29 @@ then exact: with W workers a stop in round k leaves exactly W·(k+1) units
 claimed and finished, and none started after it, instead of the
 "at most W-1" bound these tests could assert before.
 
-`TestNoBoundsChecksInLoops` compiles internal/vec with the compiler's
-optimization log (`-json`) and fails if a bounds check survives inside a
-loop, in a kernel's own loop or in code inlined into one. A check per
-element costs as much as the arithmetic it guards; the kernels reslice
-their operands to the length of the slice they range over, which proves
-the indices in bounds. Checks outside loops run once per call and are
-allowed.
+`TestNoBoundsChecksInLoops`, in internal/vec and internal/stencil,
+compiles its package with the compiler's optimization log (`-json`,
+which reports every instance rather than one line per source position)
+and fails if a bounds check survives inside a tightest loop, one with no
+loop of its own, whose every iteration pays for it. The shared parsing
+is `internal/bcecheck`. A check per element costs as much as the
+arithmetic it guards: the vec kernels reslice their operands to the
+length of the slice they range over, and the stencil row kernels read
+their 3×3 window through the shifted views of `hornViews`, indexed with
+the loop variable alone, because the compiler cannot prove `r0[i+1]` and
+`r0[i+2]` in bounds from a range over a slice two cells shorter and
+charged two checks per cell for them. That is worth 2 to 7% on gradient
+and slope and 1.9% on the package's benchmark geomean. Checks outside
+loops, and in loops that contain a loop, run once per call, row or chunk
+and are allowed.
+
+Two checks stay, each because it was measured, not assumed:
+`scalarHornHillshadeRow` keeps its two per cell, since it holds the light
+vector as well as the gradient and the views spill registers there (6.4
+against 4.6 ns/cell for a 255-cell row, 33 to 56% slower across
+`BenchmarkRowWidth`); and stencil's mask.go works a word at a time, where
+a check costs a 64th as much and the word indices come from bit offsets a
+caller chose. The test names both, so removing one is a change to it.
 
 The module is clean under staticcheck with every check enabled, and under
 gosec, in both builds. Both tools must be built with this module's Go
