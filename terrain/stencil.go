@@ -98,7 +98,8 @@ func forInterior(dem raster.Float32Raster, outs []raster.Float32Raster, row func
 
 // finishBorder applies the edge and validity policy to one output: NaN in
 // the border, and either the eroded mask of dem or, for a dem without a
-// mask, cleared border bits.
+// mask, valid interior cells and cleared border bits (as in package
+// algebra, stale bits from earlier use of out do not survive).
 func finishBorder(out, dem raster.Float32Raster) {
 	fillBorder(out, float32(math.NaN()))
 	switch {
@@ -106,6 +107,9 @@ func finishBorder(out, dem raster.Float32Raster) {
 		stencil.Erode3x3(out.Valid, out.ValidOffset, out.Stride,
 			dem.Valid, dem.ValidOffset, dem.Stride, dem.Width, dem.Height)
 	case out.Valid != nil:
+		for y := range out.Height {
+			raster.MaskFillRange(out.Valid, out.ValidOffset+y*out.Stride, out.Width, true)
+		}
 		stencil.ClearBorder(out.Valid, out.ValidOffset, out.Stride, out.Width, out.Height)
 	}
 }

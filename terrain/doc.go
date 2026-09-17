@@ -41,8 +41,10 @@
 //
 // If the DEM has a mask, every output must have one too, or the call
 // panics; allocate outputs with raster.NewFloat32Like(dem). If the DEM
-// has no mask (all valid), no erosion is done and an output's mask is
-// left as it is except for its border bits, which are cleared.
+// has no mask (all valid), no erosion is done: an output without a mask
+// stays without one, and an output with a mask gets every interior cell
+// marked valid and its border cleared, so stale bits from earlier use do
+// not survive. This matches package algebra.
 //
 // # Errors
 //

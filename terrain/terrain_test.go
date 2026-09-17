@@ -336,18 +336,34 @@ func TestValidityMatchesNaive(t *testing.T) {
 
 func TestUnmaskedDEM(t *testing.T) {
 	dem := plane(6, 5, 1, 1, 1, 1)
-	// A masked output of an unmasked DEM keeps its interior bits and
-	// loses its border bits.
-	dst := raster.NewFloat32(6, 5, make([]float32, 30))
-	dst.Valid = raster.NewMask(30)
-	dst.SetValid(2, 2, false)
+	// A masked output of an unmasked DEM gets a valid interior and an
+	// invalid border, whatever its bits were before. It is a window with
+	// Stride > Width, so the parent's other cells and the row padding
+	// must keep their bits.
+	parent := raster.NewFloat32Stride(9, 7, 11, make([]float32, 6*11+9))
+	parent.Valid = raster.NewMask(len(parent.Data))
+	rng := rand.New(rand.NewPCG(11, 12))
+	for k := range parent.Valid {
+		parent.Valid[k] = rng.Uint64()
+	}
+	if r := uint(len(parent.Data) & 63); r != 0 {
+		parent.Valid[len(parent.Valid)-1] &= 1<<r - 1
+	}
+	before := append([]uint64(nil), parent.Valid...)
+	dst := parent.Window(2, 1, 6, 5)
 	Slope(dst, dem, SlopeOptions{CellSize: 1})
+	inWindow := make(map[int]bool)
 	for y := range 5 {
 		for x := range 6 {
-			want := !isBorder(dst, x, y) && !(x == 2 && y == 2)
-			if dst.IsValid(x, y) != want {
+			inWindow[dst.ValidOffset+dst.Index(x, y)] = true
+			if want := !isBorder(dst, x, y); dst.IsValid(x, y) != want {
 				t.Errorf("cell (%d, %d) valid=%v, want %v", x, y, dst.IsValid(x, y), want)
 			}
+		}
+	}
+	for i := range len(parent.Valid) * 64 {
+		if !inWindow[i] && raster.MaskGet(parent.Valid, i) != raster.MaskGet(before, i) {
+			t.Fatalf("bit %d outside dst changed", i)
 		}
 	}
 	// An unmasked output stays unmasked.
