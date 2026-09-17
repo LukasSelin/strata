@@ -1821,6 +1821,23 @@ module's one dependency, used only by tests). `TestNoLeaksOnFailure` ends
 calls in every early way (kernel, source and sink panics, IO errors,
 cancellation while workers are mid-call) with several workers.
 
+The cancellation tests run in `testing/synctest` bubbles, where time is
+virtual. A band or tile costs a tick (a kernel call or a read that
+sleeps) and the stop — a cancellation, a deadline, or a failing read or
+write — lands half a tick into a round, while every worker is asleep
+inside its unit of work. What the scheduler would otherwise decide is
+then exact: with W workers a stop in round k leaves exactly W·(k+1) units
+claimed and finished, and none started after it, instead of the
+"at most W-1" bound these tests could assert before.
+
+`TestNoBoundsChecksInLoops` compiles internal/vec with the compiler's
+optimization log (`-json`) and fails if a bounds check survives inside a
+loop, in a kernel's own loop or in code inlined into one. A check per
+element costs as much as the arithmetic it guards; the kernels reslice
+their operands to the length of the slice they range over, which proves
+the indices in bounds. Checks outside loops run once per call and are
+allowed.
+
 The module is clean under staticcheck with every check enabled, and under
 gosec, in both builds. Both tools must be built with this module's Go
 version, or they cannot read its packages:
@@ -1830,6 +1847,17 @@ GOTOOLCHAIN=go1.27.0 go install honnef.co/go/tools/cmd/staticcheck@latest
 GOTOOLCHAIN=go1.27.0 go install github.com/securego/gosec/v2/cmd/gosec@latest
 staticcheck -checks all ./...
 gosec -exclude=G103,G404 ./...
+```
+
+golangci-lint (`.golangci.yml`) runs the standard linters with
+staticcheck's full set, plus gosec, errorlint, unconvert and nolintlint.
+Like the tools above it must be built with this module's Go version, and
+is run for both builds:
+
+```text
+GOTOOLCHAIN=go1.27.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+golangci-lint run ./...
+GOEXPERIMENT=simd golangci-lint run ./...
 ```
 
 G103 (every use of unsafe) and G404 (math/rand) are excluded: unsafe is

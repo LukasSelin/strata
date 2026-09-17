@@ -298,23 +298,16 @@ func testChunkedBuffers(t *testing.T, dem operand, masked bool) {
 }
 
 // failingSource fails its nth read (counting from 1) with err, or panics
-// with err if panics is set. It counts the reads that start once
-// failedFrom is set.
+// with err if panics is set.
 type failingSource struct {
 	engine.RasterSource
 	n      int64
 	err    error
 	panics bool
 	reads  atomic.Int64
-	late   atomic.Int64
-	// failedFrom, if not nil, is set when the reads to count start.
-	failedFrom *atomic.Bool
 }
 
 func (s *failingSource) ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y int) error {
-	if s.failedFrom != nil && s.failedFrom.Load() {
-		s.late.Add(1)
-	}
 	if s.reads.Add(1) == s.n {
 		if s.panics {
 			panic(s.err)
@@ -416,59 +409,6 @@ func requireTiles(t *testing.T, id string, got, final, orig operand, tiles [][4]
 	return written
 }
 
-// TestChunkedCancellation cancels from inside a kernel call. The call must
-// return context.Canceled after every worker has stopped, start at most
-// Workers-1 tiles after the cancellation, and leave whole tiles: the
-// finished tiles are a prefix of the plan and every other tile is
-// untouched.
-func TestChunkedCancellation(t *testing.T) {
-	defer exec.SetBandCells(1)() // one kernel call per row
-	const w, h = 40, 30
-	rng := rand.New(rand.NewPCG(4, 5))
-	dem := newOperand(rng, w, h, true, true)
-	out := newOperand(rng, w, h, true, true)
-	box := boxKernel{r: 1, inputs: 1}
-	final := out.clone()
-	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
-
-	for _, workers := range []int{1, 2, 3, 8, runtime.GOMAXPROCS(0)} {
-		for _, tiles := range [][2]int{{0, 0}, {7, 4}, {1, 1}, {40, 3}} {
-			for _, after := range []int64{1, 5, 17} {
-				o := engine.Options{TileWidth: tiles[0], TileHeight: tiles[1], Workers: workers}
-				id := fmt.Sprintf("%+v after=%d", o, after)
-				got := out.clone()
-				ctx, cancel := context.WithCancel(context.Background())
-				var calls atomic.Int64
-				var cancelled atomic.Bool
-				k := countCalls{box, after, &calls, cancel, &cancelled, nil}
-				// The source counts the reads that start once cancel has
-				// returned.
-				src := &failingSource{RasterSource: engine.NewMemorySource(dem.r), n: math.MaxInt64, failedFrom: &cancelled}
-				err := exec.ProcessChunked(ctx, []engine.RasterSink{engine.NewMemorySink(got.r)},
-					[]engine.RasterSource{src}, k, o)
-				cancel()
-				plan := chunkTiles(w, h, orDim(tiles[0], w), orDim(tiles[1], h))
-				done := requireTiles(t, id, got, final, out, plan, 0, -1)
-				if int(src.reads.Load()) == len(plan) && err == nil {
-					// Cancelled during the last tiles, which all finished.
-					if done != len(plan) {
-						t.Fatalf("%s: nil error with %d of %d tiles written", id, done, len(plan))
-					}
-				} else if !errors.Is(err, context.Canceled) {
-					t.Fatalf("%s: err = %v, want context.Canceled", id, err)
-				}
-				if late := src.late.Load(); late > int64(workers-1) {
-					t.Fatalf("%s: %d tiles started after cancellation, want at most %d", id, late, workers-1)
-				}
-				if int64(done) != src.reads.Load() {
-					t.Fatalf("%s: %d tiles read but %d written", id, src.reads.Load(), done)
-				}
-				requireNoLeaks(t, id)
-			}
-		}
-	}
-}
-
 // TestChunkedContextDone checks that a context done before the call
 // reads and writes nothing.
 func TestChunkedContextDone(t *testing.T) {
@@ -486,66 +426,6 @@ func TestChunkedContextDone(t *testing.T) {
 			t.Fatalf("workers=%d: err = %v after %d reads, want context.Canceled and none", workers, err, src.reads.Load())
 		}
 		requireSameRoots(t, "untouched", got.root, out.root)
-	}
-}
-
-// TestChunkedIOErrors fails a source read or a sink write in one tile. The
-// call must return that error (wrapped), stop claiming tiles (at most
-// Workers-1 more start), and leave whole tiles as after a cancellation,
-// except the tile whose write failed.
-func TestChunkedIOErrors(t *testing.T) {
-	const w, h = 36, 28
-	rng := rand.New(rand.NewPCG(7, 8))
-	dem := newOperand(rng, w, h, true, true)
-	out := newOperand(rng, w, h, true, true)
-	final := out.clone()
-	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
-	errIO := errors.New("disk on fire")
-	for _, workers := range []int{1, 2, 5, runtime.GOMAXPROCS(0)} {
-		for _, tiles := range [][2]int{{6, 5}, {0, 4}, {1, 1}} {
-			tw, th := orDim(tiles[0], w), orDim(tiles[1], h)
-			plan := chunkTiles(w, h, tw, th)
-			for _, n := range []int64{1, 3, int64(len(plan))} {
-				for _, inSink := range []bool{false, true} {
-					o := engine.Options{TileWidth: tiles[0], TileHeight: tiles[1], Workers: workers}
-					id := fmt.Sprintf("%+v n=%d inSink=%v", o, n, inSink)
-					got := out.clone()
-					src := &failingSource{RasterSource: engine.NewMemorySource(dem.r), n: math.MaxInt64, err: errIO}
-					sink := &failingSink{RasterSink: engine.NewMemorySink(got.r), n: math.MaxInt64, err: errIO}
-					// Count the reads that start once the engine has stopped
-					// the workers.
-					var stopped atomic.Bool
-					src.failedFrom = &stopped
-					restore := exec.SetStoppedHook(func() { stopped.Store(true) })
-					if inSink {
-						sink.n = n
-					} else {
-						src.n = n
-					}
-					err := exec.ProcessChunked(context.Background(), []engine.RasterSink{sink},
-						[]engine.RasterSource{src}, boxKernel{r: 1, inputs: 1}, o)
-					restore()
-					if !errors.Is(err, errIO) {
-						t.Fatalf("%s: err = %v, want %v", id, err, errIO)
-					}
-					// Tiles start with their read. Each other worker may start
-					// the one tile it claimed before it saw the stop.
-					late := src.late.Load()
-					if late > int64(workers-1) {
-						t.Fatalf("%s: %d tiles started after the failure, want at most %d", id, late, workers-1)
-					}
-					holes, anyTile := 1, -1
-					if inSink {
-						holes, anyTile = 0, (sink.failY/th)*((w+tw-1)/tw)+sink.failX/tw
-					}
-					done := requireTiles(t, id, got, final, out, plan, holes, anyTile)
-					if done == len(plan) {
-						t.Fatalf("%s: every tile written although a read failed", id)
-					}
-					requireNoLeaks(t, id)
-				}
-			}
-		}
 	}
 }
 
@@ -605,6 +485,7 @@ func TestChunkedPanics(t *testing.T) {
 				engine.Options{TileWidth: 3, TileHeight: 3, Workers: workers})
 			return nil
 		}()
+		//nolint:errorlint // the panic value must be the source's own error, not one wrapping it
 		if got != errBoom {
 			t.Fatalf("workers=%d: recovered %v, want %v", workers, got, errBoom)
 		}
