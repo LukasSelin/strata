@@ -131,16 +131,22 @@ func (s *schedule) work(ctx context.Context, n, w int, do func(w, i int) error) 
 		}
 		if err := do(w, i); err != nil {
 			s.stop.Store(true)
+			if stoppedHook != nil {
+				stoppedHook()
+			}
 			s.mu.Lock()
 			if s.err == nil {
 				s.err = err
 			}
 			s.mu.Unlock()
-			s.stop.Store(true)
 			return
 		}
 	}
 }
+
+// stoppedHook, if not nil, runs right after a failed unit stops the
+// workers. It is for tests, which count the units started after it.
+var stoppedHook func()
 
 // maskLock serialises validity work between workers. Masks are processed
 // in words, and cells of different bands can share a word: side by side

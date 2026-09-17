@@ -298,29 +298,27 @@ func testChunkedBuffers(t *testing.T, dem operand, masked bool) {
 }
 
 // failingSource fails its nth read (counting from 1) with err, or panics
-// with err if panics is set. It counts the reads that start after the
-// failing one returns.
+// with err if panics is set. It counts the reads that start once
+// failedFrom is set.
 type failingSource struct {
 	engine.RasterSource
 	n      int64
 	err    error
 	panics bool
 	reads  atomic.Int64
-	failed atomic.Bool
 	late   atomic.Int64
-	// failedFrom, if set, also counts reads after that failure.
+	// failedFrom, if not nil, is set when the reads to count start.
 	failedFrom *atomic.Bool
 }
 
 func (s *failingSource) ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y int) error {
-	if s.failed.Load() || (s.failedFrom != nil && s.failedFrom.Load()) {
+	if s.failedFrom != nil && s.failedFrom.Load() {
 		s.late.Add(1)
 	}
 	if s.reads.Add(1) == s.n {
 		if s.panics {
 			panic(s.err)
 		}
-		s.failed.Store(true)
 		return s.err
 	}
 	return s.RasterSource.ReadWindow(ctx, dst, x, y)
@@ -333,7 +331,6 @@ type failingSink struct {
 	n            int64
 	err          error
 	writes       atomic.Int64
-	failed       atomic.Bool
 	failX, failY int // the failed write's position
 }
 
@@ -346,7 +343,6 @@ func (s *failingSink) WriteWindow(ctx context.Context, src raster.Float32Raster,
 				return err
 			}
 		}
-		s.failed.Store(true)
 		return s.err
 	}
 	return s.RasterSink.WriteWindow(ctx, src, x, y)
@@ -518,7 +514,11 @@ func TestChunkedIOErrors(t *testing.T) {
 					got := out.clone()
 					src := &failingSource{RasterSource: engine.NewMemorySource(dem.r), n: math.MaxInt64, err: errIO}
 					sink := &failingSink{RasterSink: engine.NewMemorySink(got.r), n: math.MaxInt64, err: errIO}
-					src.failedFrom = &sink.failed
+					// Count the reads that start once the engine has stopped
+					// the workers.
+					var stopped atomic.Bool
+					src.failedFrom = &stopped
+					restore := exec.SetStoppedHook(func() { stopped.Store(true) })
 					if inSink {
 						sink.n = n
 					} else {
@@ -526,11 +526,12 @@ func TestChunkedIOErrors(t *testing.T) {
 					}
 					err := exec.ProcessChunked(context.Background(), []engine.RasterSink{sink},
 						[]engine.RasterSource{src}, boxKernel{r: 1, inputs: 1}, o)
+					restore()
 					if !errors.Is(err, errIO) {
 						t.Fatalf("%s: err = %v, want %v", id, err, errIO)
 					}
-					// Tiles start with their read, so count reads after the
-					// failure in either case.
+					// Tiles start with their read. Each other worker may start
+					// the one tile it claimed before it saw the stop.
 					late := src.late.Load()
 					if late > int64(workers-1) {
 						t.Fatalf("%s: %d tiles started after the failure, want at most %d", id, late, workers-1)
