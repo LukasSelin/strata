@@ -200,6 +200,13 @@ gap versus the spike's NaN-only archsimd Clamp (567).
 - **Kernel-writing rules** for review:
   - write loops in BCE form: array-pointer loads over shrinking slices;
   - call `archsimd.ClearAVXUpperBits()` before scalar tails on amd64;
+  - between a lane loop's first 256-bit instruction and that call, emit no
+    legacy (non-VEX) SSE: no struct copies or zeroing of vectors (`MOVUPS`)
+    and no zero vectors from `Broadcast…(0)` (`XORPS`). Keep constant
+    vectors in package variables set in `init`. Each such instruction cost
+    about 65 ns on Zen 2, once per row (STRATA-9,
+    benchmarks/engine/RESULTS.md; `BenchmarkRowWidth` in internal/stencil
+    shows it as a per-call cost);
   - handle NaN explicitly with `IsNaN` / `IfElse`. `VMINPS`/`VMAXPS` return the
     second operand on NaN, and arm64 `FMIN` propagates it, so raw `Min`/`Max`
     semantics differ by arch;

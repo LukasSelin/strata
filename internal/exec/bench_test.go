@@ -15,20 +15,23 @@ import (
 
 // The benchmarks compare the tiled entry points with the plain functions on
 // whole compact rasters at 1024² and 4096², with and without masks (1% of
-// cells invalid):
+// cells invalid), all with one worker:
 //
-//   - direct:    algebra.Clamp or terrain.Slope;
-//   - engine:    the Tiled function with zero Options and a background context;
+//   - direct:    algebra.Clamp, terrain.Slope or terrain.Hillshade;
+//   - engine:    the Tiled function with Workers 1 and a background context;
 //   - cancel:    the same with a cancellable context;
-//   - tiles256:  the same in 256×256 tiles.
+//   - tiles256:  the same in 256×256 tiles;
+//   - strips256: the same in full-width tiles of 256 rows.
+//
+// Worker scaling is measured by the suite in benchmarks/terrain.
 //
 // terrain.Slope itself runs through the engine with zero Options, so for
 // Slope direct and engine differ only by the kernel construction per call;
 // compare against a build of the parent commit for the cost of the engine
 // over the old row loop.
 //
-//	go test ./engine -run '^$' -bench . -count 5
-//	GOEXPERIMENT=simd go test ./engine -run '^$' -bench . -count 5
+//	go test ./internal/exec -run '^$' -bench . -count 5
+//	GOEXPERIMENT=simd go test ./internal/exec -run '^$' -bench . -count 5
 
 func benchDEM(n int, masked bool) raster.Float32Raster {
 	rng := rand.New(rand.NewPCG(uint64(n), 1))
@@ -66,6 +69,14 @@ func BenchmarkSlope(b *testing.B) {
 		})
 }
 
+func BenchmarkHillshade(b *testing.B) {
+	opts := terrain.HillshadeOptions{CellSize: 10}
+	benchOp(b, func(dst, src raster.Float32Raster) { terrain.Hillshade(dst, src, opts) },
+		func(ctx context.Context, dst, src raster.Float32Raster, o engine.Options) error {
+			return terrain.HillshadeTiled(ctx, dst, src, opts, o)
+		})
+}
+
 func benchOp(b *testing.B, direct func(dst, src raster.Float32Raster), tiled func(ctx context.Context, dst, src raster.Float32Raster, o engine.Options) error) {
 	for _, n := range []int{1024, 4096} {
 		for _, masked := range []bool{false, true} {
@@ -78,10 +89,13 @@ func benchOp(b *testing.B, direct func(dst, src raster.Float32Raster), tiled fun
 				run  func()
 			}{
 				{"direct", func() { direct(dst, src) }},
-				{"engine", func() { _ = tiled(context.Background(), dst, src, engine.Options{}) }},
-				{"cancel", func() { _ = tiled(ctx, dst, src, engine.Options{}) }},
+				{"engine", func() { _ = tiled(context.Background(), dst, src, engine.Options{Workers: 1}) }},
+				{"cancel", func() { _ = tiled(ctx, dst, src, engine.Options{Workers: 1}) }},
 				{"tiles256", func() {
-					_ = tiled(context.Background(), dst, src, engine.Options{TileWidth: 256, TileHeight: 256})
+					_ = tiled(context.Background(), dst, src, engine.Options{TileWidth: 256, TileHeight: 256, Workers: 1})
+				}},
+				{"strips256", func() {
+					_ = tiled(context.Background(), dst, src, engine.Options{TileHeight: 256, Workers: 1})
 				}},
 			}
 			for _, p := range paths {

@@ -157,7 +157,7 @@ func TestAtan2x8MatchesAtan2F32(t *testing.T) {
 	for len(ys)%lane != 0 {
 		ys, xs = append(ys, 1), append(xs, 1)
 	}
-	c := newAtanConsts()
+	c := newLaneConsts()
 	got := make([]float32, lane)
 	for i := 0; i < len(ys); i += lane {
 		store8(atan2_8(load8(ys[i:]), load8(xs[i:]), &c), got)
@@ -194,7 +194,7 @@ func TestAtan8MatchesAtan32(t *testing.T) {
 	for len(xs)%lane != 0 {
 		xs = append(xs, 1)
 	}
-	c := newAtanConsts()
+	c := newLaneConsts()
 	got := make([]float32, lane)
 	for i := 0; i < len(xs); i += lane {
 		store8(atan8(load8(xs[i:]), &c), got)

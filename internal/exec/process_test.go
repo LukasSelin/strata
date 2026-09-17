@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,27 +176,11 @@ func TestSpanPosition(t *testing.T) {
 	}
 }
 
-// cancelAfter wraps a kernel, counts Process calls and cancels a context
-// when the count reaches after.
-type cancelAfter struct {
-	exec.Kernel
-	after  int
-	calls  *int
-	cancel context.CancelFunc
-}
-
-func (k cancelAfter) Process(dst exec.Span, src exec.Window) {
-	*k.calls++
-	k.Kernel.Process(dst, src)
-	if *k.calls == k.after {
-		k.cancel()
-	}
-}
-
-// TestCancellation cancels a radius-1 kernel after some bands. ProcessN must return
-// context.Canceled without calling the kernel again, the bands it
-// finished must hold final results (Data and validity), and every other
-// cell must be untouched.
+// TestCancellation cancels a radius-1 kernel after some bands with one
+// worker. ProcessN must return context.Canceled without calling the
+// kernel again, the bands it finished must hold final results (Data and
+// validity), and every other cell must be untouched.
+// TestCancellationWorkers covers several workers.
 func TestCancellation(t *testing.T) {
 	defer exec.SetBandCells(1)() // one-row bands
 	const w, h = 40, 30
@@ -207,47 +192,52 @@ func TestCancellation(t *testing.T) {
 	final := out.clone()
 	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
 
-	for _, tiles := range []engine.Options{{}, {TileWidth: 7, TileHeight: 4}} {
-		for _, after := range []int{1, 5, 17} {
+	for _, tiles := range []engine.Options{{Workers: 1}, {TileWidth: 7, TileHeight: 4, Workers: 1}} {
+		for _, after := range []int64{1, 5, 17} {
 			id := fmt.Sprintf("tiles=%+v after=%d", tiles, after)
 			got := out.clone()
 			ctx, cancel := context.WithCancel(context.Background())
-			calls := 0
-			k := cancelAfter{box, after, &calls, cancel}
+			var calls atomic.Int64
+			k := countCalls{box, after, &calls, cancel, nil, nil}
 			err := exec.Process(ctx, got.r, dem.r, k, tiles)
 			cancel()
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("%s: err = %v, want context.Canceled", id, err)
 			}
-			if calls != after {
-				t.Fatalf("%s: kernel called %d times, want %d", id, calls, after)
+			if calls.Load() != after {
+				t.Fatalf("%s: kernel called %d times, want %d", id, calls.Load(), after)
 			}
-			if tiles == (engine.Options{}) {
+			if tiles.TileWidth == 0 {
 				// One tile: bands are rows top-down. Row 0 is all edge (no
 				// kernel call), so after n calls rows 0..n are done.
-				requireRows(t, id, got, final, out, after+1)
+				requireRows(t, id, got, final, out, int(after)+1)
 				continue
 			}
 			requireFinalOrUntouched(t, id, got, final, out)
 		}
 	}
 
-	// A context that is already done writes nothing and calls nothing.
-	got := out.clone()
-	ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
-	defer cancel()
-	calls := 0
-	k := cancelAfter{box, -1, &calls, cancel}
-	if err := exec.Process(ctx, got.r, dem.r, k, engine.Options{}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expired context: err = %v", err)
-	}
-	if calls != 0 {
-		t.Fatalf("expired context: %d kernel calls", calls)
-	}
-	requireSameRoots(t, "expired context", got.root, out.root)
-	for i := range got.root.Data {
-		if math.Float32bits(got.root.Data[i]) != math.Float32bits(out.root.Data[i]) {
-			t.Fatalf("expired context: root cell %d changed", i)
+	// A context that is already done writes nothing and calls nothing,
+	// with any number of workers.
+	for _, workers := range []int{1, 4} {
+		id := fmt.Sprintf("expired context, workers=%d", workers)
+		got := out.clone()
+		ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
+		var calls atomic.Int64
+		k := countCalls{box, -1, &calls, cancel, nil, nil}
+		err := exec.Process(ctx, got.r, dem.r, k, engine.Options{Workers: workers})
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s: err = %v", id, err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("%s: %d kernel calls", id, calls.Load())
+		}
+		requireSameRoots(t, id, got.root, out.root)
+		for i := range got.root.Data {
+			if math.Float32bits(got.root.Data[i]) != math.Float32bits(out.root.Data[i]) {
+				t.Fatalf("%s: root cell %d changed", id, i)
+			}
 		}
 	}
 }
@@ -319,6 +309,10 @@ func requireOutsideUntouched(t *testing.T, id string, got, orig operand) {
 	}
 }
 
+// TestNoAllocsPerBand checks that a call's allocations do not depend on
+// the number of tiles or bands, and grow by at most two per worker.
+// testing.AllocsPerRun runs with GOMAXPROCS 1, so worker counts are
+// explicit.
 func TestNoAllocsPerBand(t *testing.T) {
 	const w, h = 64, 48
 	rng := rand.New(rand.NewPCG(9, 9))
@@ -329,9 +323,6 @@ func TestNoAllocsPerBand(t *testing.T) {
 	add := boxKernel{r: 0, inputs: 2}
 	box := boxKernel{r: 2, inputs: 2}
 	ctx := context.Background()
-	count := func(opts engine.Options, f func(engine.Options)) float64 {
-		return testing.AllocsPerRun(20, func() { f(opts) })
-	}
 	cases := map[string]func(engine.Options){
 		"radius 1": func(o engine.Options) { _ = exec.Process(ctx, dst.r, dem.r, slope, o) },
 		"radius 0": func(o engine.Options) {
@@ -341,13 +332,23 @@ func TestNoAllocsPerBand(t *testing.T) {
 			_ = exec.ProcessN(ctx, []raster.Float32Raster{dst.r}, []raster.Float32Raster{dem.r, two.r}, box, o)
 		},
 	}
+	count := func(bandCells int, opts engine.Options, f func(engine.Options)) float64 {
+		defer exec.SetBandCells(bandCells)()
+		return testing.AllocsPerRun(20, func() { f(opts) })
+	}
 	for name, f := range cases {
-		whole := count(engine.Options{}, f)
-		restore := exec.SetBandCells(1)
-		tiled := count(engine.Options{TileWidth: 3, TileHeight: 2}, f)
-		restore()
-		if tiled != whole {
-			t.Errorf("%s: %v allocs with one band, %v with %d one-row bands", name, whole, tiled, w*h/3)
+		serial := count(1<<16, engine.Options{Workers: 1}, f) // one band
+		for _, workers := range []int{1, 4} {
+			// 48 one-row bands, then 528 bands of 3×2 tiles.
+			rows := count(1, engine.Options{Workers: workers}, f)
+			tiled := count(1, engine.Options{TileWidth: 3, TileHeight: 2, Workers: workers}, f)
+			if tiled != rows {
+				t.Errorf("%s workers=%d: %v allocs with %d bands, %v with %d", name, workers, rows, h, tiled, w*h/3)
+			}
+			if limit := serial + float64(2*(workers-1)); rows > limit {
+				t.Errorf("%s workers=%d: %v allocs, want at most %v (%v with one worker and one band)",
+					name, workers, rows, limit, serial)
+			}
 		}
 	}
 }

@@ -27,6 +27,10 @@
 //
 // Without SIMD results a drop is reported as working-set-bound, since the
 // speedup is what tells cache from memory bandwidth.
+//
+// Packages whose benchmark names end in a tiles=<shape> level (the engine
+// category) get a different table per operation, with a row per size,
+// mask and tile shape and a column per worker count; see renderTiled.
 package main
 
 import (
@@ -73,24 +77,27 @@ type key struct {
 	mask    string // "off" or "on"
 	backend string // "scalar" or "simd"
 	workers int
+	tiles   string // "" without a tiles level
 }
 
 type results struct {
 	config  map[string]string // first value seen per key
 	pkgs    []string          // short package names in input order
 	ops     map[string][]string
+	tiled   map[string]bool              // packages with a tiles level
 	entries map[key]map[string][]float64 // unit -> one value per run
 }
 
 var (
 	configRE = regexp.MustCompile(`^([a-z][a-z0-9-]*):\s*(.*?)\s*$`)
-	benchRE  = regexp.MustCompile(`^Benchmark(\w+)/size=(\d+)/mask=(on|off)/backend=(\w+)/workers=(\d+)(?:-\d+)?$`)
+	benchRE  = regexp.MustCompile(`^Benchmark(\w+)/size=(\d+)/mask=(on|off)/backend=(\w+)/workers=(\d+)(?:/tiles=(\w+))?(?:-\d+)?$`)
 )
 
 func parse(r io.Reader) (*results, error) {
 	res := &results{
 		config:  map[string]string{},
 		ops:     map[string][]string{},
+		tiled:   map[string]bool{},
 		entries: map[key]map[string][]float64{},
 	}
 	pkg := ""
@@ -117,7 +124,7 @@ func parse(r io.Reader) (*results, error) {
 		}
 		size, _ := strconv.Atoi(m[2])
 		workers, _ := strconv.Atoi(m[5])
-		k := key{pkg, m[1], size, m[3], m[4], workers}
+		k := key{pkg, m[1], size, m[3], m[4], workers, m[6]}
 		units := res.entries[k]
 		if units == nil {
 			units = map[string][]float64{}
@@ -128,6 +135,7 @@ func parse(r io.Reader) (*results, error) {
 			if !slices.Contains(res.ops[pkg], k.op) {
 				res.ops[pkg] = append(res.ops[pkg], k.op)
 			}
+			res.tiled[pkg] = res.tiled[pkg] || k.tiles != ""
 		}
 		// fields: name iterations (value unit)...
 		for i := 2; i+1 < len(fields); i += 2 {
@@ -188,6 +196,10 @@ func render(w io.Writer, res *results) {
 
 	for _, pkg := range res.pkgs {
 		fmt.Fprintf(w, "\n## %s\n", pkg)
+		if res.tiled[pkg] {
+			renderTiled(w, res, pkg)
+			continue
+		}
 		renderHeadline(w, res, pkg, 4096)
 		for _, op := range res.ops[pkg] {
 			renderOp(w, res, pkg, op)
@@ -206,7 +218,7 @@ func orUnknown(s string) string {
 func renderHeadline(w io.Writer, res *results, pkg string, size int) {
 	var lines []string
 	for _, op := range res.ops[pkg] {
-		k := key{pkg, op, size, "off", "scalar", 1}
+		k := key{pkg, op, size, "off", "scalar", 1, ""}
 		scalar, okS := res.median(k, "Mcells/s")
 		k.backend = "simd"
 		simd, okV := res.median(k, "Mcells/s")
@@ -264,15 +276,15 @@ func renderOp(w io.Writer, res *results, pkg, op string) {
 	var spreads []float64
 	for _, mask := range []string{"off", "on"} {
 		for _, size := range sizes {
-			k := key{pkg, op, size, mask, "scalar", 1}
+			k := key{pkg, op, size, mask, "scalar", 1, ""}
 			if res.entries[k] == nil {
 				k.backend = "simd"
 				if res.entries[k] == nil {
 					continue
 				}
 			}
-			ks := key{pkg, op, size, mask, "scalar", 1}
-			kv := key{pkg, op, size, mask, "simd", 1}
+			ks := key{pkg, op, size, mask, "scalar", 1, ""}
+			kv := key{pkg, op, size, mask, "simd", 1, ""}
 			scalar, okS := res.median(ks, "Mcells/s")
 			simd, okV := res.median(kv, "Mcells/s")
 			speedup := "–"
@@ -282,7 +294,7 @@ func renderOp(w io.Writer, res *results, pkg, op string) {
 			fmt.Fprintf(w, "| %d × %d | %s | %s | %s | %s |", size, size, mask,
 				fmtRateOpt(scalar, okS), fmtRateOpt(simd, okV), speedup)
 			for _, n := range workerCounts {
-				v, ok := res.median(key{pkg, op, size, mask, "simd", n}, "Mcells/s")
+				v, ok := res.median(key{pkg, op, size, mask, "simd", n, ""}, "Mcells/s")
 				fmt.Fprintf(w, " %s |", fmtRateOpt(v, ok))
 			}
 			nsCell, okN := res.median(kv, "ns/cell")
@@ -307,7 +319,7 @@ func renderOp(w io.Writer, res *results, pkg, op string) {
 			100*median(spreads), 100*slices.Max(spreads))
 	}
 	for _, mask := range []string{"off", "on"} {
-		if note := classify(res, pkg, op, mask, sizes); note != "" {
+		if note := classify(res, pkg, op, mask, "", sizes); note != "" {
 			fmt.Fprintf(w, "- mask=%s: %s\n", mask, note)
 		}
 	}
@@ -319,8 +331,9 @@ const (
 	speedupFraction = 2.0 / 3
 )
 
-// classify labels one operation and mask setting by §28 workload class.
-func classify(res *results, pkg, op, mask string, sizes []int) string {
+// classify labels one operation, mask setting and tile shape by §28
+// workload class, from its one-worker results.
+func classify(res *results, pkg, op, mask, tiles string, sizes []int) string {
 	type point struct {
 		size                 int
 		scalar, simd, gbSIMD float64
@@ -329,8 +342,8 @@ func classify(res *results, pkg, op, mask string, sizes []int) string {
 	var pts []point
 	allSIMD := true
 	for _, size := range sizes {
-		ks := key{pkg, op, size, mask, "scalar", 1}
-		kv := key{pkg, op, size, mask, "simd", 1}
+		ks := key{pkg, op, size, mask, "scalar", 1, tiles}
+		kv := key{pkg, op, size, mask, "simd", 1, tiles}
 		scalar, okS := res.median(ks, "Mcells/s")
 		if !okS {
 			continue

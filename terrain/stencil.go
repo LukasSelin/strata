@@ -32,11 +32,13 @@ func cellSizes(cellSize, cellSizeY, zFactor float64) (kx, ky float32) {
 }
 
 // run executes k, a kernel with the DEM as its one input, over whole
-// rasters on the calling goroutine. The engine applies the checks, the
-// edge policy and the validity rules in the package documentation.
+// rasters with one worker, on the calling goroutine: the plain functions
+// start no goroutines (DESIGN.md §26), and callers who want workers use
+// the Tiled functions. The engine applies the checks, the edge policy and
+// the validity rules in the package documentation.
 func run(k exec.Kernel, dem raster.Float32Raster, outs ...raster.Float32Raster) {
 	// A background context is never done, so ProcessN cannot fail.
-	_ = runTiled(context.Background(), engine.Options{}, k, dem, outs...)
+	_ = runTiled(context.Background(), engine.Options{Workers: 1}, k, dem, outs...)
 }
 
 // runTiled is run with a context and engine options.

@@ -35,11 +35,12 @@
 // # Tiled execution
 //
 // SlopeTiled, AspectTiled, HillshadeTiled and GradientTiled run the same
-// operations in tiles with engine.Options and a context, and return
-// ctx.Err() if cancelled (see package engine). Cells on tile boundaries
-// read their neighbours from the DEM, so the result is bit-for-bit the
-// plain function's for every tiling. The plain functions run the same
-// kernels as one tile.
+// operations in tiles on engine.Options.Workers goroutines (by default
+// one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
+// (see package engine). Cells on tile boundaries read their neighbours
+// from the DEM, so the result is bit-for-bit the plain function's for
+// every tiling and worker count. The plain functions run the same kernels
+// as one tile with one worker, on the calling goroutine.
 //
 // # Validity
 //
