@@ -32,9 +32,9 @@ import (
 // gigabytes per operand set.
 var Sizes = []int{256, 1024, 4096, 16384}
 
-// MaxShortSize is the largest size run under -short. Larger sizes need
-// gigabytes of memory: three 16384² float32 operands with masks take
-// about 3.1 GB, so allow 4 GB.
+// MaxShortSize is the largest size run under -short. At 16384² each
+// float32 operand alone is 1 GiB, so larger sizes need gigabytes; each
+// category documents its measured peak.
 const MaxShortSize = 4096
 
 var sizesFlag = flag.String("strata.sizes", "",
@@ -117,7 +117,7 @@ func Run[F any](b *testing.B, m Matrix[F]) {
 	for _, size := range sizes(b) {
 		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
 			if testing.Short() && size > MaxShortSize {
-				b.Skipf("%d² needs about %.1f GB; skipped under -short", size, fixtureGB(size))
+				b.Skipf("%d² needs 1 GiB per float32 operand; skipped under -short", size)
 			}
 			f := m.Fixture(size)
 			defer release(size)
@@ -148,11 +148,6 @@ func Run[F any](b *testing.B, m Matrix[F]) {
 			}
 		})
 	}
-}
-
-// fixtureGB estimates three float32 operands with masks.
-func fixtureGB(size int) float64 {
-	return float64(size) * float64(size) * 3 * (4 + 1.0/8) / 1e9
 }
 
 // release returns a large fixture's memory to the OS once its size is

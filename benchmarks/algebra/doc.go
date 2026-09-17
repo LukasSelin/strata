@@ -16,7 +16,9 @@
 // they are: they compare internal paths (whole raster, per row, strided).
 // This suite measures what a caller sees, at the §27 sizes and backends.
 //
-// 16384² needs about 4 GB (three float32 operands of 1 GiB each plus
-// masks) and is skipped under -short. See benchmarks/README.md for how to
+// Fixtures hold only the operands an operation uses. At 16384² the
+// measured peak is 3.15 GiB of private memory for the two-input operations
+// (three 1 GiB float32 operands plus 32 MiB masks) and 2.12 GiB for Clamp,
+// so 16384² is skipped under -short. See benchmarks/README.md for how to
 // run it and RESULTS.md for numbers.
 package algebra
