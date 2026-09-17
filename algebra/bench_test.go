@@ -75,7 +75,7 @@ func BenchmarkAdd(b *testing.B) {
 					b.ResetTimer()
 					for b.Loop() {
 						if c.path == "rows" {
-							binaryApply("algebra.Add", dst, x, y, vec.Add, false)
+							binaryApply(dst, x, y, vec.Add, false)
 						} else {
 							Add(dst, x, y)
 						}
@@ -99,7 +99,7 @@ func BenchmarkClamp(b *testing.B) {
 					b.ResetTimer()
 					for b.Loop() {
 						if c.path == "rows" {
-							clamp("algebra.Clamp", dst, src, -50, 50, false)
+							clamp(dst, src, -50, 50, false)
 						} else {
 							Clamp(dst, src, -50, 50)
 						}
@@ -122,7 +122,7 @@ func BenchmarkAddNarrow(b *testing.B) {
 	for _, c := range benchCases[:2] {
 		b.Run(c.path, func(b *testing.B) {
 			for b.Loop() {
-				binaryApply("algebra.Add", dst, x, y, vec.Add, c.path == "whole")
+				binaryApply(dst, x, y, vec.Add, c.path == "whole")
 			}
 			reportCells(b, w*h)
 		})

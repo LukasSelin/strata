@@ -450,6 +450,10 @@ func TestPanics(t *testing.T) {
 	for _, o := range []SlopeOptions{
 		{}, {CellSize: -1}, {CellSize: math.NaN()}, {CellSize: math.Inf(1)},
 		{CellSize: 1, CellSizeY: -2}, {CellSize: 1, ZFactor: math.Inf(-1)}, {CellSize: 1, Units: 7},
+		// Scale factors that overflow or underflow float32: flat cells
+		// would be NaN (0·Inf), or every cell flat.
+		{CellSize: 1e-300}, {CellSize: 1e-40}, {CellSize: 1, ZFactor: 1e300}, {CellSize: 1, CellSizeY: 1e-40},
+		{CellSize: 1e300}, {CellSize: 1, ZFactor: 1e-50}, {CellSize: math.SmallestNonzeroFloat64},
 	} {
 		mustPanic(t, fmt.Sprintf("options %+v", o), func() { Slope(raster.NewFloat32Like(dem), dem, o) })
 	}
@@ -471,6 +475,8 @@ func TestPanics(t *testing.T) {
 	} {
 		mustPanic(t, fmt.Sprintf("hillshade options %+v", o), func() { Hillshade(raster.NewFloat32Like(dem), dem, o) })
 	}
+	// Tiny but representable scale factors are fine.
+	Slope(raster.NewFloat32Like(dem), dem, SlopeOptions{CellSize: 1e30, ZFactor: 1e-5})
 	// Azimuths outside [0, 360] are directions like any other.
 	Hillshade(raster.NewFloat32Like(dem), dem, HillshadeOptions{CellSize: 1, Azimuth: -45, Altitude: 90})
 

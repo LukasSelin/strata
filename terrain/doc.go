@@ -72,7 +72,9 @@
 // Like package raster, functions panic on programming errors: rasters
 // that fail Validate, mismatched dimensions, outputs whose Data overlaps
 // another raster's Data (the stencil reads neighbours of cells it has not
-// written yet), overlapping mask bits, and invalid options. The operand
+// written yet), overlapping mask bits, and invalid options, including
+// cell sizes and z-factors so far apart that ZFactor/(8·CellSize) or
+// ZFactor/(8·CellSizeY) overflows or underflows float32. The operand
 // checks are shared with the Tiled functions, and their panic messages
 // start with "engine:". The Tiled functions return an error only for
 // cancellation, and the Chunked functions also for errors of their

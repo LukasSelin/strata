@@ -1795,6 +1795,20 @@ For the engine, also test that tiled output equals the whole-raster call
 for every tile size (including tiles smaller than the halo) and every
 worker count (§23).
 
+Beyond the table-driven tests, every package that takes shapes, offsets,
+options or float bits from callers has native Go fuzz tests (`Fuzz*` in
+`fuzz_test.go`, decoding inputs through `internal/fuzzdata`). They check
+against exact references (math/big shapes, bit-at-a-time masks, brute-force
+overlap, naive kernels, the scalar backend) and that every rejection is a
+panic with the package's own message, raised before anything is written,
+never a runtime error. Their seed corpora run with `go test`; to fuzz one
+target, in both builds:
+
+```text
+go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
+GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
+```
+
 For point clouds also test:
 
 ```text

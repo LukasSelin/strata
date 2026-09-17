@@ -28,8 +28,18 @@ func cellSizes(cellSize, cellSizeY, zFactor float64) (kx, ky float32) {
 	if math.IsNaN(zFactor) || math.IsInf(zFactor, 0) {
 		panic(fmt.Sprintf("terrain: ZFactor must be finite, got %v", zFactor))
 	}
-	return stencil.HornScales(cellSize, cellSizeY, zFactor)
+	// The kernels multiply by these factors as float32. One that
+	// overflows to ±Inf turns a flat neighbourhood (0·Inf) into NaN, and
+	// one that underflows to 0 flattens every gradient.
+	kx, ky = stencil.HornScales(cellSize, cellSizeY, zFactor)
+	if !usableScale(kx) || !usableScale(ky) {
+		panic(fmt.Sprintf("terrain: ZFactor/(8·CellSize) and ZFactor/(8·CellSizeY) must be finite and non-zero as float32, "+
+			"got %v and %v for CellSize %v, CellSizeY %v and ZFactor %v", kx, ky, cellSize, cellSizeY, zFactor))
+	}
+	return kx, ky
 }
+
+func usableScale(k float32) bool { return k != 0 && !math.IsInf(float64(k), 0) }
 
 // run executes k, a kernel with the DEM as its one input, over whole
 // rasters with one worker, on the calling goroutine: the plain functions

@@ -147,20 +147,25 @@ func refPath(dir, op string, size int) string {
 }
 func outPath(dir string, size int) string { return filepath.Join(dir, fmt.Sprintf("out-%d.f32", size)) }
 
-// parseTiles resolves a tile shape for a size² raster.
+// parseTiles resolves a tile shape for a size² raster. Both dimensions
+// must be positive: 0 would divide by zero when counting tiles, and a
+// negative one is not an engine.Options value.
 func parseTiles(shape string, size int) (w, h int, err error) {
 	if rows, ok := strings.CutPrefix(shape, "strips"); ok {
+		w = size
 		h, err = strconv.Atoi(rows)
-		return size, h, err
-	}
-	ws, hs, ok := strings.Cut(shape, "x")
-	if !ok {
+	} else if ws, hs, ok := strings.Cut(shape, "x"); !ok {
 		return 0, 0, fmt.Errorf("bad tile shape %q", shape)
-	}
-	if w, err = strconv.Atoi(ws); err == nil {
+	} else if w, err = strconv.Atoi(ws); err == nil {
 		h, err = strconv.Atoi(hs)
 	}
-	return w, h, err
+	if err != nil {
+		return 0, 0, err
+	}
+	if w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("bad tile shape %q: dimensions must be positive", shape)
+	}
+	return w, h, nil
 }
 
 func ints(s string) ([]int, error) {
