@@ -1,9 +1,10 @@
-//go:build !amd64
+//go:build !(goexperiment.simd && amd64)
 
 package nodata
 
-// HaveAVX2 is false off amd64; the AVX2 variants fall back to the
-// equivalent scalar forms so the package still builds and tests pass.
+// HaveAVX2 is false without GOEXPERIMENT=simd on amd64. The AVX2 variants
+// fall back to the equivalent scalar forms so the package still builds
+// and tests pass; the benchmarks skip them.
 var HaveAVX2 = false
 
 func AddSentinelAVX2(dst, a, b []float32, nd float32) { AddSentinelSelect(dst, a, b, nd) }

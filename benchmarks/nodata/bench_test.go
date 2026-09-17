@@ -10,7 +10,10 @@ import (
 
 // Run the full matrix with, e.g.:
 //
-//	go test ./benchmarks/nodata -run '^$' -bench . -benchmem -count 6 -timeout 3h
+//	GOEXPERIMENT=simd go test ./benchmarks/nodata -run '^$' -bench . -benchmem -count 6 -timeout 3h
+//
+// Without GOEXPERIMENT=simd the AVX2 variants are skipped and the vec
+// variants call scalar internal/vec kernels.
 //
 // and turn the output into tables with ./benchmarks/nodata/cmd/nodatatable.
 // RESULTS.md describes how the published numbers were taken (one pinned

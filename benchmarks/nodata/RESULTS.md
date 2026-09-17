@@ -32,7 +32,7 @@ Rules that go with it:
    pointwise ops, and a 3×3 erosion for radius-1 stencils.
 2. **Fill values belong to the IO adapters.** GeoTIFF/Zarr readers turn
    `GDAL_NODATA`, `_FillValue`, `missing_value`, `"NaN"` and so on into
-   `Valid` on read (`MaskFromSentinel`, about 1.25 ns/cell scalar today).
+   `Valid` on read (`MaskFromSentinel`, about 1.35 ns/cell scalar today).
    Writers put the format's fill value back under cleared bits
    (`FillInvalid`). The fill value travels as metadata next to the
    raster, not inside it.
@@ -46,15 +46,15 @@ Rules that go with it:
    boundaries, and the mask pass skips the extract/deposit shifting
    (see "Caveats").
 
-Why, in one paragraph: vectorized, the mask costs the same as NaN on
-Add and 0–21% more on the 3×3 slope. Sentinel costs 25–35% more on the
-slope. Only the mask has none of the correctness hazards below. It works
-unchanged for integer rasters, which have no NaN. It carries validity
-through fused pipelines (§20) as one cheap side pass, not per-op logic.
-NaN is the fastest option but not by enough to justify its hazards: it
-cannot tell missing apart from computed NaN, it silently fails to
-propagate through stencils that skip a cell and through comparisons,
-and it does not exist for `uint8`/`int16` sources.
+Why, in one paragraph: vectorized with `simd/archsimd`, the mask costs
+about the same as NaN on Add (+0–6% at 1024²) and 0–20% more on the 3×3
+slope. Sentinel costs 14–25% more on both. Only the mask has none of the
+correctness hazards below. It works unchanged for integer rasters, which
+have no NaN. It carries validity through fused pipelines (§20) as one
+cheap side pass, not per-op logic. NaN is the fastest option but not by
+enough to justify its hazards: it cannot tell missing apart from computed
+NaN, it silently fails to propagate through stencils that skip a cell and
+through comparisons, and it does not exist for `uint8`/`int16` sources.
 
 ## Machine and method
 
@@ -63,20 +63,25 @@ and it does not exist for `uint8`/`int16` sources.
 | CPU | AMD Ryzen 9 3900X, 12C/24T, Zen 2, AVX2 (no AVX-512) |
 | Memory | 64 GB DDR4-3200 |
 | OS | Windows 11 Home 10.0.22631, power plan "AMD Ryzen High Performance" |
-| Go | go1.25.3 windows/amd64, `GOAMD64=v1` |
-| Run | `go test -c`, then `nodata.test.exe -test.run '^$' -test.bench . -test.benchmem -test.count 6`, pinned to one logical CPU (affinity `0x10`), `GOMAXPROCS=1`, High priority |
+| Go | go1.27.0 windows/amd64, `GOAMD64=v1`, **`GOEXPERIMENT=simd`** |
+| SIMD | `simd/archsimd` (ADR 0001): `internal/vec` for Add, `simd_amd64.go` in this package for the rest. No assembly. |
+| Run | `GOEXPERIMENT=simd go test -c`, then `nodata.test.exe -test.run '^$' -test.bench . -test.benchmem -test.count 6`, pinned to one logical CPU (affinity `0x10`), `GOMAXPROCS=1`, High priority |
 | Stats | median of 6 runs, each ≥1 s (`b.Loop`) |
 
 To reproduce the tables:
 
 ```
-go test ./benchmarks/nodata -run '^$' -bench . -benchmem -count 6 -timeout 3h > bench.txt
+GOEXPERIMENT=simd go test ./benchmarks/nodata -run '^$' -bench . -benchmem -count 6 -timeout 3h > bench.txt
 go run ./benchmarks/nodata/cmd/nodatatable < bench.txt
 ```
 
-This was a desktop with other applications open. Most cells vary 2–8%
-between runs, with a few outliers noted below. Differences under about
-10% should not be read as real.
+Without `GOEXPERIMENT=simd` the `*-avx2*` variants are skipped, and the
+`*-vec*` variants run the scalar `internal/vec` kernels. Numbers from
+such a build are not comparable with these.
+
+This was a desktop with other applications open. Most cells vary 1–4%
+between runs, with a few outliers up to 23%. Differences under about 10%
+should not be read as real.
 
 Workload details:
 
@@ -90,9 +95,7 @@ Workload details:
   at both raster sizes).
 - The **mask** variants read the same `-9999`-filled data arrays as the
   sentinel variants, as if the reader left the fill value in place.
-- Go's gc compiler does not auto-vectorize, so "scalar" really is
-  scalar. The vectorized forms use `internal/vec` (AVX2) for Add and a
-  fused AVX2 Horn kernel written for this spike (`avx2_amd64.s`).
+- Go's gc compiler does not auto-vectorize, so "scalar" really is scalar.
 
 Variant names:
 
@@ -101,7 +104,7 @@ Variant names:
 | `scalar-branchy` | the obvious per-cell `if` |
 | `scalar-select` | compute unconditionally, OR the compare flags, then one select |
 | `vec+fixup` | `vec.Add`, then a scalar pass rewriting NoData cells |
-| `avx2-blend` | compute + `VCMPPS` against the sentinel + `VBLENDVPS`, 8 lanes |
+| `avx2-blend` | compute + `Equal` against the sentinel, `Or` the masks, `IfElse` blend, 8 lanes |
 | `nan-*` | plain arithmetic. For slope it includes a `z5·0` term, see Hazards |
 | `mask-scalar` / `mask-vec` / `mask-avx2` | plain arithmetic + word-level mask pass |
 | `mask-*+fill` | additionally writes a fill value under invalid cells (export cost) |
@@ -117,64 +120,62 @@ Cells show median **ns/cell (million cells/s)**. B/op and allocs/op are 0 in eve
 
 | variant | 0% | 1% scattered | 30% scattered | 30% clustered |
 |---|---:|---:|---:|---:|
-| sentinel-scalar-branchy | 1.07 (939) | 1.19 (844) | 5.05 (198) | 1.38 (723) |
-| sentinel-scalar-select | 1.83 (547) | 2.02 (496) | 6.94 (144) | 1.99 (503) |
-| sentinel-vec+fixup | 0.931 (1074) | 1.16 (859) | 5.39 (186) | 1.18 (847) |
-| sentinel-avx2-blend | 0.134 (7443) | 0.146 (6861) | 0.136 (7348) | 0.135 (7391) |
-| nan-scalar | 0.327 (3057) | 0.304 (3290) | 0.294 (3404) | 0.295 (3386) |
-| nan-vec | 0.145 (6897) | 0.133 (7539) | 0.137 (7313) | 0.138 (7246) |
-| mask-scalar | 0.597 (1674) | 0.525 (1906) | 0.555 (1803) | 0.514 (1945) |
-| mask-vec | 0.148 (6773) | 0.154 (6491) | 0.243 (4123)¹ | 0.133 (7513) |
-| mask-vec+fill | 0.160 (6244) | 0.281 (3553) | 1.28 (780) | 0.826 (1210) |
-
-¹ This is the run's worst spread (75% between runs). The mask pass here
-is 16 k ANDed words, measured separately at about 5.7 µs (0.005
-ns/cell), so this cell is noise.
+| sentinel-scalar-branchy | 0.985 (1015) | 1.15 (870) | 4.99 (200) | 1.07 (938) |
+| sentinel-scalar-select | 1.76 (569) | 1.99 (503) | 6.99 (143) | 1.88 (532) |
+| sentinel-vec+fixup | 0.929 (1076) | 1.11 (903) | 5.09 (197) | 1.21 (825) |
+| sentinel-avx2-blend | 0.223 (4477) | 0.223 (4482) | 0.222 (4498) | 0.231 (4328) |
+| nan-scalar | 0.495 (2018) | 0.499 (2003) | 0.496 (2015) | 0.524 (1909) |
+| nan-vec | 0.189 (5297) | 0.179 (5585) | 0.179 (5587) | 0.187 (5352) |
+| mask-scalar | 0.514 (1945) | 0.503 (1987) | 0.506 (1978) | 0.509 (1966) |
+| mask-vec | 0.190 (5258) | 0.188 (5319) | 0.187 (5339) | 0.190 (5271) |
+| mask-vec+fill | 0.195 (5116) | 0.308 (3248) | 0.948 (1054) | 0.877 (1140) |
 
 ### Add, 4096×4096 (memory-bandwidth-bound: 192 MiB working set)
 
 | variant | 0% | 1% scattered | 30% scattered | 30% clustered |
 |---|---:|---:|---:|---:|
-| sentinel-scalar-branchy | 1.34 (746) | 1.48 (676) | 5.63 (178) | 1.45 (689) |
-| sentinel-scalar-select | 1.92 (522) | 2.17 (461) | 7.72 (130) | 2.05 (487) |
-| sentinel-vec+fixup | 1.34 (745) | 1.73 (578) | 5.73 (175) | 2.04 (490) |
-| sentinel-avx2-blend | 0.572 (1747) | 0.556 (1798) | 0.585 (1711) | 0.601 (1663) |
-| nan-scalar | 0.578 (1730) | 0.580 (1723) | 0.599 (1670) | 0.640 (1561) |
-| nan-vec | 0.542 (1844) | 0.569 (1758) | 0.546 (1833) | 0.579 (1726) |
-| mask-scalar | 0.808 (1237) | 0.826 (1210) | 0.814 (1228) | 0.906 (1104) |
-| mask-vec | 0.567 (1765) | 0.571 (1752) | 0.585 (1709) | 0.635 (1574) |
-| mask-vec+fill | 0.586 (1707) | 0.794 (1260) | 1.34 (745) | 1.42 (704) |
+| sentinel-scalar-branchy | 1.31 (761) | 1.49 (670) | 5.57 (180) | 1.37 (728) |
+| sentinel-scalar-select | 1.91 (525) | 2.15 (465) | 7.75 (129) | 1.98 (506) |
+| sentinel-vec+fixup | 1.44 (696) | 1.85 (539) | 5.77 (173) | 2.05 (488) |
+| sentinel-avx2-blend | 0.646 (1547) | 0.661 (1513) | 0.650 (1538) | 0.654 (1529) |
+| nan-scalar | 0.626 (1598) | 0.631 (1586) | 0.630 (1587) | 0.619 (1617) |
+| nan-vec | 0.550 (1818) | 0.547 (1828) | 0.549 (1821) | 0.545 (1834) |
+| mask-scalar | 0.799 (1252) | 0.804 (1243) | 0.806 (1241) | 0.810 (1234) |
+| mask-vec | 0.677 (1476) | 0.665 (1503) | 0.665 (1504) | 0.667 (1499) |
+| mask-vec+fill | 0.674 (1484) | 0.884 (1131) | 1.43 (702) | 1.43 (701) |
 
 ### Slope (3×3 Horn), 1024×1024
 
 | variant | 0% | 1% scattered | 30% scattered | 30% clustered |
 |---|---:|---:|---:|---:|
-| sentinel-scalar-branchy | 4.54 (221) | 4.56 (219) | 6.52 (153) | 3.63 (275) |
-| sentinel-scalar-select | 7.69 (130) | 8.09 (124) | 8.26 (121) | 7.75 (129) |
-| sentinel-avx2-blend | 0.601 (1665) | 0.589 (1699) | 0.586 (1707) | 0.575 (1738) |
-| nan-scalar | 3.59 (278) | 3.02 (331) | 3.13 (320) | 2.99 (335) |
-| nan-avx2 | 0.450 (2224) | 0.428 (2338) | 0.429 (2330) | 0.420 (2382) |
-| mask-scalar-branchy | 9.83 (102) | 9.82 (102) | 6.90 (145) | 8.79 (114) |
-| mask-scalar | 2.71 (369) | 2.71 (369) | 2.72 (368) | 2.69 (372) |
-| mask-avx2 | 0.454 (2202) | 0.452 (2215) | 0.452 (2212) | 0.448 (2230) |
-| mask-avx2+fill | 0.471 (2125) | 0.671 (1491) | 1.66 (601) | 0.896 (1116) |
+| sentinel-scalar-branchy | 5.96 (168) | 5.95 (168) | 6.86 (146) | 4.62 (216) |
+| sentinel-scalar-select | 7.40 (135) | 7.90 (127) | 8.25 (121) | 7.50 (133) |
+| sentinel-avx2-blend | 0.594 (1683) | 0.601 (1665) | 0.599 (1670) | 0.595 (1681) |
+| nan-scalar | 3.30 (303) | 2.95 (339) | 2.95 (340) | 2.95 (339) |
+| nan-avx2 | 0.522 (1915) | 0.482 (2075) | 0.482 (2074) | 0.483 (2069) |
+| mask-scalar-branchy | 9.34 (107) | 9.26 (108) | 6.53 (153) | 8.36 (120) |
+| mask-scalar | 2.68 (373) | 2.68 (373) | 2.68 (373) | 2.69 (372) |
+| mask-avx2 | 0.526 (1902) | 0.525 (1906) | 0.527 (1897) | 0.524 (1908) |
+| mask-avx2+fill | 0.543 (1843) | 0.775 (1291) | 1.68 (597) | 0.955 (1048) |
 
 ### Slope (3×3 Horn), 4096×4096
 
 | variant | 0% | 1% scattered | 30% scattered | 30% clustered |
 |---|---:|---:|---:|---:|
-| sentinel-scalar-branchy | 5.33 (188) | 5.08 (197) | 6.55 (153) | 4.05 (247) |
-| sentinel-scalar-select | 7.70 (130) | 8.13 (123) | 8.15 (123) | 7.61 (131) |
-| sentinel-avx2-blend | 0.674 (1484) | 0.659 (1517) | 0.661 (1513) | 0.648 (1543) |
-| nan-scalar | 3.03 (330) | 3.01 (332) | 3.00 (333) | 3.00 (334) |
-| nan-avx2 | 0.530 (1888) | 0.526 (1901) | 0.533 (1877) | 0.534 (1873) |
-| mask-scalar-branchy | 10.6 (94.7) | 10.4 (96.4) | 7.13 (140) | 9.32 (107) |
-| mask-scalar | 3.48 (287) | 3.44 (291) | 3.49 (286) | 3.46 (289) |
-| mask-avx2 | 0.654 (1529) | 0.632 (1582) | 0.639 (1566) | 0.642 (1558) |
-| mask-avx2+fill | 0.661 (1514) | 0.982 (1019) | 1.85 (540) | 1.18 (846) |
+| sentinel-scalar-branchy | 6.04 (166) | 6.05 (165) | 6.87 (145) | 4.70 (213) |
+| sentinel-scalar-select | 7.47 (134) | 7.97 (125) | 8.07 (124) | 7.60 (132) |
+| sentinel-avx2-blend | 0.655 (1528) | 0.659 (1518) | 0.661 (1512) | 0.657 (1522) |
+| nan-scalar | 2.93 (341) | 2.97 (337) | 2.93 (341) | 2.96 (337) |
+| nan-avx2 | 0.562 (1780) | 0.563 (1775) | 0.555 (1803) | 0.559 (1790) |
+| mask-scalar-branchy | 10.0 (100) | 9.88 (101) | 6.88 (145) | 8.88 (113) |
+| mask-scalar | 3.58 (279) | 3.56 (281) | 3.59 (278) | 3.59 (279) |
+| mask-avx2 | 0.652 (1534) | 0.641 (1559) | 0.666 (1502) | 0.643 (1555) |
+| mask-avx2+fill | 0.679 (1472) | 0.990 (1010) | 1.87 (534) | 1.20 (833) |
 
-**Breaking down the 4096² slope gap** (follow-up probe, 30% clustered,
-same pinning, 3 runs):
+**Where the 4096² mask gap comes from.** A follow-up probe was run on
+the earlier Go 1.25 build. That build used hand-written AVX2 kernels
+with the same instructions, and the mask pass was the same scalar Go.
+It separated two effects (30% clustered, ns/cell):
 
 | measurement | 1024² | 4096² |
 |---|---:|---:|
@@ -184,25 +185,26 @@ same pinning, 3 runs):
 | AVX2 rows with `z5·0` centre term, on the `-9999` array | 0.409 | 0.591 |
 | AVX2 rows with `z5·0` centre term, on the NaN array | 0.427 | 0.529 |
 
-At 4096² the *same kernel* runs about 11% slower over the `-9999` input
+At 4096² the *same kernel* ran about 11% slower over the `-9999` input
 array than over the NaN one. That comes from where the array landed in
 memory (TLB/prefetch behaviour of that allocation), not from the values.
-At 1024² the order is reversed. So about half of the mask-vs-NaN slope
-gap at 4096² is an artifact of this setup. The part that belongs to the
-representation is the mask pass (0.07 ns/cell), partly offset by the
-mask not needing NaN's centre term (0.02–0.05 ns/cell).
+The mask variants read that array, and the same gap appears in the
+4096² mask-vec Add row above. So roughly half of mask's 4096² gap is an
+artifact of this setup. The part that belongs to the representation is
+the mask pass (about 0.07 ns/cell), partly offset by the mask not
+needing NaN's centre term (0.02–0.05 ns/cell).
 
 ### Ingest (fill value → in-memory representation, scalar)
 
 | variant | size | 0% | 1% scattered | 30% scattered | 30% clustered |
 |---|---|---:|---:|---:|---:|
-| to-nan | 1024² | 0.481 (2081) | 0.607 (1648) | 2.94 (340) | 0.604 (1655) |
-| to-mask | 1024² | 1.23 (815) | 1.22 (817) | 1.22 (819) | 1.22 (818) |
-| to-nan | 4096² | 0.726 (1377) | 0.874 (1144) | 3.64 (275) | 0.887 (1127) |
-| to-mask | 4096² | 1.26 (796) | 1.28 (779) | 1.28 (781) | 1.27 (788) |
+| to-nan | 1024² | 0.485 (2060) | 0.610 (1639) | 3.05 (328) | 0.613 (1632) |
+| to-mask | 1024² | 1.35 (742) | 1.35 (740) | 1.35 (742) | 1.34 (744) |
+| to-nan | 4096² | 0.778 (1286) | 0.851 (1176) | 3.74 (267) | 0.858 (1165) |
+| to-mask | 4096² | 1.38 (726) | 1.38 (725) | 1.38 (726) | 1.38 (725) |
 
 `to-mask` is branch-free scalar Go, so its cost does not depend on the
-data. It is an obvious 8-lane `VCMPPS`+`VMOVMSKPS` target when IO
+data. It is an obvious 8-lane `Equal` + `ToBits` target when IO
 throughput matters. `to-nan` branches.
 
 ### Memory overhead
@@ -218,31 +220,57 @@ A nil mask (no NoData) costs nothing.
 
 ## What the numbers say
 
-- **Vectorized, representation barely matters for pointwise ops.** Add
-  runs at about 0.14 ns/cell at 1024² and about 0.55–0.6 ns/cell at
-  4096² for sentinel-blend, NaN and mask alike. At 4096² all three are
-  memory-bandwidth-bound (§19): the extra compare+blend or the 1/32-size
-  mask stream is lost in the cost of moving 192 MiB. `VCMPPS`+`VBLENDVPS`
-  on two inputs is nearly free next to that.
-- **For stencils the compare cost shows.** Sentinel-blend slope costs
-  +33% (1024²) and +25% (4096²) over NaN: nine compares, eight ORs and a
-  blend per lane. The mask is +1% (1024²) and +21% (4096², about half of it memory placement, see the probe). It is a fixed per-cell cost
-  (about 0.07 ns/cell, 64 cells per word), independent of stencil size,
-  and it can be skipped entirely when all inputs are nil.
+- **Vectorized pointwise ops: sentinel pays a visible compare+blend, the
+  mask doesn't.** At 1024² Add is 0.18–0.19 ns/cell for NaN and mask, and
+  0.22 for sentinel-blend (+18–25%). archsimd's `IfElse` lowers to a
+  byte-wise `VPBLENDVB`. At 4096² all three are memory-bandwidth-bound
+  (§19) at 0.55–0.68 ns/cell. There the mask row's extra 0.12 is mostly
+  the input-array placement effect described above; the AND pass itself
+  is 16 k words (about 6 µs, 0.005 ns/cell at 1024²).
+- **For stencils the compare cost shows more.** Sentinel-blend slope
+  costs +14–24% (1024²) and +17–19% (4096²) over NaN: nine compares, eight
+  ORs and a blend per lane. The mask is +0–9% (1024²) and +14–20% (4096²,
+  about half of it memory placement). The mask pass is a fixed per-cell
+  cost (about 0.07 ns/cell, 64 cells per word), independent of stencil
+  size, and it can be skipped entirely when all inputs are nil.
 - **The straightforward scalar forms are where `if value == NoData`
-  hurts.** Branchy sentinel Add falls from 1.1 to 5.1–5.6 ns/cell at 30%
-  scattered NoData: branch mispredictions, a 4–5× slowdown the vectorized
-  forms don't show. The mask-branchy slope (per-cell bit tests, computing
-  only valid cells) is the slowest variant of all, 6.9–10.6 ns/cell,
-  because skipping work does not pay for nine bit extractions and a
-  mispredicted branch. Kernels must compute unconditionally and fix
-  validity separately, whatever the representation. The mask makes that
-  the natural way to write them.
+  hurts.** Branchy sentinel Add falls from 1.0–1.3 to 5.0–5.6 ns/cell at
+  30% scattered NoData: branch mispredictions, a 4–5× slowdown the
+  vectorized forms don't show. The mask-branchy slope (per-cell bit
+  tests, computing only valid cells) is the slowest variant of all,
+  6.5–10 ns/cell, because skipping work does not pay for nine bit
+  extractions and a mispredicted branch. Kernels must compute
+  unconditionally and fix validity separately, whatever the
+  representation. The mask makes that the natural way to write them.
 - **"Compute then fix up" with a scalar fix pass doesn't help sentinel**
-  (`vec+fixup`, 0.9–5.7 ns/cell): the fix pass is the branchy loop again.
+  (`vec+fixup`, 0.9–5.8 ns/cell): the fix pass is the branchy loop again.
 - **Materialising a fill value is density-dependent** (`+fill` rows, up
   to +1.2 ns/cell at 30% scattered). It is paid once at export, not per
   op. Our `FillInvalid` walks set bits; a vectorized blend would flatten it.
+- **Relative to the earlier hand-written-assembly run** (Go 1.25), the
+  archsimd NaN and mask slope kernels are about 10–17% slower at 1024²
+  and about the same at 4096². `vec.Add` is about 30% slower at 1024²
+  and about the same at 4096². That matches ADR 0001. None of the
+  rankings changed.
+
+### archsimd pitfall found in this spike
+
+The first archsimd sentinel slope kernel ran at **11–12 ns/cell**, slower
+than scalar, although its instructions were the expected
+`VCMPPS`/`VPOR`/`VPBLENDVB`. The disassembly showed the cause: the
+float32 parameters were still needed by the scalar tail after the loop,
+so the compiler spilled one to the stack. It then reloaded it with a
+**legacy-SSE `MOVSS` inside the AVX loop** on every iteration, paying an
+SSE/AVX transition each time (golang/go#80835, listed in ADR 0001). The
+NaN and mask kernels escaped only because of different register
+allocation.
+
+The fix used in `simd_amd64.go` is to split each kernel. A `*Lanes`
+function runs the vector loop, calls `ClearAVXUpperBits`, and returns
+how many cells it wrote. The caller runs the scalar tail with the float
+parameters. That brought the sentinel slope to 0.59 ns/cell. This is
+worth adding to ADR 0001's kernel-writing rules, since `internal/vec`'s
+single-function kernels are exposed to the same failure.
 
 ## Correctness hazards
 
@@ -353,9 +381,10 @@ A nil mask (no NoData) costs nothing.
   offsets were word-aligned. Odd widths are covered by the correctness
   tests only, and their extract/deposit shifting costs more. Hence the
   recommendation to pad `Stride` to 64.
-- The AVX2 Horn kernels are spike code in this package, not
-  `internal/vec` kernels, and `FillInvalid`/`MaskFromSentinel` are
-  scalar. None of this is tuned production code; the comparisons are
-  like-for-like within each form.
-- Memory placement moved single 4096² results by about 10% (see the
-  probe table), so treat 4096² differences below that as noise.
+- The archsimd slope and sentinel-blend kernels in `simd_amd64.go` are
+  spike code, not `internal/vec` kernels, and `FillInvalid`/
+  `MaskFromSentinel` are scalar. None of this is tuned production code;
+  the comparisons are like-for-like within each form.
+- The memory-placement probe was taken on the earlier assembly build,
+  not re-run under archsimd. Memory placement moved single 4096²
+  results by about 10%, so treat 4096² differences below that as noise.

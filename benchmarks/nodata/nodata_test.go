@@ -21,6 +21,12 @@ func forEachFixture(t *testing.T, fn func(t *testing.T, f *Fixture)) {
 	}
 }
 
+// TestBackend records whether the AVX2 variants were exercised; without
+// GOEXPERIMENT=simd on amd64 they fall back to scalar.
+func TestBackend(t *testing.T) {
+	t.Logf("HaveAVX2 = %v", HaveAVX2)
+}
+
 func sameBits(a, b float32) bool { return math.Float32bits(a) == math.Float32bits(b) }
 
 func checkSentinel(t *testing.T, name string, got, ref []float32, invalid []bool) {

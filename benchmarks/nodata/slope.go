@@ -14,7 +14,7 @@ import "math"
 //
 // Any NoData neighbour (z5 included) makes the output NoData, and the
 // one-cell border is NoData. Every variant evaluates the arithmetic in
-// the same order as slopeRowScalar and the AVX2 kernel, and explicit
+// the same order as slopeRowScalar and the archsimd kernels, and explicit
 // float32 conversions stop the compiler fusing into FMA, so all
 // variants agree bit-for-bit on valid cells.
 

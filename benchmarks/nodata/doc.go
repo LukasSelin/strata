@@ -14,10 +14,12 @@
 //
 // Workloads are element-wise Add and a 3×3 Horn gradient magnitude
 // ("slope"). Each workload has straightforward scalar variants and
-// vectorization-friendly variants (internal/vec kernels, or the AVX2
-// assembly in this package, plus a mask pass where the representation
-// needs one). All variants of one workload must agree on validity and,
-// for valid cells, bit-for-bit on values; nodata_test.go checks that.
+// vectorization-friendly variants (internal/vec kernels, or the
+// simd/archsimd kernels in simd_amd64.go, plus a mask pass where the
+// representation needs one). The vectorized variants need
+// GOEXPERIMENT=simd, as internal/vec does (docs/adr/0001-simd-backend.md).
+// All variants of one workload must agree on validity and, for valid
+// cells, bit-for-bit on values; nodata_test.go checks that.
 //
 // Rasters here are row-major with stride == width. Slope treats the
 // one-cell border as NoData, as a tile without a halo would.
