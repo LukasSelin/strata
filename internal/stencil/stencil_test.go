@@ -147,6 +147,73 @@ func TestErode3x3DifferentStrides(t *testing.T) {
 	}
 }
 
+// TestErodeBoxMatchesNaive checks ErodeBox against a per-cell reference
+// for radii 0 to 3, one to three sources with different strides and
+// offsets, and widths around the word boundaries, including radius 0 in
+// place.
+func TestErodeBoxMatchesNaive(t *testing.T) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	get := func(m MaskRegion, x, y int) bool {
+		i := m.Off + y*m.Stride + x
+		return m.Bits[i>>6]>>uint(i&63)&1 != 0
+	}
+	for _, r := range []int{0, 1, 2, 3} {
+		for _, w := range []int{1, 2, 7, 62, 63, 64, 65, 129} {
+			for _, h := range []int{1, 2, 5} {
+				for nsrc := 1; nsrc <= 3; nsrc++ {
+					sw, sh := w+2*r, h+2*r
+					mk := func(off, stride int) MaskRegion {
+						bits := make([]uint64, (off+(sh-1)*stride+sw+63)>>6+1)
+						for k := range bits {
+							bits[k] = ^(rng.Uint64() & rng.Uint64() & rng.Uint64())
+						}
+						return MaskRegion{bits, off, stride}
+					}
+					srcs := make([]MaskRegion, nsrc)
+					for i := range srcs {
+						srcs[i] = mk(rng.IntN(130), sw+[]int{0, 1, 64}[rng.IntN(3)])
+					}
+					dst := mk(rng.IntN(130), w+rng.IntN(70))
+					if r == 0 && rng.IntN(2) == 0 {
+						dst = srcs[rng.IntN(nsrc)] // in place
+					}
+					want := make([]bool, w*h)
+					for y := range h {
+						for x := range w {
+							ok := true
+							for _, s := range srcs {
+								for j := 0; ok && j <= 2*r; j++ {
+									for i := 0; ok && i <= 2*r; i++ {
+										ok = get(s, x+i, y+j)
+									}
+								}
+							}
+							want[y*w+x] = ok
+						}
+					}
+					before := append([]uint64(nil), dst.Bits...)
+					ErodeBox(dst, srcs, w, h, r, make([]uint64, ErodeScratch(w, r)))
+					inRegion := make(map[int]bool)
+					for y := range h {
+						for x := range w {
+							inRegion[dst.Off+y*dst.Stride+x] = true
+							if got := get(dst, x, y); got != want[y*w+x] {
+								t.Fatalf("r=%d w=%d h=%d srcs=%d: cell (%d, %d) = %v, want %v", r, w, h, nsrc, x, y, got, want[y*w+x])
+							}
+						}
+					}
+					for i := range len(before) * 64 {
+						if !inRegion[i] && (dst.Bits[i>>6]^before[i>>6])>>uint(i&63)&1 != 0 {
+							t.Fatalf("r=%d w=%d h=%d srcs=%d: bit %d outside the region changed", r, w, h, nsrc, i)
+						}
+					}
+				}
+			}
+		}
+	}
+	mustPanic(t, "no sources", func() { ErodeBox(MaskRegion{make([]uint64, 1), 0, 1}, nil, 1, 1, 0, make([]uint64, 1)) })
+}
+
 func TestClearBorder(t *testing.T) {
 	const w, h, stride, off = 65, 4, 70, 5
 	m := make([]uint64, 8)

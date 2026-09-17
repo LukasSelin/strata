@@ -1,6 +1,7 @@
 package terrain
 
 import (
+	"strata/engine"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -58,14 +59,30 @@ type AspectOptions struct {
 // degrees more; against a float64 evaluation of the same gradients the
 // largest difference seen in tests is 2.4e-5 degrees.
 func Aspect(dst, dem raster.Float32Raster, opts AspectOptions) {
+	run(AspectKernel(opts), dem, dst)
+}
+
+// AspectKernel returns Aspect as an engine kernel with radius 1, one input
+// (the DEM) and one output, for engine.Process. It panics on invalid
+// options, as Aspect does.
+func AspectKernel(opts AspectOptions) engine.Kernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	flat := float32(AspectFlat)
 	if opts.ZeroForFlat {
 		flat = 0
 	}
-	checkStencil([]string{"dem", "dst"}, dem, dst)
-	forInterior(dem, []raster.Float32Raster{dst}, func(out [][]float32, r0, r1, r2 []float32) {
-		stencil.HornAspectRow(out[0], r0, r1, r2, kx, ky, flat, opts.Trigonometric)
-	})
-	finishBorder(dst, dem)
+	return aspectKernel{horn{kx, ky}, flat, opts.Trigonometric}
+}
+
+type aspectKernel struct {
+	horn
+	flat float32
+	trig bool
+}
+
+func (k aspectKernel) Process(dst engine.Span, src engine.Window) {
+	out, dem := dst.Dst[0], src.Src[0]
+	for y := range dst.Height {
+		stencil.HornAspectRow(out.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky, k.flat, k.trig)
+	}
 }

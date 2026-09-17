@@ -3,6 +3,7 @@ package algebra
 import (
 	"unsafe"
 
+	"strata/internal/overlap"
 	"strata/internal/vec"
 	"strata/raster"
 )
@@ -33,15 +34,20 @@ func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
 // clamp is Clamp after the checks. whole selects one kernel call over all
 // cells, which requires every operand to be compact (see binaryApply).
 func clamp(op string, dst, src raster.Float32Raster, lo, hi float32, whole bool) {
+	clampValues(dst, src, lo, hi, whole)
+	unaryValidity(op, dst, src, whole)
+}
+
+// clampValues is the arithmetic of clamp, without validity.
+func clampValues(dst, src raster.Float32Raster, lo, hi float32, whole bool) {
 	if whole {
 		n := dst.Width * dst.Height
 		vec.Clamp(dst.Data[:n], src.Data[:n], lo, hi)
-	} else {
-		for y := range dst.Height {
-			vec.Clamp(dst.Row(y), src.Row(y), lo, hi)
-		}
+		return
 	}
-	unaryValidity(op, dst, src, whole)
+	for y := range dst.Height {
+		vec.Clamp(dst.Row(y), src.Row(y), lo, hi)
+	}
 }
 
 // binaryKernel is an internal/vec kernel over equal-length flat slices.
@@ -61,15 +67,20 @@ func binary(op string, dst, a, b raster.Float32Raster, kernel binaryKernel) {
 // because the span would then cover dst's row padding, which in a window
 // is its parent's cells.
 func binaryApply(op string, dst, a, b raster.Float32Raster, kernel binaryKernel, whole bool) {
+	binaryValues(dst, a, b, kernel, whole)
+	binaryValidity(op, dst, a, b, whole)
+}
+
+// binaryValues is the arithmetic of binaryApply, without validity.
+func binaryValues(dst, a, b raster.Float32Raster, kernel binaryKernel, whole bool) {
 	if whole {
 		n := dst.Width * dst.Height
 		kernel(dst.Data[:n], a.Data[:n], b.Data[:n])
-	} else {
-		for y := range dst.Height {
-			kernel(dst.Row(y), a.Row(y), b.Row(y))
-		}
+		return
 	}
-	binaryValidity(op, dst, a, b, whole)
+	for y := range dst.Height {
+		kernel(dst.Row(y), a.Row(y), b.Row(y))
+	}
 }
 
 func compact(r raster.Float32Raster) bool { return r.Stride == r.Width }
@@ -86,43 +97,10 @@ func check(op, name string, dst, r raster.Float32Raster) {
 	if name == "dst" {
 		return
 	}
-	if overlaps(dst, r) {
+	if overlap.Data(dst, r) == overlap.Partial {
 		panic(op + ": dst overlaps " + name + " at a different offset or stride")
 	}
 }
-
-// overlaps reports whether dst and r share memory other than by being the
-// same cells. With equal strides it is exact, so disjoint windows of one
-// raster, such as side-by-side tiles, are accepted even though each one's
-// Data span runs through the other's rows. With different strides it
-// conservatively compares the spans.
-func overlaps(dst, r raster.Float32Raster) bool {
-	const size = int(unsafe.Sizeof(float32(0)))
-	d0 := int(uintptr(unsafe.Pointer(unsafe.SliceData(dst.Data))))
-	r0 := int(uintptr(unsafe.Pointer(unsafe.SliceData(r.Data))))
-	if d0 >= r0+span(r)*size || r0 >= d0+span(dst)*size {
-		return false
-	}
-	if d0 == r0 {
-		return dst.Stride != r.Stride && dst.Height > 1
-	}
-	if dst.Stride != r.Stride {
-		return true
-	}
-	// dst's first cell is dy rows and dx columns from r's, with 0 <= dx <
-	// Stride. Its columns [dx, dx+Width) meet r's columns [0, Width) in the
-	// same row, or, wrapping around the stride, one row further down.
-	diff := (d0 - r0) / size
-	dy, dx := diff/dst.Stride, diff%dst.Stride
-	if dx < 0 {
-		dy, dx = dy-1, dx+dst.Stride
-	}
-	rowsMeet := func(dy int) bool { return dy > -dst.Height && dy < dst.Height }
-	return (dx < dst.Width && rowsMeet(dy)) || (dx > dst.Stride-dst.Width && rowsMeet(dy+1))
-}
-
-// span is the length of the Data prefix holding r's cells.
-func span(r raster.Float32Raster) int { return (r.Height-1)*r.Stride + r.Width }
 
 // binaryValidity sets dst's validity to the AND of a's and b's.
 func binaryValidity(op string, dst, a, b raster.Float32Raster, whole bool) {

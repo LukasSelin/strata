@@ -44,4 +44,14 @@
 //
 // Masks are combined up to 64 bits at a time, and in whole-word loops
 // when the operands' bit offsets are word-aligned.
+//
+// # Kernels
+//
+// ClampKernel, AddKernel, SubKernel, MulKernel, MinKernel and MaxKernel
+// return the operations as radius-0 kernels for package engine, which
+// applies the same operand, in-place and validity rules (and also rejects
+// a dst whose mask bits partly overlap an input's) and gives the same
+// bits in any tiling. The functions themselves do not go through the
+// engine: they keep their promise to allocate nothing, which a kernel
+// behind an interface cannot.
 package algebra
