@@ -22,15 +22,62 @@ func Erode3x3(dst []uint64, dstOff, dstStride int, src []uint64, srcOff, srcStri
 	if w < 3 || h < 3 {
 		return
 	}
-	nw := wordsFor(w)
-	scratch := make([]uint64, 2*nw)
-	acc, tmp := scratch[:nw], scratch[nw:]
-	for y := 1; y < h-1; y++ {
-		extractBits(acc, src, srcOff+(y-1)*srcStride, w)
-		andBits(acc, src, srcOff+y*srcStride, w)
-		andBits(acc, src, srcOff+(y+1)*srcStride, w)
-		erodeRow(tmp, acc)
-		depositBits(dst, dstOff+y*dstStride, tmp, w)
+	ErodeBox(MaskRegion{dst, dstOff + dstStride + 1, dstStride},
+		[]MaskRegion{{src, srcOff, srcStride}}, w-2, h-2, 1, make([]uint64, ErodeScratch(w-2, 1)))
+}
+
+// MaskRegion addresses a rectangle of cells in a validity mask: cell
+// (x, y) is bit Off + y*Stride + x of Bits.
+type MaskRegion struct {
+	Bits   []uint64
+	Off    int
+	Stride int
+}
+
+// ErodeScratch returns the number of scratch words ErodeBox needs for a
+// destination w cells wide and radius r.
+func ErodeScratch(w, r int) int { return wordsFor(w + 2*r) }
+
+// ErodeBox writes the validity of a radius-r neighbourhood operation with
+// one or more inputs into a w×h destination region. Each source region
+// is its input's halo-expanded region: (w+2r)×(h+2r) cells, whose cell
+// (x+r, y+r) is centred on destination cell (x, y). Destination cell
+// (x, y) becomes valid iff source cells (x+i, y+j), 0 <= i, j <= 2r, are
+// valid in every source. Radius 0 is the AND of the sources. Unlike
+// Erode3x3 it has no border: the halo supplies every neighbour.
+//
+// It works on whole words: per destination row it ANDs the 2r+1 rows of
+// every source into scratch, which must hold at least ErodeScratch(w, r)
+// words, then shrinks that row by 2r cells, two per pass of shifted
+// copies. It allocates nothing. The destination's bits must not overlap a source's, except at
+// the same address and stride with radius 0 (in place). It panics if srcs
+// is empty or a region needs bits past the end of its mask.
+func ErodeBox(dst MaskRegion, srcs []MaskRegion, w, h, r int, scratch []uint64) {
+	if len(srcs) == 0 {
+		panic("stencil: ErodeBox needs at least one source")
+	}
+	sw, sh := w+2*r, h+2*r
+	requireBits(dst.Bits, dst.Off, dst.Stride, w, h)
+	for _, s := range srcs {
+		requireBits(s.Bits, s.Off, s.Stride, sw, sh)
+	}
+	acc := scratch[:wordsFor(sw)]
+	for y := range h {
+		for i, s := range srcs {
+			off := s.Off + y*s.Stride
+			for j := range 2*r + 1 {
+				if i == 0 && j == 0 {
+					extractBits(acc, s.Bits, off, sw)
+				} else {
+					andBits(acc, s.Bits, off, sw)
+				}
+				off += s.Stride
+			}
+		}
+		for range r {
+			shrink2Row(acc)
+		}
+		depositBits(dst.Bits, dst.Off+y*dst.Stride, acc, w)
 	}
 }
 
@@ -109,7 +156,29 @@ func andBits(dst, src []uint64, off, n int) {
 // depositBits overwrites n bits of dst starting at bit off with src,
 // leaving every other bit of dst unchanged.
 func depositBits(dst []uint64, off int, src []uint64, n int) {
-	for k := 0; n > 0; k++ {
+	k := 0
+	if s := uint(off & 63); s == 0 {
+		k = n >> 6
+		copy(dst[off>>6:], src[:k])
+		off += k << 6
+		n -= k << 6
+	} else if n >= 64 {
+		// Whole source words, each split across two destination words:
+		// its low 64-s bits fill the top of one, its high s bits carry
+		// into the bottom of the next.
+		k = n >> 6
+		d := dst[off>>6 : off>>6+k+1]
+		carry := d[0] & (1<<s - 1)
+		for i, v := range src[:k] {
+			d[i] = carry | v<<s
+			carry = v >> (64 - s)
+		}
+		d[k] = d[k]&^(1<<s-1) | carry
+		off += k << 6
+		n -= k << 6
+	}
+	// The remaining n < 64 bits, if any.
+	for ; n > 0; k++ {
 		take := min(n, 64)
 		m := ^uint64(0)
 		if take < 64 {
@@ -141,21 +210,15 @@ func clearBits(dst []uint64, off, n int) {
 	}
 }
 
-// erodeRow sets out bit x = v[x-1] & v[x] & v[x+1]. v must have zero bits
-// past the row width, which clears the last column; the zero carry-in
-// clears the first.
-func erodeRow(out, v []uint64) {
-	out = out[:len(v)]
-	var carry uint64
-	last := len(v) - 1
-	for k, cur := range v {
-		left := cur<<1 | carry
-		carry = cur >> 63
-		var next uint64
-		if k < last {
-			next = v[k+1] & 1
-		}
-		right := cur>>1 | next<<63
-		out[k] = cur & left & right
+// shrink2Row sets bit x of v to v[x] & v[x+1] & v[x+2], in place: two
+// shrinks in one pass. Bits past the row width must be zero, so the
+// row's last bits read zeros and they stay zero.
+func shrink2Row(v []uint64) {
+	cur := v[0]
+	for k := 1; k < len(v); k++ {
+		next := v[k]
+		v[k-1] = cur & (cur>>1 | next<<63) & (cur>>2 | next<<62)
+		cur = next
 	}
+	v[len(v)-1] = cur & (cur >> 1) & (cur >> 2)
 }

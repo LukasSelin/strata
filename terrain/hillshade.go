@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"strata/engine"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -53,6 +54,13 @@ type HillshadeOptions struct {
 // gdaldem's byte. gdaldem also evaluates the square root with an
 // approximation, so its values can differ slightly beyond encoding.
 func Hillshade(dst, dem raster.Float32Raster, opts HillshadeOptions) {
+	run(HillshadeKernel(opts), dem, dst)
+}
+
+// HillshadeKernel returns Hillshade as an engine kernel with radius 1, one
+// input (the DEM) and one output, for engine.Process. It panics on
+// invalid options, as Hillshade does.
+func HillshadeKernel(opts HillshadeOptions) engine.Kernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	az, alt := opts.Azimuth, opts.Altitude
 	if math.IsNaN(az) || math.IsInf(az, 0) {
@@ -72,9 +80,17 @@ func Hillshade(dst, dem raster.Float32Raster, opts HillshadeOptions) {
 	c := float32(255 * math.Sin(alt))
 	bx := float32(-255 * math.Cos(alt) * math.Sin(az))
 	by := float32(255 * math.Cos(alt) * math.Cos(az))
-	checkStencil([]string{"dem", "dst"}, dem, dst)
-	forInterior(dem, []raster.Float32Raster{dst}, func(out [][]float32, r0, r1, r2 []float32) {
-		stencil.HornHillshadeRow(out[0], r0, r1, r2, kx, ky, c, bx, by)
-	})
-	finishBorder(dst, dem)
+	return hillshadeKernel{horn{kx, ky}, c, bx, by}
+}
+
+type hillshadeKernel struct {
+	horn
+	c, bx, by float32
+}
+
+func (k hillshadeKernel) Process(dst engine.Span, src engine.Window) {
+	out, dem := dst.Dst[0], src.Src[0]
+	for y := range dst.Height {
+		stencil.HornHillshadeRow(out.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky, k.c, k.bx, k.by)
+	}
 }

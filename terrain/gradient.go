@@ -1,6 +1,7 @@
 package terrain
 
 import (
+	"strata/engine"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -28,11 +29,24 @@ type GradientOptions struct {
 // edges and validity. dx, dy and dem must have the same dimensions and
 // must not overlap; their strides may differ.
 func Gradient(dx, dy, dem raster.Float32Raster, opts GradientOptions) {
+	run(GradientKernel(opts), dem, dx, dy)
+}
+
+// GradientKernel returns Gradient as an engine kernel with radius 1, one
+// input (the DEM) and two outputs, dx then dy, for engine.ProcessN. It
+// panics on invalid options, as Gradient does.
+func GradientKernel(opts GradientOptions) engine.Kernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
-	checkStencil([]string{"dem", "dx", "dy"}, dem, dx, dy)
-	forInterior(dem, []raster.Float32Raster{dx, dy}, func(dst [][]float32, r0, r1, r2 []float32) {
-		stencil.HornGradientRow(dst[0], dst[1], r0, r1, r2, kx, ky)
-	})
-	finishBorder(dx, dem)
-	finishBorder(dy, dem)
+	return gradientKernel{horn{kx, ky}}
+}
+
+type gradientKernel struct{ horn }
+
+func (gradientKernel) Arity() (inputs, outputs int) { return 1, 2 }
+
+func (k gradientKernel) Process(dst engine.Span, src engine.Window) {
+	dx, dy, dem := dst.Dst[0], dst.Dst[1], src.Src[0]
+	for y := range dst.Height {
+		stencil.HornGradientRow(dx.Row(y), dy.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky)
+	}
 }

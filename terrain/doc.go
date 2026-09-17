@@ -30,9 +30,16 @@
 // raster narrower or shorter than three cells is all border.
 //
 // The edge is the edge of the rasters passed in, even when they are
-// windows whose parent has data beyond them. Reading a halo from the
-// parent belongs to tiled execution (DESIGN.md §23, §25) and is not done
-// here.
+// windows whose parent has data beyond them.
+//
+// # Kernels
+//
+// Each function has a kernel constructor (SlopeKernel, AspectKernel,
+// HillshadeKernel, GradientKernel) for package engine, which is also what
+// the functions run on: they call engine.ProcessN over the whole raster
+// with zero Options. Through engine.Process with any tiling, cells on
+// tile boundaries read their neighbours from the DEM, so the result is
+// bit-for-bit the function's.
 //
 // # Validity
 //
@@ -57,7 +64,9 @@
 // Like package raster, functions panic on programming errors: rasters
 // that fail Validate, mismatched dimensions, outputs whose Data overlaps
 // another raster's Data (the stencil reads neighbours of cells it has not
-// written yet), overlapping mask bits, and invalid options.
+// written yet), overlapping mask bits, and invalid options. Kernel
+// constructors panic on invalid options; the other checks, and their
+// messages, are package engine's.
 //
 // # Backends
 //

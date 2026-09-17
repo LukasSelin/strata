@@ -1,0 +1,168 @@
+package engine_test
+
+import (
+	"fmt"
+	"math/rand/v2"
+	"testing"
+
+	"strata/algebra"
+	"strata/engine"
+	"strata/raster"
+	"strata/terrain"
+)
+
+// adapter pairs a public function with its engine kernel.
+type adapter struct {
+	name    string
+	inputs  int
+	outputs int
+	inPlace bool // dst may be the first input
+	direct  func(dst, src []raster.Float32Raster)
+	kernel  engine.Kernel
+}
+
+var adapters = []adapter{
+	{
+		name: "clamp", inputs: 1, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Clamp(dst[0], src[0], 950, 1050) },
+		kernel: algebra.ClampKernel(950, 1050),
+	},
+	{
+		name: "add", inputs: 2, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Add(dst[0], src[0], src[1]) },
+		kernel: algebra.AddKernel(),
+	},
+	{
+		name: "max", inputs: 2, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Max(dst[0], src[0], src[1]) },
+		kernel: algebra.MaxKernel(),
+	},
+	{
+		name: "slope-degrees", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Slope(dst[0], src[0], terrain.SlopeOptions{CellSize: 10, CellSizeY: 12})
+		},
+		kernel: terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 10, CellSizeY: 12}),
+	},
+	{
+		name: "slope-percent", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Slope(dst[0], src[0], terrain.SlopeOptions{CellSize: 3, ZFactor: 2, Units: terrain.SlopePercent})
+		},
+		kernel: terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 3, ZFactor: 2, Units: terrain.SlopePercent}),
+	},
+	{
+		name: "hillshade", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Hillshade(dst[0], src[0], terrain.HillshadeOptions{CellSize: 30, Azimuth: 100, Altitude: 20})
+		},
+		kernel: terrain.HillshadeKernel(terrain.HillshadeOptions{CellSize: 30, Azimuth: 100, Altitude: 20}),
+	},
+	{
+		name: "aspect", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Aspect(dst[0], src[0], terrain.AspectOptions{CellSize: 5, Trigonometric: true})
+		},
+		kernel: terrain.AspectKernel(terrain.AspectOptions{CellSize: 5, Trigonometric: true}),
+	},
+	{
+		name: "gradient", inputs: 1, outputs: 2,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Gradient(dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7})
+		},
+		kernel: terrain.GradientKernel(terrain.GradientOptions{CellSize: 7}),
+	},
+}
+
+var adapterSizes = [][2]int{
+	{1, 1}, {2, 2}, {3, 3}, {1, 5}, {6, 1}, {4, 3}, {5, 7}, {17, 9}, {63, 4}, {65, 6}, {130, 5},
+}
+
+// TestAdaptersMatchDirect runs every adapter kernel through the engine,
+// whole and in tiles and bands of many shapes, and requires the same bits
+// as the public function on the whole raster: same validity words across
+// each output's root (the border, and bits outside the output, included)
+// and the same Data on valid cells, any NaN matching any NaN.
+func TestAdaptersMatchDirect(t *testing.T) {
+	for _, a := range adapters {
+		t.Run(a.name, func(t *testing.T) {
+			for _, sz := range adapterSizes {
+				for _, lay := range layouts {
+					// masks.in says whether inputs have masks, masks.out
+					// whether outputs do (required if any input does).
+					for _, masks := range []struct{ in, out bool }{{false, false}, {false, true}, {true, true}} {
+						for _, inPlace := range []bool{false, a.inPlace} {
+							testAdapter(t, a, sz[0], sz[1], lay, masks.in, masks.out, inPlace)
+							if !a.inPlace {
+								break
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func testAdapter(t *testing.T, a adapter, w, h int, lay layout, inMask, outMask, inPlace bool) {
+	seed := uint64(w*1000 + h)
+	rng := rand.New(rand.NewPCG(seed, 3))
+	var ins, outs []operand
+	for i := range a.inputs {
+		// With masks, the first input always has one and a second input
+		// half the time.
+		masked := inMask && (i == 0 || rng.IntN(2) == 0)
+		ins = append(ins, newOperand(rng, w, h, lay.in, masked))
+	}
+	for range a.outputs {
+		outs = append(outs, newOperand(rng, w, h, lay.out, outMask))
+	}
+	if inPlace {
+		outs[0] = ins[0]
+		if outMask && !inMask {
+			return // same fixture as the unmasked in-place case
+		}
+	}
+	for _, run := range engineRuns {
+		id := fmt.Sprintf("%dx%d %v inMask=%v outMask=%v inPlace=%v %v", w, h, lay, inMask, outMask, inPlace, run)
+		want, got := cloneAll(ins, outs, inPlace), cloneAll(ins, outs, inPlace)
+		a.direct(want.dst(), want.src())
+		process(t, run, got.dst(), got.src(), a.kernel)
+		for i := range outs {
+			requireSameRoots(t, fmt.Sprintf("%s dst[%d]", id, i), got.outs[i].root, want.outs[i].root)
+		}
+		for i := range ins {
+			requireSameRoots(t, fmt.Sprintf("%s src[%d]", id, i), got.ins[i].root, want.ins[i].root)
+		}
+	}
+}
+
+type operands struct{ ins, outs []operand }
+
+// cloneAll deep-copies a fixture. With inPlace the first output is the
+// first input's copy.
+func cloneAll(ins, outs []operand, inPlace bool) operands {
+	var o operands
+	for _, in := range ins {
+		o.ins = append(o.ins, in.clone())
+	}
+	for i, out := range outs {
+		if i == 0 && inPlace {
+			o.outs = append(o.outs, o.ins[0])
+			continue
+		}
+		o.outs = append(o.outs, out.clone())
+	}
+	return o
+}
+
+func (o operands) src() []raster.Float32Raster { return views(o.ins) }
+func (o operands) dst() []raster.Float32Raster { return views(o.outs) }
+
+func views(ops []operand) []raster.Float32Raster {
+	rs := make([]raster.Float32Raster, len(ops))
+	for i, op := range ops {
+		rs[i] = op.r
+	}
+	return rs
+}
