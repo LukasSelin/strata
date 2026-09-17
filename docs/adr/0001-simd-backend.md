@@ -3,15 +3,15 @@
 - **Status:** Accepted (all-in on `simd/archsimd`; asm backend removed)
 - **Date:** 2026-09-16
 - **Ticket:** STRATA-2
-- **Related:** STRATA-11 (ARM64 backend), DESIGN.md §5.1–5.3, §9–10, §14, §20
+- **Related:** STRATA-11 (ARM64 backend), DESIGN.md §13–17, §20, §29
 
 ## Context
 
 DESIGN.md assumes Go's SIMD API, but `internal/vec` shipped as AVX2 Plan 9
 assembly: 11 kernels in `simd_amd64.s`, Go stubs plus scalar tails in
 `simd_amd64.go`, CPUID detection in `cpu_amd64.{s,go}`, and function-variable
-dispatch in `dispatch.go`. Before adding multi-row terrain kernels (§14), the
-ARM64 backend (STRATA-11), and eventually fused kernels (§20), we need to
+dispatch in `dispatch.go`. Before adding multi-row terrain kernels (§20), the
+ARM64 backend (STRATA-11), and eventually fused kernels (§29), we need to
 decide which technology new SIMD code is written in.
 
 ### State of Go SIMD (verified against Go 1.27.1 source and release notes)
@@ -58,7 +58,7 @@ golang/go#78902, `src/simd` in the go1.27.1 toolchain.
 
 The prototype was `internal/spike/simdbackend` (throwaway, never imported;
 removed in STRATA-6, last present in ad531b4). It implements `Add`, `Clamp`, and a 3×3 Horn slope-magnitude row
-kernel (8 neighbour loads, 17 ops, `sqrt`; the §14 shape). Variants:
+kernel (8 neighbour loads, 17 ops, `sqrt`; the §20 shape). Variants:
 
 - scalar
 - AVX2 asm (existing `vec.Add`/`vec.Clamp`, plus a new slope-row `.s`)
@@ -98,7 +98,7 @@ Observations:
    few instructions and overhead dominates. In the BCE build, each iteration
    advances every slice with a branch-free masked pointer bump (to avoid
    pointers past the end); asm uses one shared index. At raster scale these
-   kernels are memory-bandwidth-bound anyway (§19).
+   kernels are memory-bandwidth-bound anyway (§28).
 3. **How the code is written matters a lot.** Naive `Load…(s[i:])` code keeps a
    bounds check and sub-slice arithmetic on every load and is 3.5× slower than
    the BCE form on slope. The pattern that fixes it is array-pointer loads over
@@ -122,8 +122,8 @@ Observations:
 | ARM64 (STRATA-11) | Write every kernel again in NEON asm (1.27 assembler has `VFADD/VFMIN/VFSQRT…`) | Write again with `Float32x4` in Go, same shape as amd64 | Free, 128-bit |
 | Perf, heavy kernels | Best | ~1.1× asm | 128-bit by default on many AVX2 CPUs |
 | Perf, trivial kernels | Best | ~2× asm | worse |
-| Multi-row terrain (§14) | Every stencil is new hand asm | Natural: loads at offsets, expression per lane | Natural, width-agnostic stencils |
-| Operation fusion (§20) | A fusion generator would have to emit asm | A generator emits Go; the compiler fuses loads into operands | Same as B, in one version |
+| Multi-row terrain (§20) | Every stencil is new hand asm | Natural: loads at offsets, expression per lane | Natural, width-agnostic stencils |
+| Operation fusion (§29) | A fusion generator would have to emit asm | A generator emits Go; the compiler fuses loads into operands | Same as B, in one version |
 | API stability risk | None from Go | High: churned 1.26→1.27; experimental | Higher: newest package |
 | SIMD out of public API | Trivially | Yes, if confined to `internal/` (build tags stay internal) | same |
 
@@ -131,13 +131,13 @@ Observations:
 
 1. **All SIMD code is written with `simd/archsimd`; strata carries no Plan 9
    assembly.** This covers the existing `internal/vec` kernels, the terrain row
-   kernels (§14), fused kernels (§20), and the ARM64 backend (STRATA-11).
+   kernels (§20), fused kernels (§29), and the ARM64 backend (STRATA-11).
 2. **go.mod targets `go 1.27.0`** (bumped in this ticket) so the standard-library
    SIMD packages are available.
 3. **SIMD files are gated by `//go:build goexperiment.simd && <arch>`**, and
    `archsimd` may only be imported under `internal/`. Scalar remains canonical
    and is the path for any build without the experiment. Dispatch stays as
-   function variables swapped in `init` (§10), using `archsimd.X86.AVX2()` for
+   function variables swapped in `init` (§17), using `archsimd.X86.AVX2()` for
    detection in simd builds.
 4. **The 11 AVX2 asm kernels are replaced now**, in this ticket, by archsimd
    versions in `internal/vec/simd_amd64.go`. The asm and hand-rolled CPUID
@@ -154,7 +154,7 @@ Observations:
 
 ## Port results
 
-The ports keep the §10 dispatch model: function variables swapped in `init`
+The ports keep the §17 dispatch model: function variables swapped in `init`
 when `archsimd.X86.AVX2()` is true. They are checked bit-for-bit against
 scalar (any NaN matches any NaN, but +0 ≠ −0), including signed-zero and NaN
 clamp bounds.
@@ -196,7 +196,7 @@ gap versus the spike's NaN-only archsimd Clamp (567).
   - `GOEXPERIMENT=simd`,
   - `GOARCH=arm64` with `GOEXPERIMENT=simd` (build at minimum, run on arm64
     hardware or emulation for STRATA-11).
-  Scalar-equivalence tests (§28) run in every configuration.
+  Scalar-equivalence tests (§39) run in every configuration.
 - **Kernel-writing rules** for review:
   - write loops in BCE form: array-pointer loads over shrinking slices;
   - call `archsimd.ClearAVXUpperBits()` before scalar tails on amd64;
@@ -213,7 +213,7 @@ gap versus the spike's NaN-only archsimd Clamp (567).
   `FMIN`/`FMAX` against scalar rather than assuming x86 semantics. Default
   arm64 builds use scalar until the experiment graduates. SVE is out of scope
   (golang/go#79781).
-- **Fusion (§20)** becomes a Go code-generation problem rather than an
+- **Fusion (§29)** becomes a Go code-generation problem rather than an
   assembly one, which keeps it viable.
 - `internal/spike/simdbackend` kept the asm-vs-archsimd slope-row comparison
   reproducible until the first real terrain kernel landed. It was deleted in

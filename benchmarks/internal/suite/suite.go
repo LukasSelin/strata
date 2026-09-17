@@ -1,5 +1,5 @@
 // Package suite is the shared harness of the project benchmark suite
-// (DESIGN.md §27). Each benchmarks/<category> package describes its
+// (DESIGN.md §38). Each benchmarks/<category> package describes its
 // fixture and workloads, and Run expands them into one sub-benchmark per
 // point of the comparison matrix:
 //
@@ -27,7 +27,7 @@ import (
 	"strata/raster"
 )
 
-// Sizes are the square raster sizes of DESIGN.md §27. Roughly: 256² fits
+// Sizes are the square raster sizes of DESIGN.md §38. Roughly: 256² fits
 // in L2 or L3 cache, 1024² in L3, 4096² in neither, and 16384² is
 // gigabytes per operand set.
 var Sizes = []int{256, 1024, 4096, 16384}

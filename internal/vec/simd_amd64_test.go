@@ -17,7 +17,7 @@ func simdCases() []int {
 }
 
 // edgeFloat32s returns a fixed pattern of values covering the cases
-// section 28 of DESIGN.md calls out: ordinary values, NaN, +/-Inf,
+// section 39 of DESIGN.md calls out: ordinary values, NaN, +/-Inf,
 // negatives, and both zeros.
 func edgeFloat32s(n int) []float32 {
 	base := []float32{

@@ -31,7 +31,7 @@
 //
 // The edge is the edge of the rasters passed in, even when they are
 // windows whose parent has data beyond them. Reading a halo from the
-// parent belongs to tiled execution (DESIGN.md §16–17) and is not done
+// parent belongs to tiled execution (DESIGN.md §23, §25) and is not done
 // here.
 //
 // # Validity

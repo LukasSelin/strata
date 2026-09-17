@@ -1,6 +1,6 @@
 # STRATA-10: algebra benchmark suite, results
 
-The first run of the project benchmark suite (DESIGN.md §27, §31): the six
+The first run of the project benchmark suite (DESIGN.md §38, §42): the six
 v0.1 operations of `strata/algebra` through the public API, at 256² to
 16384², with and without validity masks, on the scalar and AVX2 kernels of
 `internal/vec`, with one worker. Metrics and names are defined in
@@ -11,10 +11,10 @@ v0.1 operations of `strata/algebra` through the public API, at 256² to
 At 4096 × 4096 the operations run at 1.8–2.3 billion cells/s on one core
 with SIMD, but SIMD adds only 1.1–1.2× to Add, Sub and Mul, 1.5–1.8× to Min
 and Max, and 2.9× to Clamp. From 4096² on, every operation is
-memory-bandwidth-bound (§19). The CPU could compute 4–6 billion cells/s, as
+memory-bandwidth-bound (§28). The CPU could compute 4–6 billion cells/s, as
 it does while the operands fit in cache (256², 1024²), but single-threaded
 access can only move about 22 GB/s at 4096² and 14 GB/s at 16384², and
-throughput is capped there. Workers (STRATA-8/9) and operation fusion (§20),
+throughput is capped there. Workers (STRATA-8/9) and operation fusion (§29),
 not wider lanes, are what can raise large-raster throughput for these
 kernels.
 
@@ -205,7 +205,7 @@ Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 4%.
   each 1 GiB operand is 262 144 4 KiB pages, so the loops leave the TLB's
   reach, and the prefetcher stops at every page boundary. That was not
   measured (for example with large pages). Either way it favours the
-  tiled, chunked execution of §17 and §22 over whole-raster passes, and
+  tiled, chunked execution of §25 and §27 over whole-raster passes, and
   the tile size is worth benchmarking when the engine lands.
 - **Masks cost 0–8% on these operations.** The word-level mask pass (64
   cells per AND) is small next to the float data: 1/32 of the bytes. The
@@ -230,7 +230,7 @@ Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 4%.
   tile engine (STRATA-8/9). Bandwidth-bound kernels are exactly the ones
   where worker scaling will be limited by the memory channels rather than
   by cores, which is what that measurement should show.
-- The §19 classification is the command's heuristic (thresholds in
+- The §28 classification is the command's heuristic (thresholds in
   `cmd/stratabench`), applied to five runs on one machine. The
   classification does not depend on noise here: every SIMD throughput drop
   at 4096² is about 2× or more, and every speedup loss more than a third.
