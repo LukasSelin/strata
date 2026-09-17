@@ -177,7 +177,9 @@ func (s *RawSink) Masked() bool { return s.opts.HasFill }
 // WriteWindow writes src into the region at (x, y). See RasterSink. With a
 // fill value it first stores the fill value in the Data of src's invalid
 // cells. It returns ctx.Err() without writing if ctx is done, and errors
-// from the io.WriterAt wrapped with the row that failed.
+// from the io.WriterAt wrapped with the row that failed, io.ErrShortWrite
+// among them if the file takes fewer bytes than it was given without
+// saying why.
 func (s *RawSink) WriteWindow(ctx context.Context, src raster.Float32Raster, x, y int) error {
 	requireRegion("RawSink.WriteWindow", "src", src, x, y, s.w, s.h)
 	if src.Valid != nil && !s.opts.HasFill {
@@ -200,9 +202,16 @@ func (s *RawSink) WriteWindow(ctx context.Context, src raster.Float32Raster, x, 
 			swapBytes(cells)
 		}
 		off := 4 * (int64(y+row)*int64(s.w) + int64(x))
-		_, err := s.f.WriteAt(floatBytes(cells), off)
+		b := floatBytes(cells)
+		n, err := s.f.WriteAt(b, off)
 		if !littleEndian {
 			swapBytes(cells)
+		}
+		if n < len(b) && err == nil {
+			// io.WriterAt requires an error with a short count. A file
+			// that loses the tail of a write and reports success, as a
+			// full disk can, must not pass for a write either.
+			err = io.ErrShortWrite
 		}
 		if err != nil {
 			return fmt.Errorf("engine: raw sink: writing %s: %w", rowsName(y+row, k), err)

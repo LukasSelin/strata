@@ -85,11 +85,11 @@ func scalarHornAspectRow(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig b
 func scalarHornAspectArgs(ys, xs, r0, r1, r2 []float32, kx, ky float32, trig bool) {
 	n := len(ys)
 	xs = xs[:n]
-	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	v1, v2, v3, v4, v6, v7, v8, v9 := hornViews(n, r0, r1, r2)
 	for i := range ys {
-		z1, z2, z3 := r0[i], r0[i+1], r0[i+2]
-		z4, z6 := r1[i], r1[i+2]
-		z7, z8, z9 := r2[i], r2[i+1], r2[i+2]
+		z1, z2, z3 := v1[i], v2[i], v3[i]
+		z4, z6 := v4[i], v6[i]
+		z7, z8, z9 := v7[i], v8[i], v9[i]
 		gx := float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		gy := float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
 		if trig {
@@ -131,6 +131,13 @@ func HornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) {
 	hornHillshadeRow(dst, r0, r1, r2, kx, ky, c, bx, by)
 }
 
+// scalarHornHillshadeRow is the one row kernel that reads its window by
+// offset, r0[i+1] and r0[i+2], and pays the two bounds checks per cell
+// that costs (TestNoBoundsChecksInLoops). It holds the light vector as
+// well as the gradient, and taking the window through hornViews instead
+// spills registers: 6.4 ns/cell against 4.6 for a 255-cell row on Zen 2,
+// 33 to 56% slower over the widths BenchmarkRowWidth covers, where the
+// same change makes gradient, slope and aspect 2 to 5% faster.
 func scalarHornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) {
 	n := len(dst)
 	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]

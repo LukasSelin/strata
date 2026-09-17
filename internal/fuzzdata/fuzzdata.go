@@ -15,6 +15,23 @@ import (
 	"math/rand/v2"
 )
 
+// Source hands out the values a test builds its operands from. A Reader
+// decodes them from a fuzz input; internal/rapidsource draws them from
+// rapid's generators, which shrink a failure to a small counterexample.
+// A test body written against a Source runs under either driver.
+type Source interface {
+	Uint64() uint64
+	Dense(n int) uint64
+	Byte() byte
+	Bool() bool
+	IntN(n int) int
+	Range(lo, hi int) int
+	Float32() float32
+	Float64() float64
+}
+
+var _ Source = (*Reader)(nil)
+
 // Reader hands out values decoded from a fuzz input.
 type Reader struct {
 	b   []byte

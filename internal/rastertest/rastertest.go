@@ -96,7 +96,7 @@ func Compact(r raster.Float32Raster) raster.Float32Raster {
 // from d: compact, with row padding, or a window at an offset of a larger
 // root with a mask offset. Cells and mask bits of the root outside the
 // result are arbitrary. The result has a mask iff r has one.
-func Place(d *fuzzdata.Reader, r raster.Float32Raster) raster.Float32Raster {
+func Place(d fuzzdata.Source, r raster.Float32Raster) raster.Float32Raster {
 	w, h := r.Width, r.Height
 	rootW, rootH, x, y := w, h, 0, 0
 	layout := d.IntN(3)
@@ -136,7 +136,7 @@ func Place(d *fuzzdata.Reader, r raster.Float32Raster) raster.Float32Raster {
 // Output returns a w×h raster to write results into, placed as by Place,
 // with arbitrary stale Data and, if masked, arbitrary stale validity. With
 // stale unset its cells are zero and invalid instead.
-func Output(d *fuzzdata.Reader, w, h int, masked, stale bool) raster.Float32Raster {
+func Output(d fuzzdata.Source, w, h int, masked, stale bool) raster.Float32Raster {
 	r := raster.NewFloat32(w, h, make([]float32, w*h))
 	if masked {
 		r.Valid = make([]uint64, raster.MaskWords(w*h))
@@ -155,7 +155,7 @@ func Output(d *fuzzdata.Reader, w, h int, masked, stale bool) raster.Float32Rast
 // ScrambleInvalid overwrites the Data of every invalid cell of r with a
 // value from d. Data under an invalid cell is unspecified, so no valid
 // result may depend on it.
-func ScrambleInvalid(r raster.Float32Raster, d *fuzzdata.Reader) {
+func ScrambleInvalid(r raster.Float32Raster, d fuzzdata.Source) {
 	if r.Valid == nil {
 		return
 	}

@@ -93,7 +93,7 @@ func (o relOp) resolvedAzimuth() float64 {
 // Tiled one or the Chunked one (path 0, 1 or 2) with eopts, and returns
 // compact copies of the outputs. Outputs have masks if masked, stale
 // contents if stale, and layouts decoded from d.
-func (o relOp) run(d *fuzzdata.Reader, path int, eopts engine.Options, dem raster.Float32Raster, masked, stale bool) []raster.Float32Raster {
+func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster.Float32Raster, masked, stale bool) []raster.Float32Raster {
 	outs := make([]raster.Float32Raster, o.outputs())
 	for i := range outs {
 		outs[i] = rastertest.Output(d, dem.Width, dem.Height, masked, stale)
@@ -159,7 +159,7 @@ const (
 	moderateValues
 )
 
-func relDEM(d *fuzzdata.Reader, w, h, values int, masked bool) raster.Float32Raster {
+func relDEM(d fuzzdata.Source, w, h, values int, masked bool) raster.Float32Raster {
 	dem := raster.NewFloat32(w, h, make([]float32, w*h))
 	for i := range dem.Data {
 		switch values {
@@ -182,10 +182,15 @@ func relDEM(d *fuzzdata.Reader, w, h, values int, masked bool) raster.Float32Ras
 	return dem
 }
 
-// FuzzTerrainRelations checks the relations above. Each side of a
-// relation runs through its own execution path (plain, Tiled or Chunked,
-// with its own tiles and workers) over its own memory layout, so a
-// relation also catches a halo or tile that reads the wrong cells.
+// relTB is what the relations need of a test: the whole of testing.T
+// they use, and what rapid.T offers (TestTerrainRelations).
+type relTB interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// FuzzTerrainRelations checks the relations above over fuzz inputs.
+// TestTerrainRelations checks the same body with rapid instead.
 func FuzzTerrainRelations(f *testing.F) {
 	for rel := range 11 {
 		for kind := range 4 {
@@ -193,168 +198,176 @@ func FuzzTerrainRelations(f *testing.F) {
 		}
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		d := fuzzdata.New(data)
-		rel, kind := d.IntN(11), d.IntN(4)
-		o := relOp{
-			kind:     kind,
-			cs:       float64(d.Range(1, 200)) / 4,
-			z:        float64(d.Range(-8, 8)) / 2,
-			units:    SlopeUnits(d.IntN(3)),
-			zeroFlat: d.Bool(), trig: d.Bool(),
-			azimuth:  float64(d.Range(-720, 720)) / 2,
-			altitude: float64(d.Range(0, 180)) / 2,
-		}
-		if d.Bool() {
-			o.csy = float64(d.Range(1, 200)) / 4
-		}
-		w, h := d.Range(1, 40), d.Range(1, 9)
-		masked := d.IntN(3) != 0
-		opts := func() engine.Options {
-			return engine.Options{TileWidth: d.Range(0, w+2), TileHeight: d.Range(0, h+2), Workers: d.Range(0, 3)}
-		}
-		run := func(o relOp, dem raster.Float32Raster) []raster.Float32Raster {
-			return o.run(d, d.IntN(3), opts(), rastertest.Place(d, dem), masked, true)
-		}
-		id := fmt.Sprintf("relation %d %v %d×%d masked %v", rel, o, w, h, masked)
+		terrainRelations(t, fuzzdata.New(data))
+	})
+}
 
-		switch rel {
-		case 0:
-			testDihedral(t, d, id, o, w, h, masked, run)
-		case 1: // translation
-			dem := relDEM(d, w, h, integerValues, masked)
-			moved := rastertest.Compact(dem)
-			c := float32(d.Range(-1<<19, 1<<19))
-			for i := range moved.Data {
-				moved.Data[i] += c
+// terrainRelations decodes a relation, an operation and a DEM from d and
+// checks that relation. Each side of it runs through its own execution
+// path (plain, Tiled or Chunked, with its own tiles and workers) over its
+// own memory layout, so a relation also catches a halo or tile that reads
+// the wrong cells.
+func terrainRelations(t relTB, d fuzzdata.Source) {
+	rel, kind := d.IntN(11), d.IntN(4)
+	o := relOp{
+		kind:     kind,
+		cs:       float64(d.Range(1, 200)) / 4,
+		z:        float64(d.Range(-8, 8)) / 2,
+		units:    SlopeUnits(d.IntN(3)),
+		zeroFlat: d.Bool(), trig: d.Bool(),
+		azimuth:  float64(d.Range(-720, 720)) / 2,
+		altitude: float64(d.Range(0, 180)) / 2,
+	}
+	if d.Bool() {
+		o.csy = float64(d.Range(1, 200)) / 4
+	}
+	w, h := d.Range(1, 40), d.Range(1, 9)
+	masked := d.IntN(3) != 0
+	opts := func() engine.Options {
+		return engine.Options{TileWidth: d.Range(0, w+2), TileHeight: d.Range(0, h+2), Workers: d.Range(0, 3)}
+	}
+	run := func(o relOp, dem raster.Float32Raster) []raster.Float32Raster {
+		return o.run(d, d.IntN(3), opts(), rastertest.Place(d, dem), masked, true)
+	}
+	id := fmt.Sprintf("relation %d %v %d×%d masked %v", rel, o, w, h, masked)
+
+	switch rel {
+	case 0:
+		testDihedral(t, d, id, o, w, h, masked, run)
+	case 1: // translation
+		dem := relDEM(d, w, h, integerValues, masked)
+		moved := rastertest.Compact(dem)
+		c := float32(d.Range(-1<<19, 1<<19))
+		for i := range moved.Data {
+			moved.Data[i] += c
+		}
+		requireSameOutputs(t, fmt.Sprintf("%s: DEM + %v", id, c), run(o, moved), run(o, dem), true)
+	case 2: // power-of-two scaling
+		dem := relDEM(d, w, h, integerValues, masked)
+		k := d.Range(-4, 4)
+		s := math.Ldexp(1, k)
+		scaled := rastertest.Compact(dem)
+		for i := range scaled.Data {
+			scaled.Data[i] *= float32(s)
+		}
+		so := o
+		if d.Bool() {
+			z := o.z
+			if z == 0 {
+				z = 1
 			}
-			requireSameOutputs(t, fmt.Sprintf("%s: DEM + %v", id, c), run(o, moved), run(o, dem), true)
-		case 2: // power-of-two scaling
-			dem := relDEM(d, w, h, integerValues, masked)
-			k := d.Range(-4, 4)
-			s := math.Ldexp(1, k)
-			scaled := rastertest.Compact(dem)
-			for i := range scaled.Data {
-				scaled.Data[i] *= float32(s)
-			}
-			so := o
-			if d.Bool() {
-				z := o.z
-				if z == 0 {
-					z = 1
-				}
-				so.z = z / s
-			} else {
-				so.cs *= s
-				so.csy *= s
-			}
-			requireSameOutputs(t, fmt.Sprintf("%s: DEM·2^%d with %v", id, k, so), run(so, scaled), run(o, dem), true)
-		case 3: // negation
-			dem := relDEM(d, w, h, anyValues, masked)
-			neg := rastertest.Compact(dem)
-			for i := range neg.Data {
-				neg.Data[i] = -neg.Data[i]
-			}
-			no := o
-			if no.z == 0 {
-				no.z = 1
-			}
-			no.z = -no.z
-			requireSameOutputs(t, fmt.Sprintf("%s: -DEM vs ZFactor %v", id, no.z), run(o, neg), run(no, dem), o.kind != 0)
-		case 4:
-			testDerived(t, id, o, relDEM(d, w, h, anyValues, masked), run)
-		case 5: // crop
-			dem := relDEM(d, w, h, anyValues, masked)
-			ww, hh := d.Range(1, w), d.Range(1, h)
-			x0, y0 := d.Range(0, w-ww), d.Range(0, h-hh)
-			full, part := run(o, dem), run(o, dem.Window(x0, y0, ww, hh))
-			for k := range full {
-				for y := 1; y < hh-1; y++ {
-					for x := 1; x < ww-1; x++ {
-						requireSameCell(t, fmt.Sprintf("%s: output %d of the %d×%d window at (%d, %d)", id, k, ww, hh, x0, y0),
-							part[k], x, y, full[k], x0+x, y0+y, true)
-					}
-				}
-			}
-		case 6: // Data under invalid cells
-			dem := relDEM(d, w, h, anyValues, true)
-			masked = true
-			scrambled := rastertest.Compact(dem)
-			rastertest.ScrambleInvalid(scrambled, d)
-			requireSameOutputs(t, id+": scrambled invalid cells", run(o, scrambled), run(o, dem), true)
-		case 7: // one more invalid cell
-			dem := relDEM(d, w, h, anyValues, true)
-			masked = true
-			px, py := d.IntN(w), d.IntN(h)
-			holed := rastertest.Compact(dem)
-			holed.SetValid(px, py, false)
-			a, b := run(o, dem), run(o, holed)
-			for k := range a {
-				for y := range h {
-					for x := range w {
-						cid := fmt.Sprintf("%s: output %d with DEM cell (%d, %d) invalid", id, k, px, py)
-						want := a[k].IsValid(x, y) && !rastertest.Near(x, y, px, py, 1)
-						if got := b[k].IsValid(x, y); got != want {
-							t.Fatalf("%s: cell (%d, %d) valid = %v, want %v", cid, x, y, got, want)
-						}
-						if want {
-							requireSameCell(t, cid, b[k], x, y, a[k], x, y, true)
-						}
-					}
-				}
-			}
-		case 8: // one changed value
-			dem := relDEM(d, w, h, anyValues, masked)
-			px, py := d.IntN(w), d.IntN(h)
-			changed := rastertest.Compact(dem)
-			changed.Data[changed.Index(px, py)] = d.Float32()
-			a, b := run(o, dem), run(o, changed)
-			for k := range a {
-				for y := range h {
-					for x := range w {
-						if !rastertest.Near(x, y, px, py, 1) {
-							requireSameCell(t, fmt.Sprintf("%s: output %d with DEM cell (%d, %d) changed", id, k, px, py),
-								b[k], x, y, a[k], x, y, true)
-						}
-					}
+			so.z = z / s
+		} else {
+			so.cs *= s
+			so.csy *= s
+		}
+		requireSameOutputs(t, fmt.Sprintf("%s: DEM·2^%d with %v", id, k, so), run(so, scaled), run(o, dem), true)
+	case 3: // negation
+		dem := relDEM(d, w, h, anyValues, masked)
+		neg := rastertest.Compact(dem)
+		for i := range neg.Data {
+			neg.Data[i] = -neg.Data[i]
+		}
+		no := o
+		if no.z == 0 {
+			no.z = 1
+		}
+		no.z = -no.z
+		requireSameOutputs(t, fmt.Sprintf("%s: -DEM vs ZFactor %v", id, no.z), run(o, neg), run(no, dem), o.kind != 0)
+	case 4:
+		testDerived(t, id, o, relDEM(d, w, h, anyValues, masked), run)
+	case 5: // crop
+		dem := relDEM(d, w, h, anyValues, masked)
+		ww, hh := d.Range(1, w), d.Range(1, h)
+		x0, y0 := d.Range(0, w-ww), d.Range(0, h-hh)
+		full, part := run(o, dem), run(o, dem.Window(x0, y0, ww, hh))
+		for k := range full {
+			for y := 1; y < hh-1; y++ {
+				for x := 1; x < ww-1; x++ {
+					requireSameCell(t, fmt.Sprintf("%s: output %d of the %d×%d window at (%d, %d)", id, k, ww, hh, x0, y0),
+						part[k], x, y, full[k], x0+x, y0+y, true)
 				}
 			}
-		case 9: // stale outputs
-			dem := relDEM(d, w, h, anyValues, masked)
-			pd := rastertest.Place(d, dem)
-			fresh := o.run(d, d.IntN(3), opts(), pd, masked, false)
-			stale := o.run(d, d.IntN(3), opts(), pd, masked, true)
-			requireSameOutputs(t, id+": stale outputs", stale, fresh, true)
-		case 10: // one axis's cell size cannot matter along the other
-			dem := relDEM(d, w, h, anyValues, masked)
-			byColumn := d.Bool()
+		}
+	case 6: // Data under invalid cells
+		dem := relDEM(d, w, h, anyValues, true)
+		masked = true
+		scrambled := rastertest.Compact(dem)
+		rastertest.ScrambleInvalid(scrambled, d)
+		requireSameOutputs(t, id+": scrambled invalid cells", run(o, scrambled), run(o, dem), true)
+	case 7: // one more invalid cell
+		dem := relDEM(d, w, h, anyValues, true)
+		masked = true
+		px, py := d.IntN(w), d.IntN(h)
+		holed := rastertest.Compact(dem)
+		holed.SetValid(px, py, false)
+		a, b := run(o, dem), run(o, holed)
+		for k := range a {
 			for y := range h {
 				for x := range w {
-					if byColumn {
-						dem.Data[dem.Index(x, y)] = dem.Data[dem.Index(x, 0)] // rows identical: dy = 0
-					} else {
-						dem.Data[dem.Index(x, y)] = dem.Data[dem.Index(0, y)] // columns identical: dx = 0
+					cid := fmt.Sprintf("%s: output %d with DEM cell (%d, %d) invalid", id, k, px, py)
+					want := a[k].IsValid(x, y) && !rastertest.Near(x, y, px, py, 1)
+					if got := b[k].IsValid(x, y); got != want {
+						t.Fatalf("%s: cell (%d, %d) valid = %v, want %v", cid, x, y, got, want)
+					}
+					if want {
+						requireSameCell(t, cid, b[k], x, y, a[k], x, y, true)
 					}
 				}
 			}
-			other := o
-			if other.csy == 0 {
-				other.csy = other.cs // explicit, so only one axis's size changes
-			}
-			if byColumn {
-				other.csy = float64(d.Range(1, 200)) / 4
-			} else {
-				other.cs = float64(d.Range(1, 200)) / 4
-			}
-			requireSameOutputs(t, fmt.Sprintf("%s: rows identical %v, %v", id, byColumn, other), run(other, dem), run(o, dem), true)
 		}
-	})
+	case 8: // one changed value
+		dem := relDEM(d, w, h, anyValues, masked)
+		px, py := d.IntN(w), d.IntN(h)
+		changed := rastertest.Compact(dem)
+		changed.Data[changed.Index(px, py)] = d.Float32()
+		a, b := run(o, dem), run(o, changed)
+		for k := range a {
+			for y := range h {
+				for x := range w {
+					if !rastertest.Near(x, y, px, py, 1) {
+						requireSameCell(t, fmt.Sprintf("%s: output %d with DEM cell (%d, %d) changed", id, k, px, py),
+							b[k], x, y, a[k], x, y, true)
+					}
+				}
+			}
+		}
+	case 9: // stale outputs
+		dem := relDEM(d, w, h, anyValues, masked)
+		pd := rastertest.Place(d, dem)
+		fresh := o.run(d, d.IntN(3), opts(), pd, masked, false)
+		stale := o.run(d, d.IntN(3), opts(), pd, masked, true)
+		requireSameOutputs(t, id+": stale outputs", stale, fresh, true)
+	case 10: // one axis's cell size cannot matter along the other
+		dem := relDEM(d, w, h, anyValues, masked)
+		byColumn := d.Bool()
+		for y := range h {
+			for x := range w {
+				if byColumn {
+					dem.Data[dem.Index(x, y)] = dem.Data[dem.Index(x, 0)] // rows identical: dy = 0
+				} else {
+					dem.Data[dem.Index(x, y)] = dem.Data[dem.Index(0, y)] // columns identical: dx = 0
+				}
+			}
+		}
+		other := o
+		if other.csy == 0 {
+			other.csy = other.cs // explicit, so only one axis's size changes
+		}
+		if byColumn {
+			other.csy = float64(d.Range(1, 200)) / 4
+		} else {
+			other.cs = float64(d.Range(1, 200)) / 4
+		}
+		requireSameOutputs(t, fmt.Sprintf("%s: rows identical %v, %v", id, byColumn, other), run(other, dem), run(o, dem), true)
+	}
 }
 
 // requireSameCell fails unless cell (x, y) of got and (gx, gy) of want
 // have the same validity and, if valid, the same Data: the same bits (any
 // NaN matching any NaN) with bits set, the same value (+0 matching -0)
 // otherwise.
-func requireSameCell(t *testing.T, id string, got raster.Float32Raster, x, y int, want raster.Float32Raster, wx, wy int, bits bool) {
+func requireSameCell(t relTB, id string, got raster.Float32Raster, x, y int, want raster.Float32Raster, wx, wy int, bits bool) {
 	t.Helper()
 	gv, wv := got.IsValid(x, y), want.IsValid(wx, wy)
 	if gv != wv {
@@ -374,7 +387,7 @@ func requireSameCell(t *testing.T, id string, got raster.Float32Raster, x, y int
 	}
 }
 
-func requireSameOutputs(t *testing.T, id string, got, want []raster.Float32Raster, bits bool) {
+func requireSameOutputs(t relTB, id string, got, want []raster.Float32Raster, bits bool) {
 	t.Helper()
 	for k := range want {
 		for y := range want[k].Height {
@@ -390,7 +403,7 @@ func requireSameOutputs(t *testing.T, id string, got, want []raster.Float32Raste
 // a horizontal mirror with the azimuth negated, over arbitrary values; up
 // to rounding for Aspect (the angle mapped by T) and Hillshade under the
 // other symmetries (the light mapped by T), over moderate values.
-func testDihedral(t *testing.T, d *fuzzdata.Reader, id string, o relOp, w, h int, masked bool,
+func testDihedral(t relTB, d fuzzdata.Source, id string, o relOp, w, h int, masked bool,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
 	tr := rastertest.All()[d.Range(1, 7)]
@@ -499,7 +512,7 @@ func mapAspect(tr rastertest.Dihedral, a float64, trig bool) float64 {
 // testDerived checks that Slope, Aspect and Hillshade are the documented
 // functions of Gradient's dx and dy, bit for bit, cell by cell, including
 // validity.
-func testDerived(t *testing.T, id string, o relOp, dem raster.Float32Raster,
+func testDerived(t relTB, id string, o relOp, dem raster.Float32Raster,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
 	g := o

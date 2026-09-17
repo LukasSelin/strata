@@ -1815,9 +1815,41 @@ go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
+The same relations also run as property tests, under rapid, the other
+dependency: `TestTerrainRelations` drives the body of
+`FuzzTerrainRelations` with rapid's generators in place of a fuzz input.
+Both drivers go through `fuzzdata.Source`, an interface over the values
+a test builds operands from, so each relation has one implementation and
+two ways of searching for a case that breaks it:
+`internal/fuzzdata` decodes them from the bytes of a corpus entry, and
+`internal/rapidsource` draws each one from rapid, which shrinks a failing
+case draw by draw and prints what is left, along with a seed that reruns
+it. Fuzzing searches deeper, for as long as it is given; rapid runs with
+`go test`, needs no corpus, and says what broke rather than which bytes
+broke it. Swapping the two axis scales in `terrain/stencil.go`, which the
+range checks of `FuzzTerrain` cannot see, fails it within ten cases.
+
+The raw source and sink are tested over files that fail partway through
+a call. `internal/faultio` puts `testing/iotest`'s wrappers under the
+`io.ReaderAt` and `io.WriterAt` they work through, and chooses by file
+offset which calls suffer. Reads that come back in pieces (`HalfReader`,
+`OneByteReader`, `DataErrReader`) must give exactly the cells a whole
+read gives, in the same number of calls, for grouped and per-row reads
+and with and without a fill value; reads that fail (`ErrReader`), time
+out (`TimeoutReader`) or run off the end of a short file must reach the
+caller as that error, named with the rows being read. The same faults
+run under `ProcessChunked` with several workers, on top of the per-tile
+injection of `failingSource`, and leave no goroutine behind. Two of
+them are contract violations a real file can commit: a `ReadAt` that
+returns a short count without an error, and a write that loses its tail
+and reports success (`TruncateWriter`). The first was already refused;
+the second was not, because `RawSink` checked the error and not the
+count, and now fails with `io.ErrShortWrite` instead of losing the rows
+silently.
+
 The tests of `internal/exec`, the only package that starts goroutines, and
-of `engine` fail if any test leaves a goroutine behind (goleak, the
-module's one dependency, used only by tests). `TestNoLeaksOnFailure` ends
+of `engine` fail if any test leaves a goroutine behind (goleak, one of
+the module's two dependencies, both test-only). `TestNoLeaksOnFailure` ends
 calls in every early way (kernel, source and sink panics, IO errors,
 cancellation while workers are mid-call) with several workers.
 
@@ -1830,13 +1862,29 @@ then exact: with W workers a stop in round k leaves exactly W·(k+1) units
 claimed and finished, and none started after it, instead of the
 "at most W-1" bound these tests could assert before.
 
-`TestNoBoundsChecksInLoops` compiles internal/vec with the compiler's
-optimization log (`-json`) and fails if a bounds check survives inside a
-loop, in a kernel's own loop or in code inlined into one. A check per
-element costs as much as the arithmetic it guards; the kernels reslice
-their operands to the length of the slice they range over, which proves
-the indices in bounds. Checks outside loops run once per call and are
-allowed.
+`TestNoBoundsChecksInLoops`, in internal/vec and internal/stencil,
+compiles its package with the compiler's optimization log (`-json`,
+which reports every instance rather than one line per source position)
+and fails if a bounds check survives inside a tightest loop, one with no
+loop of its own, whose every iteration pays for it. The shared parsing
+is `internal/bcecheck`. A check per element costs as much as the
+arithmetic it guards: the vec kernels reslice their operands to the
+length of the slice they range over, and the stencil row kernels read
+their 3×3 window through the shifted views of `hornViews`, indexed with
+the loop variable alone, because the compiler cannot prove `r0[i+1]` and
+`r0[i+2]` in bounds from a range over a slice two cells shorter and
+charged two checks per cell for them. That is worth 2 to 7% on gradient
+and slope and 1.9% on the package's benchmark geomean. Checks outside
+loops, and in loops that contain a loop, run once per call, row or chunk
+and are allowed.
+
+Two checks stay, each because it was measured, not assumed:
+`scalarHornHillshadeRow` keeps its two per cell, since it holds the light
+vector as well as the gradient and the views spill registers there (6.4
+against 4.6 ns/cell for a 255-cell row, 33 to 56% slower across
+`BenchmarkRowWidth`); and stencil's mask.go works a word at a time, where
+a check costs a 64th as much and the word indices come from bit offsets a
+caller chose. The test names both, so removing one is a change to it.
 
 The module is clean under staticcheck with every check enabled, and under
 gosec, in both builds. Both tools must be built with this module's Go
