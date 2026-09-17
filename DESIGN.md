@@ -795,8 +795,9 @@ internal/vec/                      internal/stencil/
 
 ## 18. Raster Algebra
 
-Package `algebra` exposes pointwise operations over whole rasters. It is
-one file, `algebra.go`, and needs no per-operation files.
+Package `algebra` exposes pointwise operations over whole rasters. The
+plain functions are one file, `algebra.go`, and the engine entry points
+another, `tiled.go`; it needs no per-operation files.
 
 Implemented (STRATA-5):
 
@@ -1352,12 +1353,20 @@ This has been measured (benchmarks/algebra/RESULTS.md):
   operation flattens at about 800 M cells/s from raw files and 1.1
   billion from memory sources with 12 workers.
 
-More complex workloads should benefit more:
+The terrain kernels are the other case (benchmarks/terrain/RESULTS.md).
+Gradient, Slope, Aspect and Hillshade hold their throughput from 256² to
+16384² on one core, because a 3×3 stencil with an arctangent or a square
+root per cell does enough work per byte that memory keeps up: Slope,
+Aspect and Hillshade ask for 4–11 GB/s of the 22 a core can pull, so the
+kernel is the limit. Gradient, which writes two outputs and so moves 12
+bytes per cell, runs at 13–20 GB/s and is the one terrain operation near
+the wall. SIMD is worth 8.7× to Aspect, 5.7× to Hillshade, 4.1× to Slope
+and 2.6× to Gradient at 4096². That is why workers scale these operations
+where they barely scale the algebra ones.
+
+The rest of the list should benefit the same way, and is not measured yet:
 
 ```text
-slope
-aspect
-hillshade
 convolution
 resampling
 interpolation
@@ -1730,9 +1739,9 @@ parallel scaling
 peak memory
 ```
 
-- Peak memory is not measured by the harness's benchmarks. The algebra
-  and engine suites' peaks were measured by hand and documented in their
-  `doc.go`. `suite.ProcessMemory` reads the OS counters, and
+- Peak memory is not measured by the harness's benchmarks. The algebra,
+  engine and terrain suites' peaks were measured by hand and documented in
+  their `doc.go`. `suite.ProcessMemory` reads the OS counters, and
   `cmd/stratademo` reports each run's peak against the §27 bound from a
   child process of its own (§43).
 - Worker scaling compares SIMD with 1 worker, with one worker per physical
@@ -2088,15 +2097,27 @@ terrain.Slope(
 )
 ```
 
-Benchmark headline, as printed by `stratabench`:
+Benchmark headline, as printed by `stratabench`
+(benchmarks/engine/RESULTS.md), for a 4096 × 4096 raster with no mask, in
+M cells/sec, the worker columns running the strips shape:
 
 ```text
-4096 × 4096 DEM
-
-scalar:          xxx M cells/sec
-SIMD:            xxx M cells/sec
-SIMD + workers:  xxx M cells/sec
+              scalar      SIMD  SIMD/scalar   SIMD + 12 workers   SIMD + 24 workers
+Slope            164       686        4.19×                2644                2592
+Hillshade        209      1247        5.97×                2654                2642
+Clamp            924      2303        2.49×                2812                2733
 ```
+
+The other categories measure the same kernels on one worker, pinned:
+`terrain` adds Gradient (490 → 1282 M cells/s, 2.6×) and Aspect (61.6 →
+536, 8.7×), and agrees with the plain numbers above within 4%; `algebra`
+reports its six operations, which are memory-bandwidth-bound from 4096²
+on (§28). `Mask`, added after those runs, has no benchmark yet.
+
+Status: every item above is implemented and measured, and the §43
+validation target ran. What publishing v0.1 still needs is outside this
+list: a fetchable module path (`go.mod` says `strata`), a licence, a
+README and CI.
 
 ## 43. First Validation Target
 
@@ -2185,7 +2206,7 @@ That would make the project's value proposition immediately understandable.
 
 ## 45. Development Roadmap
 
-**v0.1: Raster compute foundation** (§42)
+**v0.1: Raster compute foundation** (§42, scope complete)
 
 ```text
 Float32Raster, windows, validity bitmap
