@@ -1,4 +1,4 @@
-package engine_test
+package exec_test
 
 import (
 	"context"
@@ -10,10 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"strata/algebra"
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/raster"
-	"strata/terrain"
 )
 
 // boxKernel writes the mean of the (2r+1)×(2r+1) neighbourhood of every
@@ -25,7 +24,7 @@ type boxKernel struct{ r, inputs, outputs int }
 func (k boxKernel) Radius() int                  { return k.r }
 func (k boxKernel) Arity() (inputs, outputs int) { return k.inputs, max(k.outputs, 1) }
 
-func (k boxKernel) Process(dst engine.Span, src engine.Window) {
+func (k boxKernel) Process(dst exec.Span, src exec.Window) {
 	n := float32(k.inputs * (2*k.r + 1) * (2*k.r + 1))
 	for y := range dst.Height {
 		for x := range dst.Width {
@@ -115,7 +114,7 @@ func testBox(t *testing.T, r, inputs, outputs, w, h int, lay layout, inMask, out
 		outs = append(outs, newOperand(rng, w, h, lay.out, outMask))
 	}
 	box := boxKernel{r: r, inputs: inputs, outputs: outputs}
-	var k engine.Kernel = box
+	var k exec.Kernel = box
 	edge := float32(math.NaN())
 	if customEdge {
 		edge = -7
@@ -150,7 +149,7 @@ type posKernel struct{ r int }
 
 func (k posKernel) Radius() int                { return k.r }
 func (posKernel) Arity() (inputs, outputs int) { return 1, 1 }
-func (posKernel) Process(dst engine.Span, src engine.Window) {
+func (posKernel) Process(dst exec.Span, src exec.Window) {
 	out := dst.Dst[0]
 	for y := range dst.Height {
 		for x := range dst.Width {
@@ -179,13 +178,13 @@ func TestSpanPosition(t *testing.T) {
 // cancelAfter wraps a kernel, counts Process calls and cancels a context
 // when the count reaches after.
 type cancelAfter struct {
-	engine.Kernel
+	exec.Kernel
 	after  int
 	calls  *int
 	cancel context.CancelFunc
 }
 
-func (k cancelAfter) Process(dst engine.Span, src engine.Window) {
+func (k cancelAfter) Process(dst exec.Span, src exec.Window) {
 	*k.calls++
 	k.Kernel.Process(dst, src)
 	if *k.calls == k.after {
@@ -193,20 +192,20 @@ func (k cancelAfter) Process(dst engine.Span, src engine.Window) {
 	}
 }
 
-// TestCancellation cancels Slope after some bands. ProcessN must return
+// TestCancellation cancels a radius-1 kernel after some bands. ProcessN must return
 // context.Canceled without calling the kernel again, the bands it
 // finished must hold final results (Data and validity), and every other
 // cell must be untouched.
 func TestCancellation(t *testing.T) {
-	defer engine.SetBandCells(1)() // one-row bands
+	defer exec.SetBandCells(1)() // one-row bands
 	const w, h = 40, 30
 	rng := rand.New(rand.NewPCG(4, 4))
 	dem := newOperand(rng, w, h, true, true)
 	out := newOperand(rng, w, h, true, true)
-	opts := terrain.SlopeOptions{CellSize: 10}
+	box := boxKernel{r: 1, inputs: 1}
 
 	final := out.clone()
-	terrain.Slope(final.r, dem.r, opts)
+	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
 
 	for _, tiles := range []engine.Options{{}, {TileWidth: 7, TileHeight: 4}} {
 		for _, after := range []int{1, 5, 17} {
@@ -214,8 +213,8 @@ func TestCancellation(t *testing.T) {
 			got := out.clone()
 			ctx, cancel := context.WithCancel(context.Background())
 			calls := 0
-			k := cancelAfter{terrain.SlopeKernel(opts), after, &calls, cancel}
-			err := engine.Process(ctx, got.r, dem.r, k, tiles)
+			k := cancelAfter{box, after, &calls, cancel}
+			err := exec.Process(ctx, got.r, dem.r, k, tiles)
 			cancel()
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("%s: err = %v, want context.Canceled", id, err)
@@ -238,8 +237,8 @@ func TestCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
 	defer cancel()
 	calls := 0
-	k := cancelAfter{terrain.SlopeKernel(opts), -1, &calls, cancel}
-	if err := engine.Process(ctx, got.r, dem.r, k, engine.Options{}); !errors.Is(err, context.DeadlineExceeded) {
+	k := cancelAfter{box, -1, &calls, cancel}
+	if err := exec.Process(ctx, got.r, dem.r, k, engine.Options{}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expired context: err = %v", err)
 	}
 	if calls != 0 {
@@ -326,25 +325,25 @@ func TestNoAllocsPerBand(t *testing.T) {
 	dem := newOperand(rng, w, h, true, true)
 	dst := newOperand(rng, w, h, true, true)
 	two := newOperand(rng, w, h, false, true)
-	slope := terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 1})
-	add := algebra.AddKernel()
+	slope := boxKernel{r: 1, inputs: 1}
+	add := boxKernel{r: 0, inputs: 2}
 	box := boxKernel{r: 2, inputs: 2}
 	ctx := context.Background()
 	count := func(opts engine.Options, f func(engine.Options)) float64 {
 		return testing.AllocsPerRun(20, func() { f(opts) })
 	}
 	cases := map[string]func(engine.Options){
-		"slope": func(o engine.Options) { _ = engine.Process(ctx, dst.r, dem.r, slope, o) },
-		"add": func(o engine.Options) {
-			_ = engine.ProcessN(ctx, []raster.Float32Raster{dst.r}, []raster.Float32Raster{dem.r, two.r}, add, o)
+		"radius 1": func(o engine.Options) { _ = exec.Process(ctx, dst.r, dem.r, slope, o) },
+		"radius 0": func(o engine.Options) {
+			_ = exec.ProcessN(ctx, []raster.Float32Raster{dst.r}, []raster.Float32Raster{dem.r, two.r}, add, o)
 		},
-		"box": func(o engine.Options) {
-			_ = engine.ProcessN(ctx, []raster.Float32Raster{dst.r}, []raster.Float32Raster{dem.r, two.r}, box, o)
+		"radius 2": func(o engine.Options) {
+			_ = exec.ProcessN(ctx, []raster.Float32Raster{dst.r}, []raster.Float32Raster{dem.r, two.r}, box, o)
 		},
 	}
 	for name, f := range cases {
 		whole := count(engine.Options{}, f)
-		restore := engine.SetBandCells(1)
+		restore := exec.SetBandCells(1)
 		tiled := count(engine.Options{TileWidth: 3, TileHeight: 2}, f)
 		restore()
 		if tiled != whole {
@@ -376,78 +375,79 @@ func TestPanics(t *testing.T) {
 	a, b := r(6, 5), r(6, 5)
 	masked := r(6, 5)
 	masked.Valid = raster.NewMask(30)
-	slope := terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 1})
-	clamp := algebra.ClampKernel(0, 1)
-	gradient := terrain.GradientKernel(terrain.GradientOptions{CellSize: 1})
+	slope := boxKernel{r: 1, inputs: 1}
+	clamp := boxKernel{r: 0, inputs: 1}
+	gradient := boxKernel{r: 1, inputs: 1, outputs: 2}
+	add := boxKernel{r: 0, inputs: 2}
 
-	mustPanic(t, "engine: nil kernel", func() { _ = engine.Process(ctx, a, b, nil, engine.Options{}) })
-	mustPanic(t, "radius -1 is negative", func() { _ = engine.Process(ctx, a, b, boxKernel{r: -1, inputs: 1}, engine.Options{}) })
+	mustPanic(t, "engine: nil kernel", func() { _ = exec.Process(ctx, a, b, nil, engine.Options{}) })
+	mustPanic(t, "radius -1 is negative", func() { _ = exec.Process(ctx, a, b, boxKernel{r: -1, inputs: 1}, engine.Options{}) })
 	mustPanic(t, "needs at least one output", func() {
-		_ = engine.ProcessN(ctx, nil, one(a), zeroOut{}, engine.Options{})
+		_ = exec.ProcessN(ctx, nil, one(a), zeroOut{}, engine.Options{})
 	})
-	mustPanic(t, "takes 2 inputs and 1 outputs, got 1 and 1", func() { _ = engine.Process(ctx, a, b, algebra.AddKernel(), engine.Options{}) })
-	mustPanic(t, "takes 1 inputs and 2 outputs, got 1 and 1", func() { _ = engine.Process(ctx, a, b, gradient, engine.Options{}) })
-	mustPanic(t, "negative Options", func() { _ = engine.Process(ctx, a, b, clamp, engine.Options{TileWidth: -1}) })
-	mustPanic(t, "negative Options", func() { _ = engine.Process(ctx, a, b, clamp, engine.Options{Workers: -2}) })
+	mustPanic(t, "takes 2 inputs and 1 outputs, got 1 and 1", func() { _ = exec.Process(ctx, a, b, add, engine.Options{}) })
+	mustPanic(t, "takes 1 inputs and 2 outputs, got 1 and 1", func() { _ = exec.Process(ctx, a, b, gradient, engine.Options{}) })
+	mustPanic(t, "negative Options", func() { _ = exec.Process(ctx, a, b, clamp, engine.Options{TileWidth: -1}) })
+	mustPanic(t, "negative Options", func() { _ = exec.Process(ctx, a, b, clamp, engine.Options{Workers: -2}) })
 
-	mustPanic(t, "engine: src[0] is 5×6, dst[0] is 6×5", func() { _ = engine.Process(ctx, a, r(5, 6), clamp, engine.Options{}) })
+	mustPanic(t, "engine: src[0] is 5×6, dst[0] is 6×5", func() { _ = exec.Process(ctx, a, r(5, 6), clamp, engine.Options{}) })
 	mustPanic(t, "engine: dst[1] is 6×4, dst[0] is 6×5", func() {
-		_ = engine.ProcessN(ctx, one(a, r(6, 4)), one(b), gradient, engine.Options{})
+		_ = exec.ProcessN(ctx, one(a, r(6, 4)), one(b), gradient, engine.Options{})
 	})
 	mustPanic(t, "engine: src[0]: raster: data has", func() {
 		short := b
 		short.Data = short.Data[:5]
-		_ = engine.Process(ctx, a, short, clamp, engine.Options{})
+		_ = exec.Process(ctx, a, short, clamp, engine.Options{})
 	})
 	mustPanic(t, "an input has a validity mask but dst[0].Valid is nil", func() {
-		_ = engine.Process(ctx, a, masked, slope, engine.Options{})
+		_ = exec.Process(ctx, a, masked, slope, engine.Options{})
 	})
 	mustPanic(t, "an input has a validity mask but dst[1].Valid is nil", func() {
-		_ = engine.ProcessN(ctx, one(raster.NewFloat32Like(masked), b), one(masked), gradient, engine.Options{})
+		_ = exec.ProcessN(ctx, one(raster.NewFloat32Like(masked), b), one(masked), gradient, engine.Options{})
 	})
 
 	// Radius > 0: outputs must not share any memory with inputs or each
 	// other, judged by span.
 	big := r(6, 12)
-	mustPanic(t, "dst[0] and src[0] share Data", func() { _ = engine.Process(ctx, a, a, slope, engine.Options{}) })
+	mustPanic(t, "dst[0] and src[0] share Data", func() { _ = exec.Process(ctx, a, a, slope, engine.Options{}) })
 	mustPanic(t, "dst[0] and src[0] share Data", func() {
-		_ = engine.Process(ctx, big.Window(0, 2, 6, 5), big.Window(0, 0, 6, 5), slope, engine.Options{})
+		_ = exec.Process(ctx, big.Window(0, 2, 6, 5), big.Window(0, 0, 6, 5), slope, engine.Options{})
 	})
 	mustPanic(t, "dst[0] and src[0] share validity bits", func() {
 		dst := raster.NewFloat32Like(masked)
 		dst.Valid = masked.Valid
-		_ = engine.Process(ctx, dst, masked, slope, engine.Options{})
+		_ = exec.Process(ctx, dst, masked, slope, engine.Options{})
 	})
 	mustPanic(t, "dst[0] and dst[1] share Data", func() {
-		_ = engine.ProcessN(ctx, one(a, a), one(b), gradient, engine.Options{})
+		_ = exec.ProcessN(ctx, one(a, a), one(b), gradient, engine.Options{})
 	})
 	// Disjoint windows of one parent are fine, including a shared mask.
 	big.Valid = raster.NewMask(72)
-	_ = engine.Process(ctx, big.Window(0, 6, 6, 5), big.Window(0, 0, 6, 5), slope, engine.Options{})
+	_ = exec.Process(ctx, big.Window(0, 6, 6, 5), big.Window(0, 0, 6, 5), slope, engine.Options{})
 
 	// Radius 0: the same cells are fine (in place), partial overlap is not.
-	_ = engine.Process(ctx, a, a, clamp, engine.Options{})
-	_ = engine.Process(ctx, masked, masked, clamp, engine.Options{})
+	_ = exec.Process(ctx, a, a, clamp, engine.Options{})
+	_ = exec.Process(ctx, masked, masked, clamp, engine.Options{})
 	wide := r(10, 10)
 	w1, w2 := wide.Window(0, 0, 6, 5), wide.Window(1, 0, 6, 5)
 	mustPanic(t, "dst[0] overlaps src[0] at a different offset or stride", func() {
-		_ = engine.Process(ctx, w1, w2, clamp, engine.Options{})
+		_ = exec.Process(ctx, w1, w2, clamp, engine.Options{})
 	})
 	mustPanic(t, "dst[0] overlaps src[1] at a different offset or stride", func() {
-		_ = engine.ProcessN(ctx, one(w2), one(b, w1), algebra.AddKernel(), engine.Options{})
+		_ = exec.ProcessN(ctx, one(w2), one(b, w1), add, engine.Options{})
 	})
 	mustPanic(t, "dst[0] validity bits overlap src[0]'s", func() {
 		src := r(6, 5)
 		src.Valid = raster.NewMask(40)
 		dst := raster.NewFloat32Like(src)
 		dst.Valid, dst.ValidOffset = src.Valid, 3
-		_ = engine.Process(ctx, dst, src, clamp, engine.Options{})
+		_ = exec.Process(ctx, dst, src, clamp, engine.Options{})
 	})
 	mustPanic(t, "dst[1] is src[0]; only a kernel with one output runs in place", func() {
-		_ = engine.ProcessN(ctx, one(b, a), one(a), splitKernel{}, engine.Options{})
+		_ = exec.ProcessN(ctx, one(b, a), one(a), splitKernel{}, engine.Options{})
 	})
 	mustPanic(t, "dst[0] and dst[1] share Data", func() {
-		_ = engine.ProcessN(ctx, one(b, b), one(a), splitKernel{}, engine.Options{})
+		_ = exec.ProcessN(ctx, one(b, b), one(a), splitKernel{}, engine.Options{})
 	})
 }
 
@@ -456,7 +456,7 @@ type splitKernel struct{}
 
 func (splitKernel) Radius() int                  { return 0 }
 func (splitKernel) Arity() (inputs, outputs int) { return 1, 2 }
-func (splitKernel) Process(dst engine.Span, src engine.Window) {
+func (splitKernel) Process(dst exec.Span, src exec.Window) {
 	for y := range dst.Height {
 		copy(dst.Dst[0].Row(y), src.Src[0].Row(y))
 		copy(dst.Dst[1].Row(y), src.Src[0].Row(y))
@@ -466,6 +466,6 @@ func (splitKernel) Process(dst engine.Span, src engine.Window) {
 // zeroOut is a kernel without outputs, which the engine rejects.
 type zeroOut struct{}
 
-func (zeroOut) Radius() int                                { return 0 }
-func (zeroOut) Arity() (inputs, outputs int)               { return 1, 0 }
-func (zeroOut) Process(dst engine.Span, src engine.Window) {}
+func (zeroOut) Radius() int                            { return 0 }
+func (zeroOut) Arity() (inputs, outputs int)           { return 1, 0 }
+func (zeroOut) Process(dst exec.Span, src exec.Window) {}

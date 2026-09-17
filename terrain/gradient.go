@@ -1,7 +1,9 @@
 package terrain
 
 import (
+	"context"
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -29,13 +31,19 @@ type GradientOptions struct {
 // edges and validity. dx, dy and dem must have the same dimensions and
 // must not overlap; their strides may differ.
 func Gradient(dx, dy, dem raster.Float32Raster, opts GradientOptions) {
-	run(GradientKernel(opts), dem, dx, dy)
+	run(newGradientKernel(opts), dem, dx, dy)
 }
 
-// GradientKernel returns Gradient as an engine kernel with radius 1, one
-// input (the DEM) and two outputs, dx then dy, for engine.ProcessN. It
-// panics on invalid options, as Gradient does.
-func GradientKernel(opts GradientOptions) engine.Kernel {
+// GradientTiled is Gradient run by the engine: it takes the same operands, applies
+// the same checks and writes the same bits for every engine.Options, and
+// returns ctx.Err() if ctx is done before every cell is written. See
+// package engine for tiling and cancellation.
+func GradientTiled(ctx context.Context, dx, dy, dem raster.Float32Raster, opts GradientOptions, eopts engine.Options) error {
+	return runTiled(ctx, eopts, newGradientKernel(opts), dem, dx, dy)
+}
+
+// newGradientKernel resolves and checks opts for Gradient's kernel.
+func newGradientKernel(opts GradientOptions) gradientKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	return gradientKernel{horn{kx, ky}}
 }
@@ -44,7 +52,7 @@ type gradientKernel struct{ horn }
 
 func (gradientKernel) Arity() (inputs, outputs int) { return 1, 2 }
 
-func (k gradientKernel) Process(dst engine.Span, src engine.Window) {
+func (k gradientKernel) Process(dst exec.Span, src exec.Window) {
 	dx, dy, dem := dst.Dst[0], dst.Dst[1], src.Src[0]
 	for y := range dst.Height {
 		stencil.HornGradientRow(dx.Row(y), dy.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky)

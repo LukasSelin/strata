@@ -1,10 +1,12 @@
 package terrain
 
 import (
+	"context"
 	"fmt"
 	"math"
 
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -44,13 +46,19 @@ type SlopeOptions struct {
 // kernels share bit-for-bit. Checked over every float32 input, it is
 // within 1.41e-7 radians (8.1e-6 degrees) of math.Atan.
 func Slope(dst, dem raster.Float32Raster, opts SlopeOptions) {
-	run(SlopeKernel(opts), dem, dst)
+	run(newSlopeKernel(opts), dem, dst)
 }
 
-// SlopeKernel returns Slope as an engine kernel with radius 1, one input
-// (the DEM) and one output, for engine.Process. It panics on invalid
-// options, as Slope does.
-func SlopeKernel(opts SlopeOptions) engine.Kernel {
+// SlopeTiled is Slope run by the engine: it takes the same operands, applies
+// the same checks and writes the same bits for every engine.Options, and
+// returns ctx.Err() if ctx is done before every cell is written. See
+// package engine for tiling and cancellation.
+func SlopeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts SlopeOptions, eopts engine.Options) error {
+	return runTiled(ctx, eopts, newSlopeKernel(opts), dem, dst)
+}
+
+// newSlopeKernel resolves and checks opts for Slope's kernel.
+func newSlopeKernel(opts SlopeOptions) slopeKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	var scale float32
 	atan := true
@@ -73,7 +81,7 @@ type slopeKernel struct {
 	atan  bool
 }
 
-func (k slopeKernel) Process(dst engine.Span, src engine.Window) {
+func (k slopeKernel) Process(dst exec.Span, src exec.Window) {
 	out, dem := dst.Dst[0], src.Src[0]
 	for y := range dst.Height {
 		stencil.HornSlopeRow(out.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky, k.scale, k.atan)

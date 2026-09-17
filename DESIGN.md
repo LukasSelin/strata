@@ -953,14 +953,25 @@ Hillshade   radius 1
 
 The execution engine can then handle boundaries and halos generically.
 
-**For v0.1 the kernel interface is internal to the engine.** Users call
-typed entry points (§25). The interface stays internal until its shape
-settles, because:
+**For v0.1 the kernel interface is internal** (`internal/exec`). Users
+call typed entry points (§25). STRATA-8 settled a first shape:
 
-- operations can have several outputs (`Gradient` writes `dx` and `dy`);
-- `Span` is not yet defined;
-- a kernel has to declare how it derives validity (AND of inputs, or
-  erosion by its radius).
+- `Radius()`, `Arity() (inputs, outputs int)` and `Process(dst Span, src
+  Window)`, plus an optional `Edge() float32` for the value written at
+  the true raster edge (NaN by default).
+- A `Span` is a rectangle of output cells, one raster view per output; a
+  `Window` holds one view per input, grown by the radius on every side.
+  The engine calls `Process` once per band of rows of a tile, so row
+  kernels loop over rows and pointwise kernels keep one vector call per
+  contiguous span.
+- Several inputs or outputs (`Add`, `Gradient`) are slices in one call,
+  which keeps fusion (§29) possible: a fused pipeline is one kernel.
+- Kernels write only Data. The engine derives validity: the AND of every
+  masked input over the (2r+1)×(2r+1) neighbourhood, with word-level
+  erosion.
+
+It stays internal until worker pools, sources and fusion have exercised
+it.
 
 ## 23. Halo Handling
 
@@ -1002,7 +1013,10 @@ Algorithms should not implement tile-boundary coordination individually.
   boundary and mask copies are plain word copies
   (benchmarks/nodata/RESULTS.md).
 
-Status: not started (STRATA-8/9, v0.1).
+Status: in-memory halos done (STRATA-8). Tiles of in-memory rasters read
+their halos as views of the input, and the engine writes the edge policy
+itself instead of calling the kernel for edge cells. Copied tile and halo
+buffers for sources are STRATA-9.
 
 ## 24. Chunk-Oriented Execution
 
@@ -1089,13 +1103,27 @@ bounded-memory execution
 Internally:
 
 ```go
-engine.Process(ctx, src, dst, kernel, opts) error
+exec.Process(ctx, dst, src, kernel, opts) error // internal/exec
 ```
 
 Publicly, for v0.1, typed entry points take a source, a sink, the
-operation's own options and the engine options. For example, a tiled
-counterpart of `terrain.Slope`. Which package they live in is decided in
-STRATA-8. The engine must not import a package that imports the engine.
+operation's own options and the engine options. They live in the
+operation's own package, next to the plain function, and package `engine`
+holds only what every entry point shares (`Options`, later sources and
+sinks). That way the engine never imports a package that imports it, and
+adding an operation does not grow the engine:
+
+```go
+err := terrain.SlopeTiled(ctx, dst, dem, terrain.SlopeOptions{CellSize: 30},
+    engine.Options{TileWidth: 512, TileHeight: 512})
+```
+
+STRATA-8 added `AddTiled`, `SubTiled`, `MulTiled`, `MinTiled`, `MaxTiled`,
+`ClampTiled`, `GradientTiled`, `SlopeTiled`, `AspectTiled` and
+`HillshadeTiled` over in-memory rasters. They give the same bits as the
+plain functions for every `Options`. The terrain functions run the same
+kernels as one tile; the algebra functions stay direct to keep their zero
+allocations.
 
 Configuration:
 
@@ -1108,9 +1136,13 @@ type Options struct {
 ```
 
 The engine returns errors for IO and cancellation, and panics on
-programming errors, as the rest of strata does.
+programming errors, as the rest of strata does. Context cancellation is
+checked between bands of rows; a cancelled call leaves every output cell
+either final or untouched.
 
-Status: not started (STRATA-8/9, v0.1).
+Status: single-thread tiled execution over in-memory rasters done
+(STRATA-8). `Workers` is accepted and ignored; worker pools, sources and
+sinks are STRATA-9.
 
 ## 26. Parallelism Model
 
@@ -1648,7 +1680,8 @@ strata/
 │
 ├── algebra/                   implemented (+ Mask planned)
 │   ├── doc.go
-│   └── algebra.go
+│   ├── algebra.go
+│   └── tiled.go               tiled entry points and their kernels
 │
 ├── terrain/                   implemented
 │   ├── gradient.go
@@ -1657,17 +1690,21 @@ strata/
 │   ├── hillshade.go
 │   └── stencil.go
 │
-├── engine/                    planned (STRATA-8/9)
-│   ├── engine.go
-│   ├── source.go              RasterSource / RasterSink, memory + raw file
-│   ├── tile.go
-│   ├── halo.go
-│   ├── worker.go
-│   └── workspace.go
+├── engine/                    public engine configuration
+│   ├── engine.go              Options (STRATA-8)
+│   └── source.go              planned: RasterSource / RasterSink, memory + raw file
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
-│   └── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── exec/                  kernel machinery (STRATA-8)
+│   │   ├── kernel.go          Kernel, Span, Window
+│   │   ├── process.go         Process, operand checks
+│   │   ├── tile.go            tile and band planning, cancellation
+│   │   ├── halo.go            halos, edges, validity
+│   │   ├── worker.go          planned (STRATA-9)
+│   │   └── workspace.go       planned
+│   └── overlap/               Data and mask overlap checks
 │
 ├── benchmarks/                implemented (§38)
 └── docs/adr/
@@ -1754,9 +1791,10 @@ Aspect                                      done (STRATA-7)
 Hillshade                                   done (STRATA-7)
 
 single-thread processing                    done
-multi-worker tile processing                planned (STRATA-8/9)
-halo handling                               planned (STRATA-8/9)
-bounded-memory tiled execution              planned (STRATA-8/9)
+tiled entry points (single thread)          done (STRATA-8)
+multi-worker tile processing                planned (STRATA-9)
+halo handling                               in-memory done (STRATA-8)
+bounded-memory tiled execution              planned (STRATA-9)
 memory and raw float32 file source/sink     planned
 
 benchmark suite                             algebra done (STRATA-10); terrain, engine next
