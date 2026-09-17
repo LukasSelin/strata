@@ -9,9 +9,11 @@ import (
 // over the cells whose neighbourhood lies inside the rasters, with the
 // halo read from the inputs beyond the band, and the edge value over the
 // rest. It writes Data first and then, holding the mask lock, validity,
-// so Data work runs concurrently across workers.
+// so Data work runs concurrently across workers. Coordinates here are
+// the raster's; the operands start at (dx, dy) and (sx, sy).
 func (e *job) band(wk *worker, i int) {
 	x0, y0, x1, y1 := e.plan.band(i)
+	x0, y0, x1, y1 = x0+e.dx, y0+e.dy, x1+e.dx, y1+e.dy
 	r := e.r
 	ix0, ix1 := max(x0, r), min(x1, e.w-r)
 	iy0, iy1 := max(y0, r), min(y1, e.h-r)
@@ -62,10 +64,10 @@ func (e *job) edges(y0, y1, x0, x1, ix0, ix1, iy0, iy1 int, interior, valid bool
 func (e *job) interior(wk *worker, x, y, w, h int) {
 	r := e.r
 	for i, d := range e.dst {
-		wk.dstViews[i] = d.Window(x, y, w, h)
+		wk.dstViews[i] = d.Window(x-e.dx, y-e.dy, w, h)
 	}
 	for i, s := range e.src {
-		wk.srcViews[i] = s.Window(x-r, y-r, w+2*r, h+2*r)
+		wk.srcViews[i] = s.Window(x-r-e.sx, y-r-e.sy, w+2*r, h+2*r)
 	}
 	e.k.Process(Span{X: x, Y: y, Width: w, Height: h, Dst: wk.dstViews}, Window{Radius: r, Src: wk.srcViews})
 }
@@ -94,7 +96,7 @@ func (e *job) fillEdgeData(y, x0, x1 int) {
 		return
 	}
 	for _, d := range e.dst {
-		start := y*d.Stride + x0
+		start := (y-e.dy)*d.Stride + x0 - e.dx
 		row := d.Data[start : start+x1-x0]
 		for i := range row {
 			row[i] = e.edge
@@ -110,7 +112,7 @@ func (e *job) clearEdgeValid(y, x0, x1 int) {
 		return
 	}
 	for _, d := range e.dst {
-		start := d.ValidOffset + y*d.Stride + x0
+		start := d.ValidOffset + (y-e.dy)*d.Stride + x0 - e.dx
 		switch {
 		case d.Valid == nil:
 		case n <= 8:

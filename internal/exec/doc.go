@@ -3,14 +3,17 @@
 // plans tiles and bands of rows, builds each call's halo, writes edges,
 // computes validity masks, checks cancellation and runs bands on
 // workers, so that kernels only compute values (DESIGN.md §22, §23, §25,
-// §26).
+// §26). ProcessN runs over rasters in memory; ProcessChunked runs the same
+// kernels over engine.RasterSources and engine.RasterSinks a tile at a
+// time, in bounded memory (DESIGN.md §24, §27).
 //
 //	err := exec.Process(ctx, dst, dem, slopeKernel{...}, opts)
+//	err := exec.ProcessChunked(ctx, sinks, sources, slopeKernel{...}, opts)
 //
 // The kernel interface is internal (DESIGN.md §22): package algebra and
 // package terrain implement kernels with unexported types and expose
-// typed entry points such as terrain.SlopeTiled, which take
-// engine.Options.
+// typed entry points such as terrain.SlopeTiled and terrain.SlopeChunked,
+// which take engine.Options.
 //
 // # Kernels, spans and windows
 //
@@ -162,13 +165,49 @@
 // for all of them and panics on the calling goroutine with the same value
 // (the worker's stack is not preserved). Output cells are then
 // unspecified.
-
+//
+// # Chunked execution
+//
+// ProcessChunked plans tiles as ProcessN does, but its unit of work
+// across workers is a tile, not a band. Each worker allocates, once per
+// call, one buffer per input covering a tile grown by the radius (at most
+// (TileWidth+2r)×(TileHeight+2r) cells) and one per output covering a
+// tile. The operands that have validity, a Masked source's input and a
+// Masked sink's output, get a mask starting at bit 0 and a Stride rounded
+// up to a multiple of 64 (DESIGN.md §23, §27); the others are compact, so
+// that sources and sinks can move consecutive full-width rows in one call
+// and pointwise kernels keep their whole-span path. For each tile the worker
+// reads the tile's cells grown by the radius and clipped to the raster
+// from every source, then runs every band of the tile, in order, through
+// the same band code as ProcessN, with the buffers as operands placed at
+// their raster positions: a job's dst and src start at (dx, dy) and (sx,
+// sy), Span.X and Span.Y are raster positions, and only cells within the
+// radius of the raster's edge get the edge policy. Cells on a tile's edge
+// read their neighbours from the halo in the buffer. So the kernel sees
+// the same neighbourhoods, computes the same Data and the engine the same
+// validity as in a whole-raster ProcessN call, and the worker writes the
+// finished tile to every sink. The buffers belong to one worker, so its
+// bands take no mask lock.
+//
+// Workers claim tiles through the same scheduler as bands: they check ctx
+// before each tile and always finish a tile they have claimed, so reads
+// and writes get context.WithoutCancel(ctx). A read or write error stops
+// the workers claiming tiles and is returned, wrapped with the operand
+// and position; see package engine for what the sinks then hold. Only
+// memory sources and sinks can be checked for shared memory: a memory
+// sink must not share Data or validity words with another memory sink or
+// with a memory source, because other tiles would read or rewrite them
+// concurrently (a radius-0 kernel in place included); ProcessN is the way
+// to compute in place.
+//
 // # Allocation
 //
 // A call allocates a handful of small slices (views, mask regions and
 // one row of scratch words per worker, in one backing array each) and
 // its goroutines, and nothing per tile, band, row or cell, and pools
-// nothing (DESIGN.md §37). Kernels should not allocate in Process
+// nothing (DESIGN.md §37). ProcessChunked also allocates each worker's
+// tile buffers, one Data and one mask array per worker, and about ten
+// small slices per worker; nothing per tile. Kernels should not allocate in Process
 // either, since it runs once per band. Callers that cannot afford even
 // per-call allocations, such as package algebra's plain functions, call
 // their vector kernels directly instead.
@@ -179,5 +218,8 @@
 // (DESIGN.md §26). Kernels must be safe to call concurrently on disjoint
 // spans, and must not start goroutines themselves. Each worker has its
 // own views and scratch words; nothing a kernel is handed is shared with
-// another worker except the operands' memory.
+// another worker except the operands' memory, and in ProcessChunked not
+// even that. Sources and sinks must be safe for concurrent reads and for
+// concurrent writes of disjoint regions (engine.RasterSource and
+// engine.RasterSink).
 package exec

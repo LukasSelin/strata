@@ -9,20 +9,44 @@ import (
 
 // Tile shapes of the engine category (benchmarks/engine): plain is the
 // plain function, the one-worker reference; strips and 256x256 run
-// through the engine.
+// through the engine. A category without strips, such as
+// benchmarks/chunked, reports scaling for its first shape named strips
+// followed by a size, such as strips256.
 const (
 	tilesPlain  = "plain"
 	tilesStrips = "strips"
 )
 
 // renderTiled prints a package with a tiles level: a §42 headline whose
-// worker columns are the strips shape, and one table per operation.
+// worker columns are the primary shape, and one table per operation.
 func renderTiled(w io.Writer, res *results, pkg string) {
 	workers := res.workerCounts(pkg, "")
-	renderTiledHeadline(w, res, pkg, 4096, workers)
+	primary := res.primaryShape(pkg)
+	renderTiledHeadline(w, res, pkg, 4096, workers, primary)
 	for _, op := range res.ops[pkg] {
-		renderTiledOp(w, res, pkg, op)
+		renderTiledOp(w, res, pkg, op, primary)
 	}
+}
+
+// primaryShape is the shape whose worker scaling a package reports:
+// strips if it has one, otherwise the first shape named strips<size>.
+func (res *results) primaryShape(pkg string) string {
+	var best string
+	for k := range res.entries {
+		if k.pkg != pkg {
+			continue
+		}
+		if k.tiles == tilesStrips {
+			return tilesStrips
+		}
+		if strings.HasPrefix(k.tiles, tilesStrips) && (best == "" || k.tiles < best) {
+			best = k.tiles
+		}
+	}
+	if best == "" {
+		return tilesStrips
+	}
+	return best
 }
 
 // workerCounts returns the SIMD worker counts above 1 of a package, or of
@@ -55,7 +79,10 @@ func (res *results) tileShapes(pkg, op string) []string {
 			case tilesStrips:
 				return 1
 			}
-			return 2
+			if strings.HasPrefix(s, tilesStrips) {
+				return 2
+			}
+			return 3
 		}
 		if ra, rb := rank(a), rank(b); ra != rb {
 			return ra - rb
@@ -65,7 +92,7 @@ func (res *results) tileShapes(pkg, op string) []string {
 	return out
 }
 
-func renderTiledHeadline(w io.Writer, res *results, pkg string, size int, workers []int) {
+func renderTiledHeadline(w io.Writer, res *results, pkg string, size int, workers []int, primary string) {
 	var lines []string
 	for _, op := range res.ops[pkg] {
 		k := key{pkg, op, size, "off", "scalar", 1, tilesPlain}
@@ -81,7 +108,7 @@ func renderTiledHeadline(w io.Writer, res *results, pkg string, size int, worker
 		}
 		line := fmt.Sprintf("%-10s %9s %9s %12s", op, fmtRateOpt(scalar, okS), fmtRateOpt(simd, okV), speedup)
 		for _, n := range workers {
-			v, ok := res.median(key{pkg, op, size, "off", "simd", n, tilesStrips}, "Mcells/s")
+			v, ok := res.median(key{pkg, op, size, "off", "simd", n, primary}, "Mcells/s")
 			line += fmt.Sprintf(" %19s", fmtRateOpt(v, ok))
 		}
 		lines = append(lines, line)
@@ -89,7 +116,7 @@ func renderTiledHeadline(w io.Writer, res *results, pkg string, size int, worker
 	if len(lines) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n%d × %d raster, no mask, M cells/sec (workers run the strips shape):\n\n```text\n", size, size)
+	fmt.Fprintf(w, "\n%d × %d raster, no mask, M cells/sec (workers run the %s shape):\n\n```text\n", size, size, primary)
 	head := fmt.Sprintf("%-10s %9s %9s %12s", "", "scalar", "SIMD", "SIMD/scalar")
 	for _, n := range workers {
 		head += fmt.Sprintf(" %19s", fmt.Sprintf("SIMD + %d workers", n))
@@ -101,7 +128,7 @@ func renderTiledHeadline(w io.Writer, res *results, pkg string, size int, worker
 	fmt.Fprint(w, "```\n")
 }
 
-func renderTiledOp(w io.Writer, res *results, pkg, op string) {
+func renderTiledOp(w io.Writer, res *results, pkg, op, primary string) {
 	var sizes []int
 	for k := range res.entries {
 		if k.pkg == pkg && k.op == op && !slices.Contains(sizes, k.size) {
@@ -182,30 +209,30 @@ func renderTiledOp(w io.Writer, res *results, pkg, op string) {
 		if note := classify(res, pkg, op, mask, tilesPlain, sizes); note != "" {
 			fmt.Fprintf(w, "- mask=%s, one worker: %s\n", mask, note)
 		}
-		if note := scalingNote(res, pkg, op, mask, sizes, workers); note != "" {
+		if note := scalingNote(res, pkg, op, mask, primary, sizes, workers); note != "" {
 			fmt.Fprintf(w, "- mask=%s, workers: %s\n", mask, note)
 		}
 	}
 }
 
-// scalingNote summarises SIMD worker scaling of the strips shape: the
+// scalingNote summarises SIMD worker scaling of the primary shape: the
 // speedup over one worker for each worker count and size, and the memory
 // traffic at the largest count, where scaling flattens if memory
 // bandwidth is the limit.
-func scalingNote(res *results, pkg, op, mask string, sizes, workers []int) string {
+func scalingNote(res *results, pkg, op, mask, primary string, sizes, workers []int) string {
 	if len(workers) == 0 {
 		return ""
 	}
 	var parts, gbs []string
 	top := workers[len(workers)-1]
 	for _, size := range sizes {
-		one, ok := res.median(key{pkg, op, size, mask, "simd", 1, tilesStrips}, "Mcells/s")
+		one, ok := res.median(key{pkg, op, size, mask, "simd", 1, primary}, "Mcells/s")
 		if !ok {
 			continue
 		}
 		var sp []string
 		for _, n := range workers {
-			if v, ok := res.median(key{pkg, op, size, mask, "simd", n, tilesStrips}, "Mcells/s"); ok {
+			if v, ok := res.median(key{pkg, op, size, mask, "simd", n, primary}, "Mcells/s"); ok {
 				sp = append(sp, fmt.Sprintf("%s with %d", fmtSpeedup(v/one), n))
 			}
 		}
@@ -213,14 +240,14 @@ func scalingNote(res *results, pkg, op, mask string, sizes, workers []int) strin
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("%d² %s", size, strings.Join(sp, ", ")))
-		if gb, ok := res.median(key{pkg, op, size, mask, "simd", top, tilesStrips}, "GB/s"); ok {
+		if gb, ok := res.median(key{pkg, op, size, mask, "simd", top, primary}, "GB/s"); ok {
 			gbs = append(gbs, fmt.Sprintf("%s GB/s at %d²", fmtGB(gb), size))
 		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	note := "strips over one worker, SIMD: " + strings.Join(parts, "; ")
+	note := primary + " over one worker, SIMD: " + strings.Join(parts, "; ")
 	if len(gbs) > 0 {
 		note += fmt.Sprintf("; %d workers move %s", top, strings.Join(gbs, ", "))
 	}

@@ -72,6 +72,15 @@ func AspectTiled(ctx context.Context, dst, dem raster.Float32Raster, opts Aspect
 	return runTiled(ctx, eopts, newAspectKernel(opts), dem, dst)
 }
 
+// AspectChunked is Aspect run by the engine over a source and sinks with
+// bounded memory: it reads the DEM and writes the result a tile at a
+// time, with Workers × tile buffers in memory. It writes the bits
+// Aspect would write into in-memory rasters, for every engine.Options.
+// See package engine for sources, sinks, memory, cancellation and errors.
+func AspectChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts AspectOptions, eopts engine.Options) error {
+	return runChunked(ctx, eopts, newAspectKernel(opts), dem, dst)
+}
+
 // newAspectKernel resolves and checks opts for Aspect's kernel.
 func newAspectKernel(opts AspectOptions) aspectKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)

@@ -75,9 +75,12 @@ func BitSpans(a, b raster.Float32Raster) bool {
 	return spansMeet(bitAddr(a), span(a), bitAddr(b), span(b))
 }
 
-// bitAddr is the absolute address, in bits, of r's first validity bit.
+// bitAddr is the absolute address, in bits, of r's first validity bit:
+// bit i of a mask is bit i&63 of the word 8·(i>>6) bytes into it, 8·addr + i
+// bits into memory, so masks that are different slices of one array
+// compare correctly.
 func bitAddr(r raster.Float32Raster) int {
-	return int(uintptr(unsafe.Pointer(unsafe.SliceData(r.Valid))))*64 + r.ValidOffset
+	return int(uintptr(unsafe.Pointer(unsafe.SliceData(r.Valid))))*8 + r.ValidOffset
 }
 
 func span(r raster.Float32Raster) int { return (r.Height-1)*r.Stride + r.Width }
@@ -113,4 +116,21 @@ func relate(a0, aStride, b0, bStride, w, h int) Relation {
 		return Partial
 	}
 	return Disjoint
+}
+
+// Words reports whether any validity word holding one of a's bits also
+// holds one of b's, whatever their dimensions. Code that updates a's bits
+// a word at a time races with code reading b's bits of the same word,
+// even when no bit is shared. Rasters without a mask meet nothing.
+func Words(a, b raster.Float32Raster) bool {
+	if a.Valid == nil || b.Valid == nil {
+		return false
+	}
+	words := func(r raster.Float32Raster) (first, n int) {
+		first = bitAddr(r) >> 6
+		return first, (bitAddr(r)+span(r)+63)>>6 - first
+	}
+	a0, an := words(a)
+	b0, bn := words(b)
+	return spansMeet(a0, an, b0, bn)
 }

@@ -42,6 +42,15 @@ func GradientTiled(ctx context.Context, dx, dy, dem raster.Float32Raster, opts G
 	return runTiled(ctx, eopts, newGradientKernel(opts), dem, dx, dy)
 }
 
+// GradientChunked is Gradient run by the engine over a source and sinks with
+// bounded memory: it reads the DEM and writes the result a tile at a
+// time, with Workers × tile buffers in memory. It writes the bits
+// Gradient would write into in-memory rasters, for every engine.Options.
+// See package engine for sources, sinks, memory, cancellation and errors.
+func GradientChunked(ctx context.Context, dx, dy engine.RasterSink, dem engine.RasterSource, opts GradientOptions, eopts engine.Options) error {
+	return runChunked(ctx, eopts, newGradientKernel(opts), dem, dx, dy)
+}
+
 // newGradientKernel resolves and checks opts for Gradient's kernel.
 func newGradientKernel(opts GradientOptions) gradientKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)

@@ -7,8 +7,10 @@ spikes that informed the design.
 |---|---|
 | `algebra/` | suite: `strata/algebra` Add, Sub, Mul, Min, Max, Clamp. Numbers in [`algebra/RESULTS.md`](algebra/RESULTS.md) |
 | `engine/` | suite: Slope, Hillshade and Clamp, plain and through the engine, by worker count and tile shape. Numbers in [`engine/RESULTS.md`](engine/RESULTS.md) |
+| `chunked/` | suite: Slope, Hillshade and Clamp with bounded memory from a raw float32 file to another, by worker count and tile shape, and the §43 demo. Numbers in [`chunked/RESULTS.md`](chunked/RESULTS.md) |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
+| `cmd/stratademo/` | the §43 validation target: a 20000² raw DEM with bounded memory, checked against the whole-raster result, with measured peak memory |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole
@@ -76,7 +78,7 @@ Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>[/tiles=<T
 | `mask` | `off`: no operand has a validity mask. `on`: every input has an independent mask with about 10% of cells invalid, and dst has one |
 | `backend` | `scalar` or `simd`, switched in one binary |
 | `workers` | `1` for categories that call plain functions. Engine categories run `suite.Workers()`: 1, one per physical core, one per logical CPU |
-| `tiles` | engine categories only: the tile shape, e.g. `plain` (the plain function), `strips` (default `engine.Options`), `256x256` |
+| `tiles` | engine categories only: the tile shape, e.g. `plain` (the plain function), `strips` (default `engine.Options`), `strips256` (full-width tiles of 256 rows), `256x256`. Scaling is reported for `strips`, or else the first `strips<rows>` shape |
 
 Before the results, `suite.Main` prints `key: value` configuration lines
 (`goversion`, `goexperiment`, `goamd64`, `gomaxprocs`, `usablecpus`,
@@ -169,3 +171,13 @@ with a nil `Run` for combinations that do not apply, such as a plain
 function with more than one worker; the leaf is skipped. `stratabench`
 recognises such a category by its `tiles` level. See `engine/bench_test.go`.
 Scaling runs must not be pinned to one CPU.
+
+### Files and peak memory
+
+A category whose fixture writes files sets `Matrix.Release`, which runs
+once a size is done, to close and remove them (`chunked/bench_test.go`).
+`suite.ProcessMemory` reports the process's current and peak private
+bytes and working set (Windows; resident memory only on Linux). A peak
+covers the whole process, so a measurement that must be its own, such as
+the §43 demo's, runs in a child process: `cmd/stratademo` starts one per
+run.

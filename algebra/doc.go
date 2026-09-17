@@ -56,4 +56,11 @@
 // count. The plain functions do not go through the engine: they keep
 // their promise to allocate nothing, which the engine's per-call setup
 // cannot.
+//
+// AddChunked, SubChunked, MulChunked, MinChunked, MaxChunked and
+// ClampChunked read their inputs from engine.RasterSources and write dst
+// to an engine.RasterSink a tile at a time, so rasters larger than memory,
+// such as raw float32 files, run in Workers × tile buffers (DESIGN.md
+// §27), with the same values and validity. They cannot run in place over
+// memory: a memory sink sharing memory with a memory source panics.
 package algebra

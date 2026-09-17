@@ -57,6 +57,15 @@ func SlopeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts SlopeOp
 	return runTiled(ctx, eopts, newSlopeKernel(opts), dem, dst)
 }
 
+// SlopeChunked is Slope run by the engine over a source and sinks with
+// bounded memory: it reads the DEM and writes the result a tile at a
+// time, with Workers × tile buffers in memory. It writes the bits
+// Slope would write into in-memory rasters, for every engine.Options.
+// See package engine for sources, sinks, memory, cancellation and errors.
+func SlopeChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts SlopeOptions, eopts engine.Options) error {
+	return runChunked(ctx, eopts, newSlopeKernel(opts), dem, dst)
+}
+
 // newSlopeKernel resolves and checks opts for Slope's kernel.
 func newSlopeKernel(opts SlopeOptions) slopeKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
