@@ -1,4 +1,4 @@
-package engine
+package exec
 
 import (
 	"strata/internal/stencil"
@@ -8,7 +8,7 @@ import (
 // band writes output cells [x0, x1) × [y0, y1): the kernel over the cells
 // whose neighbourhood lies inside the rasters, with the halo read from
 // the inputs beyond the band, and the edge value over the rest.
-func (e *exec) band(x0, y0, x1, y1 int) {
+func (e *job) band(x0, y0, x1, y1 int) {
 	r := e.r
 	ix0, ix1 := max(x0, r), min(x1, e.w-r)
 	iy0, iy1 := max(y0, r), min(y1, e.h-r)
@@ -31,7 +31,7 @@ func (e *exec) band(x0, y0, x1, y1 int) {
 
 // interior runs the kernel over the w×h cells at (x, y), whose
 // neighbourhoods are all inside the inputs, and sets their validity.
-func (e *exec) interior(x, y, w, h int) {
+func (e *job) interior(x, y, w, h int) {
 	r := e.r
 	for i, d := range e.dst {
 		e.dstViews[i] = d.Window(x, y, w, h)
@@ -59,7 +59,7 @@ func (e *exec) interior(x, y, w, h int) {
 
 // fillEdge writes the edge value into cells [x0, x1) of row y of every
 // output and marks them invalid.
-func (e *exec) fillEdge(y, x0, x1 int) {
+func (e *job) fillEdge(y, x0, x1 int) {
 	if x0 >= x1 {
 		return
 	}
@@ -87,7 +87,7 @@ func (e *exec) fillEdge(y, x0, x1 int) {
 // masked input over the (2r+1)×(2r+1) neighbourhood. It erodes once into
 // the first output and copies the bits to the others. Every output has a
 // mask here, because an input does.
-func (e *exec) erodedValidity(w, h int) {
+func (e *job) erodedValidity(w, h int) {
 	for i, j := range e.masked {
 		s := e.srcViews[j]
 		e.regions[i] = stencil.MaskRegion{Bits: s.Valid, Off: s.ValidOffset, Stride: s.Stride}
@@ -107,7 +107,7 @@ func (e *exec) erodedValidity(w, h int) {
 // masked inputs' bits for the same cells, with the word loops of package
 // algebra: one range operation over the whole view when every operand is
 // compact, one per row otherwise.
-func (e *exec) pointwiseValidity() {
+func (e *job) pointwiseValidity() {
 	for i, d := range e.dstViews {
 		whole := compact(d)
 		for _, j := range e.masked {

@@ -1,4 +1,4 @@
-package engine
+package exec
 
 // SetBandCells sets the band size target and returns a function that
 // restores it, so tests can force one-row bands.

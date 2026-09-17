@@ -1,9 +1,10 @@
-package engine
+package exec
 
 import (
 	"context"
 	"math"
 
+	"strata/engine"
 	"strata/internal/overlap"
 	"strata/internal/stencil"
 	"strata/raster"
@@ -16,9 +17,9 @@ import (
 // ones. It is a variable so tests can force one-row bands.
 var bandCells = 1 << 16
 
-// exec is one ProcessN call after its checks. Everything a band needs is
+// job is one ProcessN call after its checks. Everything a band needs is
 // allocated here, once per call, so bands allocate nothing.
-type exec struct {
+type job struct {
 	k    Kernel
 	r    int
 	edge float32
@@ -43,8 +44,8 @@ type exec struct {
 	scratch []uint64
 }
 
-func newExec(dst, src []raster.Float32Raster, k Kernel, r int, opts Options) *exec {
-	e := &exec{
+func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options) *job {
+	e := &job{
 		k:        k,
 		r:        r,
 		edge:     float32(math.NaN()),
@@ -98,7 +99,7 @@ func newExec(dst, src []raster.Float32Raster, k Kernel, r int, opts Options) *ex
 
 // run plans tiles in row-major order and bands of rows within each tile,
 // checking ctx before every band.
-func (e *exec) run(ctx context.Context) error {
+func (e *job) run(ctx context.Context) error {
 	done := ctx.Done()
 	for ty := 0; ty < e.h; ty += e.tileH {
 		ty1 := min(ty+e.tileH, e.h)

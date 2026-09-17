@@ -1,10 +1,12 @@
 package terrain
 
 import (
+	"context"
 	"fmt"
 	"math"
 
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -54,13 +56,19 @@ type HillshadeOptions struct {
 // gdaldem's byte. gdaldem also evaluates the square root with an
 // approximation, so its values can differ slightly beyond encoding.
 func Hillshade(dst, dem raster.Float32Raster, opts HillshadeOptions) {
-	run(HillshadeKernel(opts), dem, dst)
+	run(newHillshadeKernel(opts), dem, dst)
 }
 
-// HillshadeKernel returns Hillshade as an engine kernel with radius 1, one
-// input (the DEM) and one output, for engine.Process. It panics on
-// invalid options, as Hillshade does.
-func HillshadeKernel(opts HillshadeOptions) engine.Kernel {
+// HillshadeTiled is Hillshade run by the engine: it takes the same operands, applies
+// the same checks and writes the same bits for every engine.Options, and
+// returns ctx.Err() if ctx is done before every cell is written. See
+// package engine for tiling and cancellation.
+func HillshadeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts HillshadeOptions, eopts engine.Options) error {
+	return runTiled(ctx, eopts, newHillshadeKernel(opts), dem, dst)
+}
+
+// newHillshadeKernel resolves and checks opts for Hillshade's kernel.
+func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	az, alt := opts.Azimuth, opts.Altitude
 	if math.IsNaN(az) || math.IsInf(az, 0) {
@@ -88,7 +96,7 @@ type hillshadeKernel struct {
 	c, bx, by float32
 }
 
-func (k hillshadeKernel) Process(dst engine.Span, src engine.Window) {
+func (k hillshadeKernel) Process(dst exec.Span, src exec.Window) {
 	out, dem := dst.Dst[0], src.Src[0]
 	for y := range dst.Height {
 		stencil.HornHillshadeRow(out.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky, k.c, k.bx, k.by)

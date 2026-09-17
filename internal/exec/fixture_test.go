@@ -1,4 +1,4 @@
-package engine_test
+package exec_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/raster"
 )
 
@@ -126,10 +127,19 @@ var engineRuns = []engineRun{
 }
 
 // process runs ProcessN the way run says and fails the test on an error.
-func process(t *testing.T, run engineRun, dst, src []raster.Float32Raster, k engine.Kernel) {
+func process(t *testing.T, run engineRun, dst, src []raster.Float32Raster, k exec.Kernel) {
+	t.Helper()
+	processWith(t, run, func(ctx context.Context, opts engine.Options) error {
+		return exec.ProcessN(ctx, dst, src, k, opts)
+	})
+}
+
+// processWith is process for any function taking a context and options,
+// such as a tiled entry point.
+func processWith(t *testing.T, run engineRun, f func(context.Context, engine.Options) error) {
 	t.Helper()
 	if run.oneRow {
-		defer engine.SetBandCells(1)()
+		defer exec.SetBandCells(1)()
 	}
 	ctx := context.Background()
 	if run.cancelOK {
@@ -137,7 +147,7 @@ func process(t *testing.T, run engineRun, dst, src []raster.Float32Raster, k eng
 		defer cancel()
 		ctx = c
 	}
-	if err := engine.ProcessN(ctx, dst, src, k, run.opts); err != nil {
-		t.Fatalf("ProcessN: %v", err)
+	if err := f(ctx, run.opts); err != nil {
+		t.Fatalf("%v: %v", run, err)
 	}
 }

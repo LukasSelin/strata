@@ -1,4 +1,4 @@
-package engine_test
+package exec_test
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 	"strata/terrain"
 )
 
-// The benchmarks compare engine.Process with the public functions on
+// The benchmarks compare the tiled entry points with the plain functions on
 // whole compact rasters at 1024² and 4096², with and without masks (1% of
 // cells invalid):
 //
 //   - direct:    algebra.Clamp or terrain.Slope;
-//   - engine:    engine.Process with zero Options and a background context;
+//   - engine:    the Tiled function with zero Options and a background context;
 //   - cancel:    the same with a cancellable context;
 //   - tiles256:  the same in 256×256 tiles.
 //
@@ -53,21 +53,24 @@ func benchDEM(n int, masked bool) raster.Float32Raster {
 
 func BenchmarkClamp(b *testing.B) {
 	benchOp(b, func(dst, src raster.Float32Raster) { algebra.Clamp(dst, src, 700, 900) },
-		func() engine.Kernel { return algebra.ClampKernel(700, 900) })
+		func(ctx context.Context, dst, src raster.Float32Raster, o engine.Options) error {
+			return algebra.ClampTiled(ctx, dst, src, 700, 900, o)
+		})
 }
 
 func BenchmarkSlope(b *testing.B) {
 	opts := terrain.SlopeOptions{CellSize: 10}
 	benchOp(b, func(dst, src raster.Float32Raster) { terrain.Slope(dst, src, opts) },
-		func() engine.Kernel { return terrain.SlopeKernel(opts) })
+		func(ctx context.Context, dst, src raster.Float32Raster, o engine.Options) error {
+			return terrain.SlopeTiled(ctx, dst, src, opts, o)
+		})
 }
 
-func benchOp(b *testing.B, direct func(dst, src raster.Float32Raster), kernel func() engine.Kernel) {
+func benchOp(b *testing.B, direct func(dst, src raster.Float32Raster), tiled func(ctx context.Context, dst, src raster.Float32Raster, o engine.Options) error) {
 	for _, n := range []int{1024, 4096} {
 		for _, masked := range []bool{false, true} {
 			src := benchDEM(n, masked)
 			dst := raster.NewFloat32Like(src)
-			k := kernel()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			paths := []struct {
@@ -75,10 +78,10 @@ func benchOp(b *testing.B, direct func(dst, src raster.Float32Raster), kernel fu
 				run  func()
 			}{
 				{"direct", func() { direct(dst, src) }},
-				{"engine", func() { _ = engine.Process(context.Background(), dst, src, k, engine.Options{}) }},
-				{"cancel", func() { _ = engine.Process(ctx, dst, src, k, engine.Options{}) }},
+				{"engine", func() { _ = tiled(context.Background(), dst, src, engine.Options{}) }},
+				{"cancel", func() { _ = tiled(ctx, dst, src, engine.Options{}) }},
 				{"tiles256", func() {
-					_ = engine.Process(context.Background(), dst, src, k, engine.Options{TileWidth: 256, TileHeight: 256})
+					_ = tiled(context.Background(), dst, src, engine.Options{TileWidth: 256, TileHeight: 256})
 				}},
 			}
 			for _, p := range paths {

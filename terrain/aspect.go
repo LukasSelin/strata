@@ -1,7 +1,9 @@
 package terrain
 
 import (
+	"context"
 	"strata/engine"
+	"strata/internal/exec"
 	"strata/internal/stencil"
 	"strata/raster"
 )
@@ -59,13 +61,19 @@ type AspectOptions struct {
 // degrees more; against a float64 evaluation of the same gradients the
 // largest difference seen in tests is 2.4e-5 degrees.
 func Aspect(dst, dem raster.Float32Raster, opts AspectOptions) {
-	run(AspectKernel(opts), dem, dst)
+	run(newAspectKernel(opts), dem, dst)
 }
 
-// AspectKernel returns Aspect as an engine kernel with radius 1, one input
-// (the DEM) and one output, for engine.Process. It panics on invalid
-// options, as Aspect does.
-func AspectKernel(opts AspectOptions) engine.Kernel {
+// AspectTiled is Aspect run by the engine: it takes the same operands, applies
+// the same checks and writes the same bits for every engine.Options, and
+// returns ctx.Err() if ctx is done before every cell is written. See
+// package engine for tiling and cancellation.
+func AspectTiled(ctx context.Context, dst, dem raster.Float32Raster, opts AspectOptions, eopts engine.Options) error {
+	return runTiled(ctx, eopts, newAspectKernel(opts), dem, dst)
+}
+
+// newAspectKernel resolves and checks opts for Aspect's kernel.
+func newAspectKernel(opts AspectOptions) aspectKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
 	flat := float32(AspectFlat)
 	if opts.ZeroForFlat {
@@ -80,7 +88,7 @@ type aspectKernel struct {
 	trig bool
 }
 
-func (k aspectKernel) Process(dst engine.Span, src engine.Window) {
+func (k aspectKernel) Process(dst exec.Span, src exec.Window) {
 	out, dem := dst.Dst[0], src.Src[0]
 	for y := range dst.Height {
 		stencil.HornAspectRow(out.Row(y), dem.Row(y), dem.Row(y+1), dem.Row(y+2), k.kx, k.ky, k.flat, k.trig)

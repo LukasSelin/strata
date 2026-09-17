@@ -1,6 +1,8 @@
-package engine_test
+package exec_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"testing"
@@ -11,66 +13,103 @@ import (
 	"strata/terrain"
 )
 
-// adapter pairs a public function with its engine kernel.
+// adapter pairs a plain public function with its tiled entry point.
 type adapter struct {
 	name    string
 	inputs  int
 	outputs int
 	inPlace bool // dst may be the first input
 	direct  func(dst, src []raster.Float32Raster)
-	kernel  engine.Kernel
+	tiled   func(ctx context.Context, dst, src []raster.Float32Raster, opts engine.Options) error
 }
 
 var adapters = []adapter{
 	{
 		name: "clamp", inputs: 1, outputs: 1, inPlace: true,
 		direct: func(dst, src []raster.Float32Raster) { algebra.Clamp(dst[0], src[0], 950, 1050) },
-		kernel: algebra.ClampKernel(950, 1050),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.ClampTiled(ctx, dst[0], src[0], 950, 1050, o)
+		},
 	},
 	{
 		name: "add", inputs: 2, outputs: 1, inPlace: true,
 		direct: func(dst, src []raster.Float32Raster) { algebra.Add(dst[0], src[0], src[1]) },
-		kernel: algebra.AddKernel(),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.AddTiled(ctx, dst[0], src[0], src[1], o)
+		},
+	},
+	{
+		name: "sub", inputs: 2, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Sub(dst[0], src[0], src[1]) },
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.SubTiled(ctx, dst[0], src[0], src[1], o)
+		},
+	},
+	{
+		name: "mul", inputs: 2, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Mul(dst[0], src[0], src[1]) },
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.MulTiled(ctx, dst[0], src[0], src[1], o)
+		},
+	},
+	{
+		name: "min", inputs: 2, outputs: 1, inPlace: true,
+		direct: func(dst, src []raster.Float32Raster) { algebra.Min(dst[0], src[0], src[1]) },
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.MinTiled(ctx, dst[0], src[0], src[1], o)
+		},
 	},
 	{
 		name: "max", inputs: 2, outputs: 1, inPlace: true,
 		direct: func(dst, src []raster.Float32Raster) { algebra.Max(dst[0], src[0], src[1]) },
-		kernel: algebra.MaxKernel(),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return algebra.MaxTiled(ctx, dst[0], src[0], src[1], o)
+		},
 	},
 	{
 		name: "slope-degrees", inputs: 1, outputs: 1,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Slope(dst[0], src[0], terrain.SlopeOptions{CellSize: 10, CellSizeY: 12})
 		},
-		kernel: terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 10, CellSizeY: 12}),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.SlopeTiled(ctx, dst[0], src[0], terrain.SlopeOptions{CellSize: 10, CellSizeY: 12}, o)
+		},
 	},
 	{
 		name: "slope-percent", inputs: 1, outputs: 1,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Slope(dst[0], src[0], terrain.SlopeOptions{CellSize: 3, ZFactor: 2, Units: terrain.SlopePercent})
 		},
-		kernel: terrain.SlopeKernel(terrain.SlopeOptions{CellSize: 3, ZFactor: 2, Units: terrain.SlopePercent}),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.SlopeTiled(ctx, dst[0], src[0], terrain.SlopeOptions{CellSize: 3, ZFactor: 2, Units: terrain.SlopePercent}, o)
+		},
 	},
 	{
 		name: "hillshade", inputs: 1, outputs: 1,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Hillshade(dst[0], src[0], terrain.HillshadeOptions{CellSize: 30, Azimuth: 100, Altitude: 20})
 		},
-		kernel: terrain.HillshadeKernel(terrain.HillshadeOptions{CellSize: 30, Azimuth: 100, Altitude: 20}),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.HillshadeTiled(ctx, dst[0], src[0], terrain.HillshadeOptions{CellSize: 30, Azimuth: 100, Altitude: 20}, o)
+		},
 	},
 	{
 		name: "aspect", inputs: 1, outputs: 1,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Aspect(dst[0], src[0], terrain.AspectOptions{CellSize: 5, Trigonometric: true})
 		},
-		kernel: terrain.AspectKernel(terrain.AspectOptions{CellSize: 5, Trigonometric: true}),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.AspectTiled(ctx, dst[0], src[0], terrain.AspectOptions{CellSize: 5, Trigonometric: true}, o)
+		},
 	},
 	{
 		name: "gradient", inputs: 1, outputs: 2,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Gradient(dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7})
 		},
-		kernel: terrain.GradientKernel(terrain.GradientOptions{CellSize: 7}),
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.GradientTiled(ctx, dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7}, o)
+		},
 	},
 }
 
@@ -78,12 +117,12 @@ var adapterSizes = [][2]int{
 	{1, 1}, {2, 2}, {3, 3}, {1, 5}, {6, 1}, {4, 3}, {5, 7}, {17, 9}, {63, 4}, {65, 6}, {130, 5},
 }
 
-// TestAdaptersMatchDirect runs every adapter kernel through the engine,
-// whole and in tiles and bands of many shapes, and requires the same bits
-// as the public function on the whole raster: same validity words across
-// each output's root (the border, and bits outside the output, included)
-// and the same Data on valid cells, any NaN matching any NaN.
-func TestAdaptersMatchDirect(t *testing.T) {
+// TestTiledMatchesPlain runs every tiled entry point whole and in tiles
+// and bands of many shapes, and requires the same bits as the plain
+// function on the whole raster: same validity words across each output's
+// root (the border, and bits outside the output, included) and the same
+// Data on valid cells, any NaN matching any NaN.
+func TestTiledMatchesPlain(t *testing.T) {
 	for _, a := range adapters {
 		t.Run(a.name, func(t *testing.T) {
 			for _, sz := range adapterSizes {
@@ -127,7 +166,9 @@ func testAdapter(t *testing.T, a adapter, w, h int, lay layout, inMask, outMask,
 		id := fmt.Sprintf("%dx%d %v inMask=%v outMask=%v inPlace=%v %v", w, h, lay, inMask, outMask, inPlace, run)
 		want, got := cloneAll(ins, outs, inPlace), cloneAll(ins, outs, inPlace)
 		a.direct(want.dst(), want.src())
-		process(t, run, got.dst(), got.src(), a.kernel)
+		processWith(t, run, func(ctx context.Context, o engine.Options) error {
+			return a.tiled(ctx, got.dst(), got.src(), o)
+		})
 		for i := range outs {
 			requireSameRoots(t, fmt.Sprintf("%s dst[%d]", id, i), got.outs[i].root, want.outs[i].root)
 		}
@@ -165,4 +206,29 @@ func views(ops []operand) []raster.Float32Raster {
 		rs[i] = op.r
 	}
 	return rs
+}
+
+// TestTiledCancelled checks that every tiled entry point reports a done
+// context as its error and writes nothing.
+func TestTiledCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, a := range adapters {
+		rng := rand.New(rand.NewPCG(5, 5))
+		var ins, outs []operand
+		for range a.inputs {
+			ins = append(ins, newOperand(rng, 9, 7, true, true))
+		}
+		for range a.outputs {
+			outs = append(outs, newOperand(rng, 9, 7, true, true))
+		}
+		got := cloneAll(ins, outs, false)
+		err := a.tiled(ctx, got.dst(), got.src(), engine.Options{TileWidth: 4, TileHeight: 4})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s: err = %v, want context.Canceled", a.name, err)
+		}
+		for i := range outs {
+			requireSameRoots(t, fmt.Sprintf("%s dst[%d]", a.name, i), got.outs[i].root, outs[i].root)
+		}
+	}
 }

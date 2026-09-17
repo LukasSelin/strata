@@ -1,4 +1,4 @@
-package engine
+package exec
 
 import "strata/raster"
 
@@ -22,13 +22,13 @@ type Kernel interface {
 	// A kernel has at least one output.
 	Arity() (inputs, outputs int)
 	// Process writes the Data of every cell of every output view in dst,
-	// reading src. It must not write validity bits, which belong to the
-	// engine, or anything outside the dst views.
+	// reading src. It must not write validity bits, which belong to
+	// Process, or anything outside the dst views.
 	Process(dst Span, src Window)
 }
 
-// EdgeKernel is a Kernel with radius > 0 that chooses the Data value the
-// engine writes into output cells whose neighbourhood extends past the
+// EdgeKernel is a Kernel with radius > 0 that chooses the Data value
+// Process writes into output cells whose neighbourhood extends past the
 // edge of the rasters passed to Process. Without it the edge value is NaN.
 // Edge cells are invalid in outputs that have a mask either way.
 type EdgeKernel interface {
