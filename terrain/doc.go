@@ -1,5 +1,5 @@
-// Package terrain computes terrain derivatives of elevation rasters:
-// Horn gradients and slope so far.
+// Package terrain computes terrain derivatives of elevation rasters from
+// Horn's 3×3 gradient: Gradient, Slope, Aspect and Hillshade.
 //
 // # Conventions
 //
@@ -10,6 +10,11 @@
 // are the dx and dy of GDAL gdaldem's Horn aspect kernel (east minus
 // west, bottom row minus top row). gdaldem's slope kernel uses west minus
 // east instead, which squaring hides.
+//
+// Directions are in degrees. Aspect and Hillshade's Azimuth are compass
+// bearings, clockwise from north (decreasing row index), so a cell whose
+// elevation falls eastward has aspect 90. The downslope direction in
+// (east, north) components is (-dx, dy).
 //
 // Cell sizes are positive ground distances in the elevation's units, not
 // signed geotransform resolutions: pass abs(ResolutionY) for a north-up
@@ -33,7 +38,8 @@
 //
 // Validity is never inferred from Data: every interior cell is computed,
 // and a NaN or ±Inf elevation with its bit set is an ordinary value that
-// flows through IEEE arithmetic. If the DEM has a mask, an output cell is
+// flows through IEEE arithmetic. Values that are defined but degenerate,
+// such as the aspect of a flat cell, are ordinary valid values too. If the DEM has a mask, an output cell is
 // valid iff it is interior and all nine cells of its 3×3 neighbourhood are
 // valid (the centre too, although Horn gives it zero weight). Data under
 // an invalid output cell is unspecified. The output masks are computed

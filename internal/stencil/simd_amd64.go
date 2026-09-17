@@ -2,7 +2,10 @@
 
 package stencil
 
-import "simd/archsimd"
+import (
+	"math"
+	"simd/archsimd"
+)
 
 // This file is the AVX2 backend, written with simd/archsimd
 // (docs/adr/0001-simd-backend.md). Each lane evaluates the scalar formula
@@ -25,6 +28,8 @@ func init() {
 	}
 	simdGradient = hornGradientRowAVX2
 	simdSlope = hornSlopeRowAVX2
+	simdAspect = hornAspectRowAVX2
+	simdHillshade = hornHillshadeRowAVX2
 	UseScalar(false)
 }
 
@@ -118,15 +123,15 @@ func hornSlopeAtanLanes(dst, r0, r1, r2 []float32, kx, ky, scale float32) int {
 }
 
 type atanConsts struct {
-	tan3pi8, tanpi8, pi2, pi4, one, negOne, zero, c4, c3, c2, c1 archsimd.Float32x8
+	tan3pi8, tanpi8, pi, pi2, pi4, one, negOne, zero, maxf, c4, c3, c2, c1 archsimd.Float32x8
 }
 
 func newAtanConsts() atanConsts {
 	b := archsimd.BroadcastFloat32x8
 	return atanConsts{
 		tan3pi8: b(atanTan3Pi8), tanpi8: b(atanTanPi8),
-		pi2: b(atanPi2), pi4: b(atanPi4),
-		one: b(1), negOne: b(-1),
+		pi: b(atan2Pi), pi2: b(atanPi2), pi4: b(atanPi4),
+		one: b(1), negOne: b(-1), maxf: b(math.MaxFloat32),
 		c4: b(atanC4), c3: b(atanC3), c2: b(atanC2), c1: b(atanC1),
 	}
 }
@@ -146,4 +151,79 @@ func atan8(x archsimd.Float32x8, c *atanConsts) archsimd.Float32x8 {
 	p = p.Mul(z).Add(c.c2)
 	p = p.Mul(z).Sub(c.c1)
 	return y0.Add(p.Mul(z).Mul(t).Add(t))
+}
+
+func hornAspectRowAVX2(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool) {
+	i := hornAspectLanes(dst, r0, r1, r2, kx, ky, flat, trig)
+	n := len(dst)
+	scalarHornAspectRow(dst[i:], r0[i:n+2], r1[i:n+2], r2[i:n+2], kx, ky, flat, trig)
+}
+
+func hornAspectLanes(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool) int {
+	vkx := archsimd.BroadcastFloat32x8(kx)
+	vky := archsimd.BroadcastFloat32x8(ky)
+	vflat := archsimd.BroadcastFloat32x8(flat)
+	deg := archsimd.BroadcastFloat32x8(radToDeg)
+	full := archsimd.BroadcastFloat32x8(360)
+	c := newAtanConsts()
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		dx, dy := hornDiff8(r0, r1, r2)
+		gx, gy := dx.Mul(vkx), dy.Mul(vky)
+		y, x := c.zero.Sub(gx), gy
+		if trig {
+			y, x = gy, c.zero.Sub(gx)
+		}
+		// aspectDegrees lanewise.
+		d := atan2_8(y, x, &c).Mul(deg)
+		d = d.Add(full.IfElse(d.Less(c.zero), c.zero))
+		d = c.zero.IfElse(d.GreaterEqual(full), d)
+		d = vflat.IfElse(y.Equal(c.zero).And(x.Equal(c.zero)), d)
+		store8(d, dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+// atan2_8 is Atan2F32 lanewise, with the same reductions in the same
+// order. Absolute value, sign tests and copysign work on the bits.
+func atan2_8(y, x archsimd.Float32x8, c *atanConsts) archsimd.Float32x8 {
+	sign := archsimd.BroadcastUint32x8(signBit32)
+	yb, xb := y.ToBits(), x.ToBits()
+	ay, ax := yb.AndNot(sign).BitsToFloat32(), xb.AndNot(sign).BitsToFloat32()
+	a := atan8(ay.Div(ax), c)
+	a = c.zero.IfElse(ay.Equal(c.zero).And(ax.Equal(c.zero)), a)
+	a = c.pi4.IfElse(ay.Equal(ax).And(ay.Greater(c.maxf)), a)
+	a = c.pi.Sub(a).IfElse(xb.BitsToInt32().Less(archsimd.BroadcastInt32x8(0)), a)
+	return a.ToBits().Or(yb.And(sign)).BitsToFloat32()
+}
+
+func hornHillshadeRowAVX2(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) {
+	i := hornHillshadeLanes(dst, r0, r1, r2, kx, ky, c, bx, by)
+	n := len(dst)
+	scalarHornHillshadeRow(dst[i:], r0[i:n+2], r1[i:n+2], r2[i:n+2], kx, ky, c, bx, by)
+}
+
+func hornHillshadeLanes(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) int {
+	b := archsimd.BroadcastFloat32x8
+	vkx, vky := b(kx), b(ky)
+	vc, vbx, vby := b(c), b(bx), b(by)
+	zero, one, hi := b(0), b(1), b(255)
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		dx, dy := hornDiff8(r0, r1, r2)
+		gx, gy := dx.Mul(vkx), dy.Mul(vky)
+		num := vc.Add(vbx.Mul(gx).Add(vby.Mul(gy)))
+		den := one.Add(gx.Mul(gx).Add(gy.Mul(gy))).Sqrt()
+		v := num.Div(den)
+		v = zero.IfElse(v.Less(zero), v)
+		v = hi.IfElse(v.Greater(hi), v)
+		store8(v, dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
 }

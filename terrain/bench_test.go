@@ -71,3 +71,46 @@ func BenchmarkSlope(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkAspect reports whole-raster throughput in cells/s for the
+// scalar and SIMD kernels, with and without a mask.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Aspect ./terrain
+func BenchmarkAspect(b *testing.B) {
+	benchShade(b, func(dst, dem raster.Float32Raster) { Aspect(dst, dem, AspectOptions{CellSize: 10}) })
+}
+
+// BenchmarkHillshade is BenchmarkAspect for Hillshade with the default
+// light.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Hillshade ./terrain
+func BenchmarkHillshade(b *testing.B) {
+	benchShade(b, func(dst, dem raster.Float32Raster) { Hillshade(dst, dem, HillshadeOptions{CellSize: 10}) })
+}
+
+func benchShade(b *testing.B, op func(dst, dem raster.Float32Raster)) {
+	defer stencil.UseScalar(false)
+	for _, n := range []int{1024, 4096} {
+		for _, masked := range []bool{false, true} {
+			dem := benchDEM(n, masked)
+			dst := raster.NewFloat32Like(dem)
+			for _, backend := range []string{"scalar", "simd"} {
+				mask := "nomask"
+				if masked {
+					mask = "mask"
+				}
+				b.Run(fmt.Sprintf("%d/%s/%s", n, mask, backend), func(b *testing.B) {
+					stencil.UseScalar(backend == "scalar")
+					if backend == "simd" && stencil.Backend() == "scalar" {
+						b.Skip("no SIMD backend in this build")
+					}
+					for b.Loop() {
+						op(dst, dem)
+					}
+					b.ReportMetric(float64(n*n)*float64(b.N)/b.Elapsed().Seconds(), "cells/s")
+					b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+				})
+			}
+		}
+	}
+}
