@@ -1,9 +1,10 @@
-//go:build amd64
+//go:build goexperiment.simd && amd64
 
 package vec
 
 import (
 	"math"
+	"simd/archsimd"
 	"testing"
 )
 
@@ -30,9 +31,28 @@ func edgeFloat32s(n int) []float32 {
 	return out
 }
 
+var negZero = float32(math.Copysign(0, -1))
+
+// assertSameBits is stricter than assertSlicesEqual: SIMD lanes must match
+// the scalar reference bit-for-bit, so +0 and -0 differ. Any NaN still
+// matches any NaN, since hardware and scalar code may pick different
+// payloads.
+func assertSameBits(t *testing.T, name string, got, want []float32) {
+	t.Helper()
+	for i := range want {
+		g, w := got[i], want[i]
+		if g != g && w != w {
+			continue
+		}
+		if math.Float32bits(g) != math.Float32bits(w) {
+			t.Errorf("%s: index %d: got %v (%#08x), want %v (%#08x)", name, i, g, math.Float32bits(g), w, math.Float32bits(w))
+		}
+	}
+}
+
 func requireAVX2(t *testing.T) {
 	t.Helper()
-	if !hasAVX2() {
+	if !archsimd.X86.AVX2() {
 		t.Skip("AVX2 not available on this CPU")
 	}
 }
@@ -52,70 +72,79 @@ func TestAVX2MatchesScalar(t *testing.T) {
 			scalarAddFloat32(want, a, b)
 			got := make([]float32, n)
 			addFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Add", got, want)
+			assertSameBits(t, "Add", got, want)
 		})
 		t.Run("Sub", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarSubFloat32(want, a, b)
 			got := make([]float32, n)
 			subFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Sub", got, want)
+			assertSameBits(t, "Sub", got, want)
 		})
 		t.Run("Mul", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarMulFloat32(want, a, b)
 			got := make([]float32, n)
 			mulFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Mul", got, want)
+			assertSameBits(t, "Mul", got, want)
 		})
 		t.Run("Div", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarDivFloat32(want, a, b)
 			got := make([]float32, n)
 			divFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Div", got, want)
+			assertSameBits(t, "Div", got, want)
 		})
 		t.Run("Min", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarMinFloat32(want, a, b)
 			got := make([]float32, n)
 			minFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Min", got, want)
+			assertSameBits(t, "Min", got, want)
 		})
 		t.Run("Max", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarMaxFloat32(want, a, b)
 			got := make([]float32, n)
 			maxFloat32AVX2(got, a, b)
-			assertSlicesEqual(t, "Max", got, want)
+			assertSameBits(t, "Max", got, want)
 		})
 		t.Run("AddScalar", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarAddScalarFloat32(want, a, 3.25)
 			got := make([]float32, n)
 			addScalarFloat32AVX2(got, a, 3.25)
-			assertSlicesEqual(t, "AddScalar", got, want)
+			assertSameBits(t, "AddScalar", got, want)
 		})
 		t.Run("MulScalar", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarMulScalarFloat32(want, a, -2)
 			got := make([]float32, n)
 			mulScalarFloat32AVX2(got, a, -2)
-			assertSlicesEqual(t, "MulScalar", got, want)
+			assertSameBits(t, "MulScalar", got, want)
 		})
 		t.Run("Clamp", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarClampFloat32(want, a, -10, 10)
 			got := make([]float32, n)
 			clampFloat32AVX2(got, a, -10, 10)
-			assertSlicesEqual(t, "Clamp", got, want)
+			assertSameBits(t, "Clamp", got, want)
+		})
+		t.Run("ClampSignedZeroBounds", func(t *testing.T) {
+			for _, bounds := range [][2]float32{{negZero, 0}, {0, negZero}, {0, 0}, {negZero, negZero}, {nan, 1}, {-1, nan}} {
+				want := make([]float32, n)
+				scalarClampFloat32(want, a, bounds[0], bounds[1])
+				got := make([]float32, n)
+				clampFloat32AVX2(got, a, bounds[0], bounds[1])
+				assertSameBits(t, "Clamp", got, want)
+			}
 		})
 		t.Run("Abs", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarAbsFloat32(want, a)
 			got := make([]float32, n)
 			absFloat32AVX2(got, a)
-			assertSlicesEqual(t, "Abs", got, want)
+			assertSameBits(t, "Abs", got, want)
 
 			for i, v := range a {
 				if v == 0 && math.Signbit(float64(v)) {
@@ -130,7 +159,7 @@ func TestAVX2MatchesScalar(t *testing.T) {
 			scalarSqrtFloat32(want, a)
 			got := make([]float32, n)
 			sqrtFloat32AVX2(got, a)
-			assertSlicesEqual(t, "Sqrt", got, want)
+			assertSameBits(t, "Sqrt", got, want)
 		})
 	}
 }
@@ -153,34 +182,59 @@ func TestAVX2InPlace(t *testing.T) {
 	assertSlicesEqual(t, "Add in-place AVX2", a, want)
 }
 
-func TestHasAVX2Deterministic(t *testing.T) {
-	first := hasAVX2()
-	for i := 0; i < 5; i++ {
-		if hasAVX2() != first {
-			t.Fatalf("hasAVX2 returned inconsistent results across calls")
-		}
-	}
-}
+const benchN = 4096
 
-func benchmarkAdd(b *testing.B, add func(dst, a, x []float32), n int) {
-	dst := make([]float32, n)
-	a := make([]float32, n)
-	x := make([]float32, n)
+func benchInputs(n int) (dst, a, x []float32) {
+	dst = make([]float32, n)
+	a = make([]float32, n)
+	x = make([]float32, n)
 	for i := range a {
 		a[i] = float32(i)
 		x[i] = float32(n - i)
 	}
-	b.SetBytes(int64(n) * 4 * 3)
-	for i := 0; i < b.N; i++ {
-		add(dst, a, x)
+	return dst, a, x
+}
+
+func benchmarkBinary(b *testing.B, fn func(dst, a, x []float32)) {
+	dst, a, x := benchInputs(benchN)
+	b.SetBytes(benchN * 4 * 3)
+	for b.Loop() {
+		fn(dst, a, x)
 	}
 }
 
-func BenchmarkAddScalar4096(b *testing.B) { benchmarkAdd(b, scalarAddFloat32, 4096) }
-
-func BenchmarkAddAVX2_4096(b *testing.B) {
-	if !hasAVX2() {
+func requireAVX2Bench(b *testing.B) {
+	b.Helper()
+	if !archsimd.X86.AVX2() {
 		b.Skip("AVX2 not available on this CPU")
 	}
-	benchmarkAdd(b, addFloat32AVX2, 4096)
+}
+
+func BenchmarkAddScalar4096(b *testing.B) { benchmarkBinary(b, scalarAddFloat32) }
+
+func BenchmarkAddAVX2_4096(b *testing.B) {
+	requireAVX2Bench(b)
+	benchmarkBinary(b, addFloat32AVX2)
+}
+
+func BenchmarkMinScalar4096(b *testing.B) { benchmarkBinary(b, scalarMinFloat32) }
+
+func BenchmarkMinAVX2_4096(b *testing.B) {
+	requireAVX2Bench(b)
+	benchmarkBinary(b, minFloat32AVX2)
+}
+
+func benchmarkClamp(b *testing.B, fn func(dst, src []float32, lo, hi float32)) {
+	dst, src, _ := benchInputs(benchN)
+	b.SetBytes(benchN * 4 * 2)
+	for b.Loop() {
+		fn(dst, src, 100, 3000)
+	}
+}
+
+func BenchmarkClampScalar4096(b *testing.B) { benchmarkClamp(b, scalarClampFloat32) }
+
+func BenchmarkClampAVX2_4096(b *testing.B) {
+	requireAVX2Bench(b)
+	benchmarkClamp(b, clampFloat32AVX2)
 }

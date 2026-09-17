@@ -1,51 +1,29 @@
-//go:build amd64
+//go:build goexperiment.simd && amd64
 
 package vec
+
+import "simd/archsimd"
+
+// This file is the AVX2 backend, written with Go's simd/archsimd package
+// (see docs/adr/0001-simd-backend.md). It only exists in builds with
+// GOEXPERIMENT=simd; other builds keep the scalar function variables from
+// dispatch.go.
+//
+// Every kernel must agree bit-for-bit with its scalar counterpart (any NaN
+// matches any NaN). The loops follow the same shape:
+//
+//   - fixed-size array-pointer loads over slices that shrink by one lane
+//     per iteration, which lets the compiler drop per-load bounds checks;
+//   - archsimd.ClearAVXUpperBits (VZEROUPPER) before the scalar tail, since
+//     the compiler does not emit it and the tail may use legacy SSE.
 
 // avxLane is the number of float32 lanes in a YMM register.
 const avxLane = 8
 
-// Each *AVX2Asm function is implemented in simd_amd64.s. It processes
-// exactly n elements (n must be a multiple of avxLane) starting at the
-// given pointers; the wrapper below handles the remainder with the
-// scalar backend, which is also the correctness reference these must
-// agree with bit-for-bit.
-//
-//go:noescape
-func addAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func subAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func mulAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func divAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func minAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func maxAVX2Asm(dst, a, b *float32, n int)
-
-//go:noescape
-func addScalarAVX2Asm(dst, src *float32, n int, value float32)
-
-//go:noescape
-func mulScalarAVX2Asm(dst, src *float32, n int, value float32)
-
-//go:noescape
-func clampAVX2Asm(dst, src *float32, n int, lo, hi float32)
-
-//go:noescape
-func absAVX2Asm(dst, src *float32, n int)
-
-//go:noescape
-func sqrtAVX2Asm(dst, src *float32, n int)
-
 func init() {
-	if !hasAVX2() {
+	// AVX2, not just AVX: some archsimd "emulated" ops (Abs, IfElse,
+	// Broadcast) need AVX2 instructions.
+	if !archsimd.X86.AVX2() {
 		return
 	}
 	addFloat32 = addFloat32AVX2
@@ -61,116 +39,140 @@ func init() {
 	sqrtFloat32 = sqrtFloat32AVX2
 }
 
-func avxSplit(n int) int {
-	return n - n%avxLane
+func load8(s []float32) archsimd.Float32x8 {
+	return archsimd.LoadFloat32x8Array((*[avxLane]float32)(s))
+}
+
+func store8(v archsimd.Float32x8, s []float32) {
+	v.StoreArray((*[avxLane]float32)(s))
+}
+
+// min8 and max8 reproduce Go's builtin min and max lanewise. VMINPS and
+// VMAXPS return the second operand when the operands compare equal or are
+// unordered, which gets two cases wrong: a NaN first operand, and
+// min(-0, +0) / max(+0, -0). Equal lanes therefore take the bitwise OR (min)
+// or AND (max) of both operands, which only differs from either operand for
+// signed zeros, and NaN lanes in x are restored from x.
+func min8(x, y archsimd.Float32x8) archsimd.Float32x8 {
+	r := x.ToBits().Or(y.ToBits()).BitsToFloat32().IfElse(x.Equal(y), x.Min(y))
+	return x.IfElse(x.IsNaN(), r)
+}
+
+func max8(x, y archsimd.Float32x8) archsimd.Float32x8 {
+	r := x.ToBits().And(y.ToBits()).BitsToFloat32().IfElse(x.Equal(y), x.Max(y))
+	return x.IfElse(x.IsNaN(), r)
 }
 
 func addFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		addAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(load8(a).Add(load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarAddFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarAddFloat32(dst, a, b)
 }
 
 func subFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		subAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(load8(a).Sub(load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarSubFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarSubFloat32(dst, a, b)
 }
 
 func mulFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		mulAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(load8(a).Mul(load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarMulFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarMulFloat32(dst, a, b)
 }
 
 func divFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		divAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(load8(a).Div(load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarDivFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarDivFloat32(dst, a, b)
 }
 
 func minFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		minAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(min8(load8(a), load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarMinFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarMinFloat32(dst, a, b)
 }
 
 func maxFloat32AVX2(dst, a, b []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		maxAVX2Asm(&dst[0], &a[0], &b[0], n8)
+	a, b = a[:len(dst)], b[:len(dst)]
+	for len(dst) >= avxLane && len(a) >= avxLane && len(b) >= avxLane {
+		store8(max8(load8(a), load8(b)), dst)
+		dst, a, b = dst[avxLane:], a[avxLane:], b[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarMaxFloat32(dst[n8:], a[n8:], b[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarMaxFloat32(dst, a, b)
 }
 
 func addScalarFloat32AVX2(dst, src []float32, value float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		addScalarAVX2Asm(&dst[0], &src[0], n8, value)
+	v := archsimd.BroadcastFloat32x8(value)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Add(v), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarAddScalarFloat32(dst[n8:], src[n8:], value)
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarAddScalarFloat32(dst, src, value)
 }
 
 func mulScalarFloat32AVX2(dst, src []float32, value float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		mulScalarAVX2Asm(&dst[0], &src[0], n8, value)
+	v := archsimd.BroadcastFloat32x8(value)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Mul(v), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarMulScalarFloat32(dst[n8:], src[n8:], value)
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarMulScalarFloat32(dst, src, value)
 }
 
 func clampFloat32AVX2(dst, src []float32, lo, hi float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		clampAVX2Asm(&dst[0], &src[0], n8, lo, hi)
+	vlo := archsimd.BroadcastFloat32x8(lo)
+	vhi := archsimd.BroadcastFloat32x8(hi)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(min8(max8(load8(src), vlo), vhi), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarClampFloat32(dst[n8:], src[n8:], lo, hi)
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarClampFloat32(dst, src, lo, hi)
 }
 
 func absFloat32AVX2(dst, src []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		absAVX2Asm(&dst[0], &src[0], n8)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Abs(), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarAbsFloat32(dst[n8:], src[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarAbsFloat32(dst, src)
 }
 
 func sqrtFloat32AVX2(dst, src []float32) {
-	n8 := avxSplit(len(dst))
-	if n8 > 0 {
-		sqrtAVX2Asm(&dst[0], &src[0], n8)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Sqrt(), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
 	}
-	if n8 < len(dst) {
-		scalarSqrtFloat32(dst[n8:], src[n8:])
-	}
+	archsimd.ClearAVXUpperBits()
+	scalarSqrtFloat32(dst, src)
 }
