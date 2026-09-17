@@ -1801,8 +1801,14 @@ options or float bits from callers has native Go fuzz tests (`Fuzz*` in
 against exact references (math/big shapes, bit-at-a-time masks, brute-force
 overlap, naive kernels, the scalar backend) and that every rejection is a
 panic with the package's own message, raised before anything is written,
-never a runtime error. Their seed corpora run with `go test`; to fuzz one
-target, in both builds:
+never a runtime error. Metamorphic targets (`Fuzz*Relations` in
+`metamorphic_test.go`, with transformations in `internal/rastertest`) check
+relations between results instead, which catch answers that are wrong but
+in range: symmetries of the grid, translation and scaling of a DEM,
+algebraic identities, and the locality and NoData rules of stencils, each
+side run through its own execution path and memory layout. Horn's fixed
+evaluation order makes most of them bit-exact. Their seed corpora run with
+`go test`; to fuzz one target, in both builds:
 
 ```text
 go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
