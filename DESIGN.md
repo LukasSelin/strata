@@ -807,11 +807,7 @@ algebra.Mul(dst, a, b)
 algebra.Min(dst, a, b)
 algebra.Max(dst, a, b)
 algebra.Clamp(dst, src, lo, hi)
-```
 
-Planned for v0.1:
-
-```go
 // Mask writes src into dst with validity = valid(src) AND valid(mask).
 // Only mask's validity is read, never its values; a nil mask on either
 // input means all valid. Producing masks from values (Threshold, Compare)
@@ -835,7 +831,8 @@ Semantics, as in the `algebra` package documentation:
 - `dst` may alias an input exactly. Partial overlaps panic.
 - Any stride or window is accepted.
 - Every cell is computed with Go's `+ - * min max` semantics.
-- An output cell is valid iff it is valid in every input.
+- An output cell is valid iff it is valid in every input, which is all
+  `Mask` does: it copies `src` and intersects the two validities.
 
 ## 19. Avoid Arbitrary Callbacks in Hot Paths
 
@@ -1168,17 +1165,17 @@ err := terrain.SlopeTiled(ctx, dst, dem, terrain.SlopeOptions{CellSize: 30},
 
 STRATA-8 added `AddTiled`, `SubTiled`, `MulTiled`, `MinTiled`, `MaxTiled`,
 `ClampTiled`, `GradientTiled`, `SlopeTiled`, `AspectTiled` and
-`HillshadeTiled` over in-memory rasters. They give the same bits as the
-plain functions for every `Options`. The terrain functions run the same
-kernels as one tile; the algebra functions stay direct to keep their zero
-allocations.
+`HillshadeTiled` over in-memory rasters, and `MaskTiled` followed with
+`Mask` (§18). They give the same bits as the plain functions for every
+`Options`. The terrain functions run the same kernels as one tile; the
+algebra functions stay direct to keep their zero allocations.
 
 The Chunked functions (`SlopeChunked`, `AspectChunked`,
 `HillshadeChunked`, `GradientChunked`, `AddChunked`, `SubChunked`,
-`MulChunked`, `MinChunked`, `MaxChunked`, `ClampChunked`) take sources and
-sinks instead of rasters and run with bounded memory (§27), through
-`exec.ProcessChunked`. Their sinks receive the bits the plain function
-would write, for every `Options`.
+`MulChunked`, `MinChunked`, `MaxChunked`, `MaskChunked`, `ClampChunked`)
+take sources and sinks instead of rasters and run with bounded memory
+(§27), through `exec.ProcessChunked`. Their sinks receive the bits the
+plain function would write, for every `Options`.
 
 Configuration:
 
@@ -1706,8 +1703,8 @@ benchmarks/
 ├── algebra/            implemented, RESULTS.md
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
+├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
-├── terrain/            next
 ├── remote_sensing/
 ├── convolution/
 ├── pointcloud/
@@ -1942,7 +1939,7 @@ strata/
 │   ├── mask.go                bitmap helpers, range AND/copy/fill
 │   └── grid.go                Grid, CRS placeholder, Dataset
 │
-├── algebra/                   implemented (+ Mask planned)
+├── algebra/                   implemented
 │   ├── doc.go
 │   ├── algebra.go
 │   └── tiled.go               tiled entry points and their kernels
@@ -2052,7 +2049,7 @@ Multiply                                    done
 Clamp                                       done
 Min                                         done
 Max                                         done
-Mask                                        planned
+Mask                                        done
 
 Gradient                                    done (STRATA-6)
 Slope                                       done (STRATA-6)
@@ -2066,7 +2063,7 @@ halo handling                               done: in memory and copied buffers, 
 bounded-memory tiled execution              done (§27; 20000² demo, §43)
 memory and raw float32 file source/sink     done (§24)
 
-benchmark suite                             algebra (STRATA-10), engine (STRATA-9), chunked done; terrain next
+benchmark suite                             done: algebra (STRATA-10), engine (STRATA-9), chunked, terrain
 ```
 
 Arm64 builds run the scalar kernels in v0.1.

@@ -109,7 +109,7 @@ func TestParseAndRenderTiled(t *testing.T) {
 // TestResultsMatch checks that the tables in each category's RESULTS.md
 // are this command's output for the raw run committed next to it.
 func TestResultsMatch(t *testing.T) {
-	for _, category := range []string{"algebra", "engine", "chunked"} {
+	for _, category := range []string{"algebra", "engine", "chunked", "terrain"} {
 		t.Run(category, func(t *testing.T) { testResultsMatch(t, category) })
 	}
 }

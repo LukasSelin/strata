@@ -1,7 +1,10 @@
-// Package algebra applies pointwise arithmetic to whole rasters: Add, Sub,
-// Mul, Min, Max and Clamp. Each operation writes into a caller-supplied
-// dst, allocates nothing, and runs the internal/vec kernels over flat
-// spans, so it picks up the SIMD backend without exposing it.
+// Package algebra applies pointwise operations to whole rasters: the
+// arithmetic of Add, Sub, Mul, Min, Max and Clamp, and Mask, which
+// narrows validity. Each operation writes into a caller-supplied dst,
+// allocates nothing, and runs the internal/vec kernels over flat spans,
+// so it picks up the SIMD backend without exposing it. Mask has no
+// kernel of its own: copying cells is a memmove, which already runs at
+// memory speed.
 //
 // # Operands
 //
@@ -24,7 +27,8 @@
 //
 // Every cell is computed, valid or not, with the semantics of Go's +, -,
 // * and builtin min and max: NaN propagates and min(-0, +0) is -0. Clamp
-// computes min(max(v, lo), hi), so lo > hi yields hi. Data under a cleared
+// computes min(max(v, lo), hi), so lo > hi yields hi. Mask computes
+// nothing: it writes src's cells bit for bit. Data under a cleared
 // validity bit is unspecified, on input and on output.
 //
 // # Validity
@@ -42,13 +46,20 @@
 //     with raster.NewFloat32Like, or set Valid on the root raster before
 //     windowing.
 //
+// Mask is the operation for narrowing validity: Mask(dst, src, mask)
+// writes src's values with validity valid(src) AND valid(mask). Only
+// mask's validity is read, never its values, so the cells under a mask
+// raster may hold anything; it must still be a raster of dst's size whose
+// cells do not partly overlap dst's, like any input. Producing a mask
+// from values (Threshold, Compare) is a later operation.
+//
 // Masks are combined up to 64 bits at a time, and in whole-word loops
 // when the operands' bit offsets are word-aligned.
 //
 // # Tiled execution
 //
-// AddTiled, SubTiled, MulTiled, MinTiled, MaxTiled and ClampTiled run the
-// same operations in tiles on engine.Options.Workers goroutines (by
+// AddTiled, SubTiled, MulTiled, MinTiled, MaxTiled, MaskTiled and
+// ClampTiled run the same operations in tiles on engine.Options.Workers goroutines (by
 // default one per GOMAXPROCS) with a context, and return ctx.Err() if
 // cancelled (see package engine). They apply the same operand, in-place
 // and validity rules (and also reject a dst whose mask bits partly
@@ -57,10 +68,12 @@
 // their promise to allocate nothing, which the engine's per-call setup
 // cannot.
 //
-// AddChunked, SubChunked, MulChunked, MinChunked, MaxChunked and
-// ClampChunked read their inputs from engine.RasterSources and write dst
-// to an engine.RasterSink a tile at a time, so rasters larger than memory,
-// such as raw float32 files, run in Workers × tile buffers (DESIGN.md
-// §27), with the same values and validity. They cannot run in place over
+// AddChunked, SubChunked, MulChunked, MinChunked, MaxChunked,
+// MaskChunked and ClampChunked read their inputs from
+// engine.RasterSources and write dst to an engine.RasterSink a tile at a
+// time, so rasters larger than memory, such as raw float32 files, run in
+// Workers × tile buffers (DESIGN.md §27), with the same values and
+// validity. MaskChunked reads the mask source like any other, so a raw
+// mask file carries validity only through engine.RawOptions.Fill. They cannot run in place over
 // memory: a memory sink sharing memory with a memory source panics.
 package algebra

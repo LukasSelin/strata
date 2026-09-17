@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -315,6 +316,28 @@ func FillUniform(data []float32, seed uint64, lo, hi float32) {
 	scale := (hi - lo) / (1 << 24)
 	for i := range data {
 		data[i] = lo + float32(r.next()>>40)*scale
+	}
+}
+
+// FillDEM fills data, the cells of a size × size raster, with a smooth
+// elevation surface: 800 ± 300 with gentle slopes, plus uniform noise of
+// ±1. Terrain kernels meet terrain rather than white noise, so their
+// data-dependent branches (Hillshade's clamps, Aspect's flat cells)
+// behave as they do on real DEMs. It is deterministic for a given seed,
+// and the terrain and engine categories share it so that their numbers
+// compare.
+func FillDEM(data []float32, size int, seed uint64) {
+	FillUniform(data, seed, -1, 1)
+	cols := make([]float32, size)
+	for x := range cols {
+		cols[x] = float32(300 * math.Sin(float64(x)/97))
+	}
+	for y := range size {
+		c := float32(math.Cos(float64(y) / 131))
+		row := data[y*size : (y+1)*size]
+		for x := range row {
+			row[x] += 800 + cols[x]*c
+		}
 	}
 }
 

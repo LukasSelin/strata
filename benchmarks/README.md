@@ -8,6 +8,7 @@ spikes that informed the design.
 | `algebra/` | suite: `strata/algebra` Add, Sub, Mul, Min, Max, Clamp. Numbers in [`algebra/RESULTS.md`](algebra/RESULTS.md) |
 | `engine/` | suite: Slope, Hillshade and Clamp, plain and through the engine, by worker count and tile shape. Numbers in [`engine/RESULTS.md`](engine/RESULTS.md) |
 | `chunked/` | suite: Slope, Hillshade and Clamp with bounded memory from a raw float32 file to another, by worker count and tile shape, and the §43 demo. Numbers in [`chunked/RESULTS.md`](chunked/RESULTS.md) |
+| `terrain/` | suite: the four terrain operations (Gradient, Slope, Aspect, Hillshade) through their plain public API, at every size and backend. Numbers in [`terrain/RESULTS.md`](terrain/RESULTS.md) |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
 | `cmd/stratademo/` | the §43 validation target: a 20000² raw DEM with bounded memory, checked against the whole-raster result, with measured peak memory |
@@ -118,9 +119,10 @@ speedup of `strips` over one worker at each size):
 
 ## Adding a category
 
-A category is a package `benchmarks/<name>` (terrain, convolution,
-remote_sensing, pointcloud, nd, per §38) with a `doc.go` and a `bench_test.go` that uses
-`internal/suite`:
+A category is a package `benchmarks/<name>` (convolution,
+remote_sensing, pointcloud, nd, per §38) with a `doc.go` and a
+`bench_test.go` that uses `internal/suite`. `terrain/bench_test.go` is the
+smallest complete example; the sketch below is its Slope case:
 
 ```go
 var stencilKernels = suite.Kernels{Name: "stencil", Backend: stencil.Backend, UseScalar: stencil.UseScalar}

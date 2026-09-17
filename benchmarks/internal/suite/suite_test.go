@@ -61,6 +61,28 @@ func TestFillUniform(t *testing.T) {
 	}
 }
 
+func TestFillDEM(t *testing.T) {
+	const size = 256
+	data := make([]float32, size*size)
+	FillDEM(data, size, 1)
+	lo, hi := float32(math.Inf(1)), float32(math.Inf(-1))
+	for _, v := range data {
+		lo, hi = min(lo, v), max(hi, v)
+	}
+	if lo < 499 || hi > 1101 {
+		t.Errorf("elevations in [%v, %v], want within [499, 1101]", lo, hi)
+	}
+	// Neighbours differ by a few metres at most: a surface, not noise.
+	for y := range size {
+		row := data[y*size : (y+1)*size]
+		for x := 1; x < size; x++ {
+			if d := row[x] - row[x-1]; d > 12 || d < -12 {
+				t.Fatalf("cell (%d, %d) jumps by %v from its neighbour", x, y, d)
+			}
+		}
+	}
+}
+
 func TestRandomMask(t *testing.T) {
 	const n = 1<<16 + 7
 	m := RandomMask(n, 1, 0.1)

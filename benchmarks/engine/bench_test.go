@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"math"
 	"testing"
 
 	"strata/algebra"
@@ -61,24 +60,14 @@ type fixture struct {
 	demValid, dstValid []uint64
 }
 
-// newFixture builds a smooth DEM with a little noise: elevations of
-// 800 ± 300 with gentle slopes, like terrain rather than white noise, so
-// scalar branches (Hillshade's clamps) behave as on real data.
+// newFixture builds the suite's smooth DEM (suite.FillDEM): elevations
+// of 800 ± 300 with gentle slopes, like terrain rather than white noise,
+// so scalar branches (Hillshade's clamps) behave as on real data. The
+// terrain category uses the same one.
 func newFixture(size int) *fixture {
 	n := size * size
 	f := &fixture{size: size, dem: make([]float32, n), dst: make([]float32, n)}
-	suite.FillUniform(f.dem, 1, -1, 1)
-	cols := make([]float32, size)
-	for x := range cols {
-		cols[x] = float32(300 * math.Sin(float64(x)/97))
-	}
-	for y := range size {
-		c := float32(math.Cos(float64(y) / 131))
-		row := f.dem[y*size : (y+1)*size]
-		for x := range row {
-			row[x] += 800 + cols[x]*c
-		}
-	}
+	suite.FillDEM(f.dem, size, 1)
 	suite.FillUniform(f.dst, 3, 0, 1) // fault dst's pages in before timing
 	f.demValid = suite.RandomMask(n, 4, 0.1)
 	f.dstValid = raster.NewMask(n)

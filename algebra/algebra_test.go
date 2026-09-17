@@ -197,6 +197,9 @@ var binaryOps = []struct {
 	{"Mul", algebra.Mul, func(a, b float32) float32 { return a * b }},
 	{"Min", algebra.Min, func(a, b float32) float32 { return min(a, b) }},
 	{"Max", algebra.Max, func(a, b float32) float32 { return max(a, b) }},
+	// Mask(dst, src, mask) keeps src's value and the AND of the two
+	// validities, so it is a binary operation whose reference is a.
+	{"Mask", algebra.Mask, func(a, _ float32) float32 { return a }},
 }
 
 func TestBinaryMatchesReference(t *testing.T) {
@@ -354,6 +357,17 @@ func TestSiblingWindows(t *testing.T) {
 				algebra.Clamp(d.r, a.r, -10, 10)
 				checkResult(t, d.r, want)
 				f.checkUntouched(t)
+
+				// Mask copies between sibling windows, so dst's bits and
+				// src's are disjoint ranges of one mask array.
+				as, bs = snapshot(a.r), snapshot(b.r)
+				for i := range want {
+					want[i] = cell{as[i].v, as[i].valid && bs[i].valid}
+				}
+				f = freeze(d)
+				algebra.Mask(d.r, a.r, b.r)
+				checkResult(t, d.r, want)
+				f.checkUntouched(t)
 			}
 		}
 	}
@@ -422,6 +436,8 @@ func TestNoAllocs(t *testing.T) {
 		"Clamp/strided":      func() { algebra.Clamp(strided, a, 0, 1) },
 		"Max/masked":         func() { algebra.Max(dst, masked, a) },
 		"Mul/masked/strided": func() { algebra.Mul(dst, masked, strided) },
+		"Mask/masked":        func() { algebra.Mask(dst, a, masked) },
+		"Mask/inPlace":       func() { algebra.Mask(dst, dst, masked) },
 	}
 	for name, f := range cases {
 		if n := testing.AllocsPerRun(10, f); n != 0 {
@@ -466,13 +482,17 @@ func TestPanics(t *testing.T) {
 		algebra.Min(masked, a, bad)
 	})
 
+	mustPanic(t, "algebra.Mask: mask dimensions differ from dst", func() { algebra.Mask(a, b, r(3, 4)) })
+
 	mustPanic(t, "dst.Valid is nil", func() { algebra.Max(a, b, masked) })
+	mustPanic(t, "dst.Valid is nil", func() { algebra.Mask(a, b, masked) })
 	mustPanic(t, "dst.Valid is nil", func() { algebra.Clamp(a, masked, 0, 1) })
 
 	big := raster.NewFloat32(10, 10, make([]float32, 100))
 	w1, w2 := big.Window(0, 0, 4, 3), big.Window(1, 0, 4, 3)
 	mustPanic(t, "dst overlaps a at a different offset", func() { algebra.Add(w2, w1, b) })
 	mustPanic(t, "dst overlaps src at a different offset", func() { algebra.Clamp(w1, w2, 0, 1) })
+	mustPanic(t, "dst overlaps mask at a different offset", func() { algebra.Mask(w2, b, w1) })
 	restrided := raster.NewFloat32Stride(4, 3, 5, big.Data)
 	mustPanic(t, "dst overlaps b at a different offset or stride", func() { algebra.Add(w1, a, restrided) })
 	// Overlapping inputs are fine; only dst matters.
@@ -498,4 +518,26 @@ func ExampleAdd() {
 	// 11
 	// nodata
 	// 33
+}
+
+func ExampleMask() {
+	src := raster.NewFloat32(3, 1, []float32{1, 2, 3})
+	// Only cloud's validity is read; its values never are.
+	cloud := raster.NewFloat32(3, 1, []float32{-999, -999, -999})
+	cloud.Valid = raster.NewMask(3)
+	cloud.SetValid(1, 0, false)
+
+	dst := raster.NewFloat32Like(cloud) // has a mask because cloud does
+	algebra.Mask(dst, src, cloud)
+	for x := range dst.Width {
+		if dst.IsValid(x, 0) {
+			fmt.Println(dst.Data[x])
+		} else {
+			fmt.Println("nodata")
+		}
+	}
+	// Output:
+	// 1
+	// nodata
+	// 3
 }
