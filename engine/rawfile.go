@@ -39,9 +39,9 @@ func OpenRawFile(name string, flag int, perm os.FileMode, handles int) (*RawFile
 		if i == 1 {
 			flag &^= os.O_CREATE | os.O_EXCL | os.O_TRUNC
 		}
-		h, err := os.OpenFile(name, flag, perm)
+		h, err := os.OpenFile(name, flag, perm) // #nosec G304 -- opening the caller's file is RawFile's purpose
 		if err != nil {
-			f.Close()
+			_ = f.Close() // the open error matters more
 			return nil, err
 		}
 		f.files = append(f.files, h)

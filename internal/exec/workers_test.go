@@ -151,7 +151,6 @@ func TestCancellationWorkers(t *testing.T) {
 	final := out.clone()
 	naiveBox(final.r, []raster.Float32Raster{dem.r}, 1, float32(math.NaN()))
 
-	base := runtime.NumGoroutine()
 	for _, workers := range []int{1, 2, 3, 8, runtime.GOMAXPROCS(0)} {
 		for _, tiles := range [][2]int{{0, 0}, {7, 4}, {1, 1}} {
 			for _, after := range []int64{1, 5, 17} {
@@ -175,7 +174,7 @@ func TestCancellationWorkers(t *testing.T) {
 				}
 				requireFinalOrUntouched(t, id, got, final, out)
 				requirePrefix(t, id, got, final, exec.Bands(w, h, tiles[0], tiles[1]))
-				requireGoroutines(t, id, base)
+				requireNoLeaks(t, id)
 			}
 		}
 	}
@@ -211,20 +210,6 @@ func requirePrefix(t *testing.T, id string, got, final operand, bands [][4]int) 
 	}
 }
 
-// requireGoroutines waits up to two seconds for the goroutine count to
-// return to base: goroutines that have called Done on a WaitGroup may
-// still be exiting when Process returns.
-func requireGoroutines(t *testing.T, id string, base int) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > base {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d goroutines, %d before", id, runtime.NumGoroutine(), base)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // panicAt panics with value in the band starting at row y, or in every
 // band when y < 0.
 type panicAt struct {
@@ -251,7 +236,6 @@ func TestKernelPanic(t *testing.T) {
 	rng := rand.New(rand.NewPCG(6, 7))
 	dem := newOperand(rng, w, h, false, true)
 	errBoom := errors.New("boom")
-	base := runtime.NumGoroutine()
 	for _, workers := range []int{1, 2, 4, runtime.GOMAXPROCS(0)} {
 		for _, y := range []int{1, 30, h - 2, -1} {
 			for _, value := range []any{"kernel failed", errBoom} {
@@ -270,7 +254,7 @@ func TestKernelPanic(t *testing.T) {
 				if y < 0 && calls.Load() > int64(workers) {
 					t.Fatalf("%s: %d kernel calls after panics in every band, want at most %d", id, calls.Load(), workers)
 				}
-				requireGoroutines(t, id, base)
+				requireNoLeaks(t, id)
 			}
 		}
 	}

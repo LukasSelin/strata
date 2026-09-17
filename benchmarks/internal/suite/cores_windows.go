@@ -18,7 +18,7 @@ func CPUs() (physical, logical int) {
 		return 0, 0
 	}
 	var size uint32
-	proc.Call(relationProcessorCore, 0, uintptr(unsafe.Pointer(&size)))
+	_, _, _ = proc.Call(relationProcessorCore, 0, uintptr(unsafe.Pointer(&size))) // fails by design: it reports the size
 	if size == 0 {
 		return 0, 0
 	}

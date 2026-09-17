@@ -1815,6 +1815,31 @@ go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
+The tests of `internal/exec`, the only package that starts goroutines, and
+of `engine` fail if any test leaves a goroutine behind (goleak, the
+module's one dependency, used only by tests). `TestNoLeaksOnFailure` ends
+calls in every early way (kernel, source and sink panics, IO errors,
+cancellation while workers are mid-call) with several workers.
+
+The module is clean under staticcheck with every check enabled, and under
+gosec, in both builds. Both tools must be built with this module's Go
+version, or they cannot read its packages:
+
+```text
+GOTOOLCHAIN=go1.27.0 go install honnef.co/go/tools/cmd/staticcheck@latest
+GOTOOLCHAIN=go1.27.0 go install github.com/securego/gosec/v2/cmd/gosec@latest
+staticcheck -checks all ./...
+gosec -exclude=G103,G404 ./...
+```
+
+G103 (every use of unsafe) and G404 (math/rand) are excluded: unsafe is
+confined to address comparisons in internal/overlap and algebra, the byte
+views of raw IO in engine, and Windows system calls in the benchmark
+suite, each reviewed; math/rand only makes test fixtures. Other accepted
+findings carry a `#nosec` comment giving the reason. Neither tool
+detected the overflow in `raster.Validate` found by fuzzing: gosec's
+integer overflow rule covers conversions, not arithmetic.
+
 For point clouds also test:
 
 ```text

@@ -184,7 +184,7 @@ func parent() error {
 	if *dirFlag == "" {
 		return errors.New("-dir is required")
 	}
-	if err := os.MkdirAll(*dirFlag, 0o755); err != nil {
+	if err := os.MkdirAll(*dirFlag, 0o750); err != nil {
 		return err
 	}
 	sizes, err := ints(*sizesFlag)
@@ -270,7 +270,8 @@ func runChild(kind, op string, size int, tiles string, workers int, backend stri
 	if err != nil {
 		return result{}, err
 	}
-	cmd := exec.Command(self, "-child", kind, "-dir", *dirFlag, "-op", op, "-size", strconv.Itoa(size),
+	cmd := exec.Command(self, // #nosec G204 -- this binary, rerun as a child with its own flags
+		"-child", kind, "-dir", *dirFlag, "-op", op, "-size", strconv.Itoa(size),
 		"-tile", tiles, "-w", strconv.Itoa(workers), "-backend", backend)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
@@ -354,7 +355,9 @@ func child() error {
 		r.TileW, r.TileH, r.Used = tw, th, min(*wFlag, tiles)
 		// §27: Workers × (TileW+2r) × (TileH+2r) × Σ bytes per cell, one
 		// float32 input and one output.
+		// #nosec G115 -- tile sizes are positive.
 		cells := uint64(min(tw+2*op.radius, size)) * uint64(min(th+2*op.radius, size))
+		// #nosec G115 -- the worker count is positive.
 		r.Bound = uint64(r.Used) * cells * 8
 		base, _ := suite.ProcessMemory()
 		r.BasePrivate = base.Private
@@ -385,7 +388,7 @@ func generate(path string, size int) error {
 	if st, err := os.Stat(path); err == nil && st.Size() == 4*int64(size)*int64(size) {
 		return nil
 	}
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return err
 	}
@@ -404,12 +407,12 @@ func generate(path string, size int) error {
 			binary.LittleEndian.PutUint32(buf[4*x:], math.Float32bits(row[x]))
 		}
 		if _, err := w.Write(buf); err != nil {
-			f.Close()
+			_ = f.Close() // the write error matters more
 			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		_ = f.Close() // the flush error matters more
 		return err
 	}
 	return f.Close()
@@ -423,17 +426,17 @@ func copyFile(dst, src string) error {
 			return nil
 		}
 	}
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	out, err := os.Create(dst) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close() // the copy error matters more
 		return err
 	}
 	return out.Close()
@@ -442,12 +445,12 @@ func copyFile(dst, src string) error {
 // sameFiles compares two raw float32 files cell for cell, any NaN
 // matching any NaN, reading 16 MiB at a time.
 func sameFiles(a, b string) (bool, error) {
-	fa, err := os.Open(a)
+	fa, err := os.Open(a) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return false, err
 	}
 	defer fa.Close()
-	fb, err := os.Open(b)
+	fb, err := os.Open(b) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return false, err
 	}
@@ -481,7 +484,7 @@ func sameFiles(a, b string) (bool, error) {
 }
 
 func renderFile(w io.Writer, path string) error {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- a file in the -dir the user chose
 	if err != nil {
 		return err
 	}

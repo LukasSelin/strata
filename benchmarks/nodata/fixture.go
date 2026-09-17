@@ -87,7 +87,7 @@ func invalidLayout(w, h int, p Pattern, seed uint64) []bool {
 	if p.Density == 0 {
 		return inv
 	}
-	rng := rand.New(rand.NewPCG(seed, uint64(w)<<32|uint64(h)))
+	rng := rand.New(rand.NewPCG(seed, uint64(w)<<32|uint64(h))) // #nosec G115 -- any bits make a seed
 	if !p.Clustered {
 		for i := range inv {
 			inv[i] = rng.Float64() < p.Density

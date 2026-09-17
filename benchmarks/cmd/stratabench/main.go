@@ -47,7 +47,7 @@ import (
 func main() {
 	var in []io.Reader
 	for _, name := range os.Args[1:] {
-		f, err := os.Open(name)
+		f, err := os.Open(name) // #nosec G304 G703 -- the benchmark output files named on the command line
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

@@ -87,7 +87,7 @@ func slopeRows(dst, src []float32, w, h int, cellSize float32, row rowKernel) {
 	}
 }
 
-// SlopeNaNScalar: plain loop, NaN propagates through the arithmetic.
+// SlopeNaNScalar is a plain loop, NaN propagates through the arithmetic.
 func SlopeNaNScalar(dst, src []float32, w, h int, cellSize float32) {
 	fillBorder(dst, w, h, NaN32)
 	slopeRows(dst, src, w, h, cellSize, slopeRowNaNScalar)
@@ -139,7 +139,7 @@ func slopeRowSentinelSelect(dst, r0, r1, r2 []float32, invx, invy, nd float32) {
 	}
 }
 
-// SlopeSentinelSelect: compute unconditionally, then select.
+// SlopeSentinelSelect computes unconditionally, then selects.
 func SlopeSentinelSelect(dst, src []float32, w, h int, cellSize, nd float32) {
 	fillBorder(dst, w, h, nd)
 	invx, invy := hornScales(cellSize)
@@ -172,7 +172,7 @@ func SlopeMaskBranchy(dst, src []float32, dstValid, valid []uint64, w, h int, ce
 	}
 }
 
-// SlopeMaskScalar: plain loop over every interior cell plus the
+// SlopeMaskScalar is a plain loop over every interior cell plus the
 // word-level SlopeMask pass. Data under invalid output cells is garbage.
 func SlopeMaskScalar(dst, src []float32, dstValid, valid []uint64, w, h int, cellSize float32, scratch []uint64) {
 	slopeRows(dst, src, w, h, cellSize, slopeRowScalar)
