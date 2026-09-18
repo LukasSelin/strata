@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Sizes are the square raster sizes of DESIGN.md §38. Roughly: 256² fits

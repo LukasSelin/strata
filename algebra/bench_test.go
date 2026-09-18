@@ -5,8 +5,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/internal/vec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Benchmarks for Add and Clamp at 1024² and 4096², with and without

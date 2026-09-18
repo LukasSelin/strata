@@ -3,7 +3,7 @@ package overlap
 import (
 	"testing"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 func row(valid []uint64, off int) raster.Float32Raster {

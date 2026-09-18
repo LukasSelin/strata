@@ -5,8 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // worker is the state one goroutine uses for its bands. Nothing in it is

@@ -6,11 +6,11 @@ import (
 	"math"
 	"testing"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/internal/fuzzdata"
-	"strata/internal/rastertest"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/rastertest"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // FuzzProcessRelations checks relations between runs of box kernels of

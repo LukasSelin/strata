@@ -3,7 +3,7 @@ package exec_test
 import (
 	"testing"
 
-	"strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/exec"
 )
 
 // TestBands checks the band plan against nested loops: tiles in row-major

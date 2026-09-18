@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"strata/algebra"
-	"strata/engine"
-	"strata/internal/fuzzdata"
-	"strata/raster"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // fuzzRoot is a raster that owns its memory, and the position of the

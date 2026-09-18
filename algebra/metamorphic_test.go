@@ -6,11 +6,11 @@ import (
 	"math"
 	"testing"
 
-	"strata/algebra"
-	"strata/engine"
-	"strata/internal/fuzzdata"
-	"strata/internal/rastertest"
-	"strata/raster"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/rastertest"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // relApply runs the named operation on inputs placed in fresh memory

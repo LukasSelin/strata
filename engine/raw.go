@@ -9,7 +9,7 @@ import (
 	"math/bits"
 	"unsafe"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // A raw float32 file is a raster stored as little-endian IEEE 754 float32

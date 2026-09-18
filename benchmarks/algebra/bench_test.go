@@ -3,10 +3,10 @@ package algebra_test
 import (
 	"testing"
 
-	"strata/algebra"
-	"strata/benchmarks/internal/suite"
-	"strata/internal/vec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/benchmarks/internal/suite"
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Run the suite with, e.g.:

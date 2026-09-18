@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // angleDiff is the absolute difference of two angles in degrees, modulo

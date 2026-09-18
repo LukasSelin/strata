@@ -12,10 +12,10 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/internal/faultio"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/faultio"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The chunked path reads every tile and its halo from a source and

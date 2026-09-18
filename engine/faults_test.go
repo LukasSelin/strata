@@ -12,9 +12,9 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"strata/engine"
-	"strata/internal/faultio"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/faultio"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The raw source and sink read and write through io.ReaderAt and

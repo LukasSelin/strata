@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"math"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // SlopeUnits selects how Slope expresses steepness.

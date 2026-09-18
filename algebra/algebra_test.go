@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"strata/algebra"
-	"strata/raster"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The tests compare every operation against a naive per-cell reference

@@ -3,7 +3,7 @@ package stencil_test
 import (
 	"testing"
 
-	"strata/internal/bcecheck"
+	"github.com/LukasSelin/strata/internal/bcecheck"
 )
 
 // TestNoBoundsChecksInLoops fails if a bounds check survives inside a
@@ -25,7 +25,7 @@ import (
 //     offsets a caller chose, which the compiler cannot prove in bounds
 //     without restructuring the bit shuffling around them.
 func TestNoBoundsChecksInLoops(t *testing.T) {
-	inLoops, total, err := bcecheck.Check("strata/internal/stencil", "mask.go", "scalarHornHillshadeRow")
+	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/stencil", "mask.go", "scalarHornHillshadeRow")
 	if err != nil {
 		t.Fatal(err)
 	}

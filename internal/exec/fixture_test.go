@@ -7,9 +7,9 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // operand is a raster under test and the root that owns its memory, so

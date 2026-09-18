@@ -4,8 +4,8 @@ import (
 	"testing"
 	"unsafe"
 
-	"strata/internal/fuzzdata"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // FuzzRelations builds two rasters of equal size over one buffer and one

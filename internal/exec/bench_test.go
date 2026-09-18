@@ -7,10 +7,10 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/algebra"
-	"strata/engine"
-	"strata/raster"
-	"strata/terrain"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/raster"
+	"github.com/LukasSelin/strata/terrain"
 )
 
 // The benchmarks compare the tiled entry points with the plain functions on

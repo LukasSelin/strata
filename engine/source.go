@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // RasterSource is a raster that the engine reads a window at a time

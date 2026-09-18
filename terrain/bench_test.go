@@ -6,8 +6,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // benchDEM is rolling synthetic terrain with noise, optionally with a

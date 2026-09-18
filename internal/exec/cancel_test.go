@@ -12,9 +12,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The cancellation tests run in synctest bubbles, where time is virtual:

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
 )
 
 // FuzzErodeBox checks ErodeBox against a per-cell reference for any

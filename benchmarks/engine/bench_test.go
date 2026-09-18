@@ -4,13 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"strata/algebra"
-	"strata/benchmarks/internal/suite"
-	"strata/engine"
-	"strata/internal/stencil"
-	"strata/internal/vec"
-	"strata/raster"
-	"strata/terrain"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/benchmarks/internal/suite"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
+	"github.com/LukasSelin/strata/terrain"
 )
 
 // Run the suite with, e.g.:

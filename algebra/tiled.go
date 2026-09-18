@@ -3,10 +3,10 @@ package algebra
 import (
 	"context"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/internal/vec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The Tiled functions run an operation through the engine: they take the

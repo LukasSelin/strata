@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
 )
 
 // sameResult compares bitwise, except that any NaN matches any NaN: the

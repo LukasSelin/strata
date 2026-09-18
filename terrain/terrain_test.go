@@ -6,8 +6,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 func mustPanic(t *testing.T, name string, f func()) {

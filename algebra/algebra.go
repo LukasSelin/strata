@@ -3,9 +3,9 @@ package algebra
 import (
 	"unsafe"
 
-	"strata/internal/overlap"
-	"strata/internal/vec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/overlap"
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Add computes dst = a + b cell by cell.

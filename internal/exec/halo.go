@@ -1,8 +1,8 @@
 package exec
 
 import (
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // band writes band i: its output cells [x0, x1) × [y0, y1), the kernel

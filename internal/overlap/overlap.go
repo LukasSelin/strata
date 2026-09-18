@@ -12,7 +12,7 @@ package overlap
 import (
 	"unsafe"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Relation is how the cells of two rasters with equal dimensions relate

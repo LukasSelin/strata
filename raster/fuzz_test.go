@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
 )
 
 // The fuzz tests check the package's arithmetic on shapes and bit ranges

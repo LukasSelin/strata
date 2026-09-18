@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"strata/internal/vec"
+	"github.com/LukasSelin/strata/internal/vec"
 )
 
 // These tests pin down representation hazards the recommendation relies

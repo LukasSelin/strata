@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/internal/fuzzdata"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // FuzzPlan checks the band plan for any raster size, tile size and band

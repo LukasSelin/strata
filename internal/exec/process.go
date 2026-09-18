@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"strata/engine"
-	"strata/internal/overlap"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/overlap"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Process runs a kernel with one input and one output: dst = k(src). See

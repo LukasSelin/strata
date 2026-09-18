@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"strata/engine"
-	"strata/internal/fuzzdata"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // fuzzWindow returns a w×h raster decoded from d: compact, strided, or a

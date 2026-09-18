@@ -3,10 +3,10 @@ package terrain_test
 import (
 	"testing"
 
-	"strata/benchmarks/internal/suite"
-	"strata/internal/stencil"
-	"strata/raster"
-	"strata/terrain"
+	"github.com/LukasSelin/strata/benchmarks/internal/suite"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
+	"github.com/LukasSelin/strata/terrain"
 )
 
 // Run the suite with, e.g.:

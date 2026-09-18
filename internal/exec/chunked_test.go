@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"strata/algebra"
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
-	"strata/terrain"
+	"github.com/LukasSelin/strata/algebra"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
+	"github.com/LukasSelin/strata/terrain"
 )
 
 // chunkedFunc runs an operation over sources and sinks.

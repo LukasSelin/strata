@@ -1,6 +1,6 @@
 package exec
 
-import "strata/raster"
+import "github.com/LukasSelin/strata/raster"
 
 // Kernel is a raster operation the engine can run over any part of a
 // raster: a pointwise operation (radius 0) or a neighbourhood operation

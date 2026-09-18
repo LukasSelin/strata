@@ -7,8 +7,8 @@ package rastertest
 import (
 	"math"
 
-	"strata/internal/fuzzdata"
-	"strata/raster"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // TB is what a metamorphic test needs of the testing package: the part

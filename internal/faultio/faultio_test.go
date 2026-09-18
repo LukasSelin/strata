@@ -7,7 +7,7 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"strata/internal/faultio"
+	"github.com/LukasSelin/strata/internal/faultio"
 )
 
 // The engine tests read a file through these adapters and compare the

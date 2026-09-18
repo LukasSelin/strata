@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // boxKernel writes the mean of the (2r+1)×(2r+1) neighbourhood of every

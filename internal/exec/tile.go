@@ -5,10 +5,10 @@ import (
 	"runtime"
 	"sync"
 
-	"strata/engine"
-	"strata/internal/overlap"
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/overlap"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // bandCells is the target number of cells in a band, the unit of work

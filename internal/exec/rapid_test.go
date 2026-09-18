@@ -5,7 +5,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"strata/internal/rapidsource"
+	"github.com/LukasSelin/strata/internal/rapidsource"
 )
 
 // TestProcessRelations checks the relations of metamorphic_test.go as a

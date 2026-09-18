@@ -1,6 +1,6 @@
 package nodata
 
-import "strata/internal/vec"
+import "github.com/LukasSelin/strata/internal/vec"
 
 // Element-wise Add, dst = a + b, in every representation and form.
 // All slices have equal length; masks have MaskWords(len) words.

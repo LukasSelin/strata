@@ -5,7 +5,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"strata/internal/rapidsource"
+	"github.com/LukasSelin/strata/internal/rapidsource"
 )
 
 // TestTerrainRelations checks the metamorphic relations of

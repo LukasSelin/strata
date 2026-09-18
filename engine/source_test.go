@@ -16,8 +16,8 @@ import (
 
 	"go.uber.org/goleak"
 
-	"strata/engine"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // window returns a w×h window with Stride not a multiple of 64 and an odd

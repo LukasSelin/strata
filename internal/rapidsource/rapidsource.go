@@ -20,7 +20,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
 )
 
 // Source draws the values of fuzzdata.Source from rapid.

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // TestTilesAndWorkers is the §23 contract: for every tile width and height

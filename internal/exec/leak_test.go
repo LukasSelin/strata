@@ -12,9 +12,9 @@ import (
 
 	"go.uber.org/goleak"
 
-	"strata/engine"
-	"strata/internal/exec"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // TestMain fails the package if any test, including a fuzz target's seed

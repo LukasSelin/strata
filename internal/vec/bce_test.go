@@ -3,7 +3,7 @@ package vec_test
 import (
 	"testing"
 
-	"strata/internal/bcecheck"
+	"github.com/LukasSelin/strata/internal/bcecheck"
 )
 
 // TestNoBoundsChecksInLoops compiles this package, in the build
@@ -15,7 +15,7 @@ import (
 // reslices that prove the operands as long as dst, run once per call and
 // are allowed.
 func TestNoBoundsChecksInLoops(t *testing.T) {
-	inLoops, total, err := bcecheck.Check("strata/internal/vec")
+	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/vec")
 	if err != nil {
 		t.Fatal(err)
 	}

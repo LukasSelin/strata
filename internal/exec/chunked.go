@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"strata/engine"
-	"strata/internal/overlap"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/overlap"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // ProcessChunked runs k over sources and sinks with bounded memory

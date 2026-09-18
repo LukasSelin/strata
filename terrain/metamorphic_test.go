@@ -6,11 +6,11 @@ import (
 	"math"
 	"testing"
 
-	"strata/engine"
-	"strata/internal/fuzzdata"
-	"strata/internal/rastertest"
-	"strata/internal/stencil"
-	"strata/raster"
+	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/fuzzdata"
+	"github.com/LukasSelin/strata/internal/rastertest"
+	"github.com/LukasSelin/strata/internal/stencil"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // The metamorphic tests run an operation on related DEMs and check that

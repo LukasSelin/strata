@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"strata/raster"
+	"github.com/LukasSelin/strata/raster"
 )
 
 func TestCaseName(t *testing.T) {
