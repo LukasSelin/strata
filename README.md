@@ -1,0 +1,124 @@
+# strata
+
+A SIMD-accelerated spatial compute engine for Go, focused on large raster
+and environmental array workloads.
+
+> Fast numerical computing for spatial data in Go.
+
+strata processes large spatial datasets without GDAL, Python, or cgo in the
+hot compute path. The emphasis is compute: memory layout, SIMD, streaming,
+bounded-memory execution, and concurrency.
+
+It is **not** a GDAL rewrite, a general-purpose GIS suite, a vector geometry
+engine, or a file-format compatibility project.
+
+## Status
+
+Pre-release. The v0.1 scope — float32 rasters, windows, validity bitmaps,
+the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
+tiled and bounded-memory execution — is implemented and measured, but the
+API is not stable and nothing is tagged yet. See [DESIGN.md](DESIGN.md) §42
+for the milestone checklist and §45 for the roadmap.
+
+## Installation
+
+```bash
+go get github.com/LukasSelin/strata
+```
+
+Requires Go 1.27 or later.
+
+## Usage
+
+Compute slope from an elevation raster held in memory:
+
+```go
+dem := raster.NewFloat32(width, height, data)
+slope := raster.NewFloat32Like(dem)
+
+terrain.Slope(slope, dem, terrain.SlopeOptions{CellSize: 10})
+```
+
+Run the same operation in parallel tiles:
+
+```go
+err := terrain.SlopeTiled(ctx, slope, dem,
+    terrain.SlopeOptions{CellSize: 30}, engine.Options{})
+```
+
+Or stream it over a raster larger than memory, reading and writing a raw
+little-endian float32 file a tile at a time:
+
+```go
+demFile, err := engine.OpenRawFile("dem.f32", os.O_RDONLY, 0, 0)
+// ...
+in := engine.NewRawSource(demFile, 20000, 20000, engine.RawOptions{})
+out := engine.NewRawSink(slopeFile, 20000, 20000, engine.RawOptions{})
+
+err = terrain.SlopeChunked(ctx, out, in,
+    terrain.SlopeOptions{CellSize: 30}, engine.Options{TileHeight: 256})
+```
+
+The plain, `Tiled`, and `Chunked` forms of an operation produce
+bit-for-bit identical results for every tile size and worker count.
+
+## Packages
+
+| Package   | Contents |
+| --------- | -------- |
+| `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
+| `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
+| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
+| `engine`  | Execution options and the `RasterSource` / `RasterSink` interfaces, with memory and raw float32 file implementations. |
+
+Each package's doc comment is the reference for its operand rules, validity
+semantics, edge handling, and cancellation behaviour.
+
+## SIMD
+
+Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` on amd64
+CPUs with AVX2 runs vectorized kernels that agree bit-for-bit with the
+scalar ones; every other build runs scalar. ARM64 NEON kernels are not
+implemented yet.
+
+```bash
+GOEXPERIMENT=simd go build ./...
+```
+
+## Benchmarks
+
+From `benchmarks/engine/RESULTS.md`, for a 4096 × 4096 raster with no mask,
+in millions of cells per second:
+
+|            | scalar | SIMD | SIMD/scalar | SIMD, 12 workers | SIMD, 24 workers |
+| ---------- | -----: | ---: | ----------: | ---------------: | ---------------: |
+| Slope      |    164 |  686 |       4.19× |             2644 |             2592 |
+| Hillshade  |    209 | 1247 |       5.97× |             2654 |             2642 |
+| Clamp      |    924 | 2303 |       2.49× |             2812 |             2733 |
+
+Pointwise algebra is memory-bandwidth-bound from 4096² on. The suites live
+under `benchmarks/`, each with its own `RESULTS.md`, and run through
+`stratabench`.
+
+## Testing
+
+Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also
+as `rapid` property tests), goroutine-leak checks with `goleak`, IO fault
+injection, bounds-check elimination assertions, and `golangci-lint`.
+
+```bash
+go test ./...
+```
+
+## Documentation
+
+[DESIGN.md](DESIGN.md) is the design record: goals, architecture,
+and the reasoning behind each decision. Section numbers are cited from code
+comments and are stable. Architecture decision records live in
+[docs/adr/](docs/adr/).
+
+## Licence
+
+No licence has been chosen yet, so the usual default applies: all rights
+reserved. The source is readable here, but it is not yet licensed for
+reuse, modification, or redistribution.
