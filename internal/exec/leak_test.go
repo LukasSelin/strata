@@ -193,3 +193,106 @@ func midCallCancel(f func(ctx context.Context, k exec.Kernel) error, inner exec.
 		return f(ctx, k)
 	}
 }
+
+// panickingReducer panics with value on its nth Fold.
+type panickingReducer struct {
+	n     int64
+	value any
+	folds atomic.Int64
+}
+
+func (*panickingReducer) Inputs() int { return 1 }
+
+func (*panickingReducer) Combine(a *tally, b tally) { tallyOp{1}.Combine(a, b) }
+
+func (r *panickingReducer) Fold(p *tally, c exec.Cells) {
+	if r.folds.Add(1) == r.n {
+		panic(r.value)
+	}
+	tallyOp{1}.Fold(p, c)
+}
+
+// TestNoLeaksOnReduceFailure is TestNoLeaksOnFailure for the fold driver:
+// every way a reduction can end early, with several workers, must give
+// the documented outcome and leave no goroutine behind. It also checks
+// what DESIGN.md §49 adds on top — that no value comes back with an
+// error, ever — which the map path has no equivalent of.
+func TestNoLeaksOnReduceFailure(t *testing.T) {
+	defer exec.SetBandCells(1)()
+	const w, h = 24, 200
+	rng := rand.New(rand.NewPCG(11, 12))
+	dem := newOperand(rng, w, h, true, true)
+	errBoom := errors.New("boom")
+	o := engine.Options{TileWidth: 5, TileHeight: 2}
+	op := tallyOp{1}
+
+	run := func(f func() (tally, error)) (panicked any, got tally, err error) {
+		defer func() { panicked = recover() }()
+		got, err = f()
+		return nil, got, err
+	}
+	chunkedOf := func(ctx context.Context, src engine.RasterSource, r exec.Reducer[tally], opts engine.Options) func() (tally, error) {
+		return func() (tally, error) {
+			return exec.ReduceChunked(ctx, []engine.RasterSource{src}, r, opts)
+		}
+	}
+
+	for _, workers := range []int{2, 4, runtime.GOMAXPROCS(0)} {
+		opts := o
+		opts.Workers = workers
+		cases := []struct {
+			name      string
+			call      func() func() (tally, error)
+			wantErr   error
+			wantPanic any
+		}{
+			{"Reduce reducer panic", func() func() (tally, error) {
+				r := &panickingReducer{n: 5, value: errBoom}
+				return func() (tally, error) {
+					return exec.Reduce(context.Background(), []raster.Float32Raster{dem.r}, r,
+						engine.Options{Workers: workers})
+				}
+			}, nil, errBoom},
+			{"ReduceChunked reducer panic", func() func() (tally, error) {
+				r := &panickingReducer{n: 5, value: errBoom}
+				return chunkedOf(context.Background(), engine.NewMemorySource(dem.r), r, opts)
+			}, nil, errBoom},
+			{"ReduceChunked source panic", func() func() (tally, error) {
+				src := &failingSource{RasterSource: engine.NewMemorySource(dem.r), n: 3, err: errBoom, panics: true}
+				return chunkedOf(context.Background(), src, op, opts)
+			}, nil, errBoom},
+			{"ReduceChunked source error", func() func() (tally, error) {
+				src := &failingSource{RasterSource: engine.NewMemorySource(dem.r), n: 3, err: errBoom}
+				return chunkedOf(context.Background(), src, op, opts)
+			}, errBoom, nil},
+			{"ReduceChunked with a done context", func() func() (tally, error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return chunkedOf(ctx, engine.NewMemorySource(dem.r), op, opts)
+			}, context.Canceled, nil},
+			{"Reduce with a done context", func() func() (tally, error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return func() (tally, error) {
+					return exec.Reduce(ctx, []raster.Float32Raster{dem.r}, op, engine.Options{Workers: workers})
+				}
+			}, context.Canceled, nil},
+		}
+		for _, tc := range cases {
+			id := fmt.Sprintf("%s, workers=%d", tc.name, workers)
+			panicked, got, err := run(tc.call())
+			switch {
+			case tc.wantPanic != nil && panicked != tc.wantPanic:
+				t.Fatalf("%s: recovered %v, want %v", id, panicked, tc.wantPanic)
+			case tc.wantPanic == nil && panicked != nil:
+				t.Fatalf("%s: panic %v", id, panicked)
+			case tc.wantErr != nil && !errors.Is(err, tc.wantErr):
+				t.Fatalf("%s: err = %v, want %v", id, err, tc.wantErr)
+			}
+			if err != nil && got != (tally{}) {
+				t.Fatalf("%s: got %+v with error %v, want the zero value", id, got, err)
+			}
+			requireNoLeaks(t, id)
+		}
+	}
+}

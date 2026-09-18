@@ -15,16 +15,19 @@ var (
 	clampFloat32     = scalarClampFloat32
 	absFloat32       = scalarAbsFloat32
 	sqrtFloat32      = scalarSqrtFloat32
+	reduceMinFloat32 = scalarReduceMinFloat32
+	reduceMaxFloat32 = scalarReduceMaxFloat32
 )
 
 // kernelSet is one backend's kernels, one field per function variable.
 type kernelSet struct {
-	add, sub, mul, div func(dst, a, b []float32)
-	addScalar          func(dst, src []float32, value float32)
-	mulScalar          func(dst, src []float32, value float32)
-	min, max           func(dst, a, b []float32)
-	clamp              func(dst, src []float32, lo, hi float32)
-	abs, sqrt          func(dst, src []float32)
+	add, sub, mul, div   func(dst, a, b []float32)
+	addScalar            func(dst, src []float32, value float32)
+	mulScalar            func(dst, src []float32, value float32)
+	min, max             func(dst, a, b []float32)
+	clamp                func(dst, src []float32, lo, hi float32)
+	abs, sqrt            func(dst, src []float32)
+	reduceMin, reduceMax func(acc float32, src []float32) float32
 }
 
 var scalarKernels = kernelSet{
@@ -39,6 +42,8 @@ var scalarKernels = kernelSet{
 	clamp:     scalarClampFloat32,
 	abs:       scalarAbsFloat32,
 	sqrt:      scalarSqrtFloat32,
+	reduceMin: scalarReduceMinFloat32,
+	reduceMax: scalarReduceMaxFloat32,
 }
 
 // simdKernels is the SIMD set, or nil when this build or CPU has none.
@@ -49,6 +54,7 @@ func (k *kernelSet) install() {
 	addScalarFloat32, mulScalarFloat32 = k.addScalar, k.mulScalar
 	minFloat32, maxFloat32, clampFloat32 = k.min, k.max, k.clamp
 	absFloat32, sqrtFloat32 = k.abs, k.sqrt
+	reduceMinFloat32, reduceMaxFloat32 = k.reduceMin, k.reduceMax
 }
 
 // Backend names the kernels currently in use: "avx2" or "scalar".
@@ -149,4 +155,25 @@ func Abs(dst, src []float32) {
 func Sqrt(dst, src []float32) {
 	requireEqualLen2(dst, src)
 	sqrtFloat32(dst, src)
+}
+
+// ReduceMin folds src into acc with Go's builtin min: a NaN anywhere
+// gives NaN, and -0 is smaller than +0. The fold is associative and
+// commutative under those semantics, so the SIMD backend combines its
+// lanes in a different order from the scalar loop and still returns the
+// same bits, except that which NaN's payload survives is unspecified
+// (see the file comment in simd_amd64.go).
+//
+// acc is the running value, so an empty src returns acc and a caller
+// starts a fold from +Inf and needs no empty-input case. This is why a
+// reduction over several bands, tiles or workers is free to split them
+// however it likes.
+func ReduceMin(acc float32, src []float32) float32 {
+	return reduceMinFloat32(acc, src)
+}
+
+// ReduceMax folds src into acc with Go's builtin max. A fold starts from
+// -Inf. See ReduceMin.
+func ReduceMax(acc float32, src []float32) float32 {
+	return reduceMaxFloat32(acc, src)
 }

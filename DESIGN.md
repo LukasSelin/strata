@@ -738,6 +738,12 @@ func Clamp(dst, src []float32, min, max float32)
 
 func Abs(dst, src []float32)
 func Sqrt(dst, src []float32)
+
+// Folds. acc is the running value, so an empty src returns it and a
+// caller starts from +Inf or -Inf and needs no empty-input case
+// (STRATA-12, §49).
+func ReduceMin(acc float32, src []float32) float32
+func ReduceMax(acc float32, src []float32) float32
 ```
 
 Neighbourhood row kernels live in `internal/stencil` (implemented). Each
@@ -760,12 +766,17 @@ FMA
 Select
 Blend
 Compare
-ReduceMin
-ReduceMax
 ReduceSum
 Dot
 Hypot
 ```
+
+`ReduceSum` is deliberately not here yet. An order-independent sum needs
+an accumulator that does not round as it goes (§49), and its per-cell
+work is a scatter, which is hostile to vectorization; an inexact vector
+sum would fold its lanes in an order the scalar loop does not and so
+break §15 by construction. `ReduceMin` and `ReduceMax` have no such
+problem, which is why they could land first.
 
 ## 17. Backend Model
 
@@ -820,7 +831,8 @@ Later:
 
 ```go
 algebra.Scale(dst, src, 1.25)  // MulScalar / AddScalar exist in internal/vec
-algebra.Normalize(dst, src)     // needs the reduction pass of §49 (v0.2)
+algebra.Normalize(dst, src)     // needs reduce.MinMax over a whole
+                                //   raster, which §49 has (STRATA-12)
 ```
 
 `Normalize` is not a pointwise operation. It needs global statistics (min
@@ -971,6 +983,11 @@ call typed entry points (§25). STRATA-8 settled a first shape:
 
 It stays internal until worker pools, sources and fusion have exercised
 it.
+
+`Reducer` is the fold counterpart (§49): inputs and no outputs, radius
+fixed at 0, and a value rather than a raster. It is a separate interface
+rather than a kernel whose arity is `(n, 0)`, so `Kernel`'s "at least one
+output" rule stays true and the map path grows no branch for it.
 
 ## 23. Halo Handling
 
@@ -1150,6 +1167,7 @@ Internally:
 
 ```go
 exec.Process(ctx, dst, src, kernel, opts) error // internal/exec
+exec.Reduce(ctx, src, reducer, opts) (P, error) // the fold, §49
 ```
 
 Publicly, for v0.1, typed entry points take a source, a sink, the
@@ -1249,6 +1267,9 @@ Low-level kernels remain synchronous. `internal/vec`, `internal/stencil`,
 `algebra` and `terrain` create no goroutines.
 
 Concurrency belongs in the execution engine.
+
+Reductions (§49) are the first driver with no lock at all: they read
+validity and never write it, so the mask lock below has nothing to guard.
 
 **Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
 goroutines per call and uses the calling goroutine as the last worker;
@@ -1807,7 +1828,9 @@ options or float bits from callers has native Go fuzz tests (`Fuzz*` in
 against exact references (math/big shapes, bit-at-a-time masks, brute-force
 overlap, naive kernels, the scalar backend) and that every rejection is a
 panic with the package's own message, raised before anything is written,
-never a runtime error. Metamorphic targets (`Fuzz*Relations` in
+never a runtime error. Reductions are checked the same way: `FuzzReduce` against a plain loop
+over the cells, and `FuzzReduceRelations` against the relations of §49.
+Metamorphic targets (`Fuzz*Relations` in
 `metamorphic_test.go`, with transformations in `internal/rastertest`) check
 relations between results instead, which catch answers that are wrong but
 in range: symmetries of the grid, translation and scaling of a DEM,
@@ -1953,6 +1976,11 @@ strata/
 │   ├── algebra.go
 │   └── tiled.go               tiled entry points and their kernels
 │
+├── reduce/                    implemented (STRATA-12, §49)
+│   ├── doc.go
+│   └── reduce.go              Count, MinMax, their engine entry
+│                               points and their reducers
+│
 ├── terrain/                   implemented
 │   ├── gradient.go
 │   ├── slope.go
@@ -1976,7 +2004,8 @@ strata/
 │   │   ├── halo.go            halos, edges, validity
 │   │   ├── worker.go          workers, band and tile scheduling, mask lock (STRATA-9)
 │   │   ├── chunked.go         ProcessChunked: per-worker tile buffers, sources and sinks
-│   │   ├── reduce.go          planned: partials and their combination (§49)
+│   │   ├── reduce.go          Reducer, Cells, Reduce (STRATA-12, §49)
+│   │   ├── reducechunked.go   ReduceChunked: per-worker tile buffers
 │   │   └── workspace.go       planned
 │   └── overlap/               Data and mask overlap checks
 │
@@ -1987,7 +2016,6 @@ strata/
 Later:
 
 ```text
-reduce/                        v0.2 (§49)
 array/
 pointcloud/
 voxel/
@@ -2220,10 +2248,11 @@ benchmarks
 **v0.2: Reductions and statistics** (§49)
 
 ```text
-Sum, Mean, Min, Max, MinMax, Count over valid cells
+Min, Max, MinMax, Count over valid cells       done (STRATA-12)
+the fold driver, tiled and chunked             done (STRATA-12)
+Sum, Mean, Stats
 order-independent accumulation: the same bits for every tiling,
   worker count and backend
-tiled and chunked entry points
 algebra.Normalize on top of the reduction pass
 benchmarks against the §28 bandwidth ceiling
 ```
@@ -2419,24 +2448,32 @@ a sink.
 ### Operations
 
 ```go
-type Stats struct {
+type Summary struct {
     Count int64   // valid cells
     Sum   float64
     Min   float32
     Max   float32
 }
 
-reduce.Sum(src raster.Float32Raster) (sum float64, count int64)
+reduce.Count(src raster.Float32Raster) int64
 reduce.MinMax(src raster.Float32Raster) (min, max float32, count int64)
-reduce.Stats(src raster.Float32Raster) Stats
+reduce.Sum(src raster.Float32Raster) (sum float64, count int64)
+reduce.Stats(src raster.Float32Raster) Summary
 ```
+
+The result type is `Summary`, not `Stats`: a package cannot hold both a
+type `Stats` and a function `Stats`, which is what the first draft of
+this section asked for. `Count` is the cheapest of these — a popcount
+over mask words — and answers the third motivation above directly.
 
 with `Tiled` and `Chunked` counterparts beside them, as in `algebra` and
 `terrain`:
 
 ```go
-reduce.StatsTiled(ctx, src, engine.Options{}) (Stats, error)
-reduce.StatsChunked(ctx, src engine.RasterSource, engine.Options{}) (Stats, error)
+reduce.MinMaxTiled(ctx, src, engine.Options{}) (min, max float32, count int64, err error)
+reduce.MinMaxChunked(ctx, src engine.RasterSource, engine.Options{}) (min, max float32, count int64, err error)
+reduce.StatsTiled(ctx, src, engine.Options{}) (Summary, error)
+reduce.StatsChunked(ctx, src engine.RasterSource, engine.Options{}) (Summary, error)
 ```
 
 `Mean` is `Sum/Count` and needs no pass of its own. Standard deviation
@@ -2462,6 +2499,16 @@ ordinary value: it propagates into `Sum` and `Mean`, and through `Min`
 and `Max` with the semantics of Go's builtins, as in `algebra`. A caller
 who wants NoData skipped clears the bit; a caller who writes NaN into a
 valid cell gets NaN out. -0 and +0 follow the builtins too.
+
+Go's builtins do not say *which* NaN comes back, though, and that is a
+hole in the guarantee below rather than a detail. `min` and `max` return
+a NaN when either operand is one, but the payload that survives depends
+on which operand it was — so a scalar fold and an eight-lane one carry
+different payloads out of a raster holding more than one, and so do two
+different tilings. A reduction therefore returns the **canonical quiet
+NaN**, not a payload copied out of the data. It costs one branch per
+call, since the fold propagates NaN by itself. `reduce`'s
+`TestNaNIsCanonical` fails in both builds without it.
 
 ### Determinism
 
@@ -2490,7 +2537,11 @@ accurate answer available, which suits a project whose scalar path
 defines correctness.
 
 `Min` and `Max` are associative and commutative already, NaN and -0
-included, so they carry none of this and can land first.
+included, so they carry none of this and landed first (STRATA-12): the
+vector kernels keep eight accumulator lanes and combine them in an order
+the scalar loop does not, and still agree bit for bit, which is §15 met
+by construction rather than by matching an evaluation order. `Count` is
+integer addition and is free for the same reason.
 
 The accumulator representation is a benchmarked decision, recorded like
 the NoData choice (STRATA-3) in `benchmarks/reduce/RESULTS.md`:
@@ -2516,6 +2567,42 @@ tile yields a partial, and the partials combine into one result on the
 calling goroutine once every worker has stopped. Operand checks, tile and
 band planning, halos (radius 0), the worker pool and the panic re-raise
 are the ones already there.
+
+**Implementation (STRATA-12).** `Kernel` is untouched, including its "at
+least one output" rule: a `Reducer` is a different interface, not an
+`Arity(n, 0)` kernel, so nothing in the map path grows a branch for it.
+
+```go
+type Reducer[P any] interface {
+    Inputs() int
+    Fold(p *P, src Cells)
+    Combine(a *P, b P)
+}
+```
+
+The partial is a type parameter, not an `any`: it is folded once per
+band, so an interface would cost nothing in time (§19) but would box
+every partial. `Combine` must be associative and commutative with the
+zero `P` as its identity, which is where the guarantee above is actually
+enforced — the engine hands each worker a zero partial and combines them
+in an order that depends on `Options`.
+
+`Cells` is the fold's `Span`: a rectangle, one view per input, and
+`ValidBits(x, y, k)`, which returns the AND of every masked input over a
+run of up to 64 cells (`raster.MaskBits`, exported for it). Validity
+stays the engine's job and values stay the reducer's, as on the map side.
+Nothing is materialised, so a reduction allocates only views.
+
+Two things fall out of there being no output. A reduction takes **no mask
+lock**: `job.maskLock` exists because bands *write* validity bits that
+share words, and a fold only reads them. And inputs may overlap each
+other, and each other's validity words, freely — there is no output for
+them to collide with, so the whole overlap half of `check` is gone.
+
+`runWorkers` needed no change at all: it already passes the worker index
+to the work function, which is the per-worker partial's slot. Those slots
+are padded to a cache line, since a partial is written once per band and
+would otherwise be false-shared between neighbouring workers.
 
 Cancellation differs from a map pass. A cancelled chunked map leaves a
 prefix of whole tiles in its sinks, which is useful. A partial sum over
@@ -2548,4 +2635,19 @@ against the machine's measured read bandwidth (§28, §38) rather than
 cells/s alone: the interesting number is how close an exact accumulator
 stays to a bandwidth-bound pass.
 
-Status: not started (v0.2).
+`FuzzReduce` is the reference comparison and `FuzzReduceRelations` the
+metamorphic one; `TestReduceRelations` runs the same bodies under rapid.
+`internal/exec`'s `TestReduceTilesAndWorkers` and
+`TestReduceChunkedTilesAndWorkers` run the §23 matrix for folds against a
+reducer whose partial is a position-mixing XOR, so a cell read twice,
+skipped, or read at the wrong place all fail — with no arithmetic of its
+own to be wrong. `TestNoLeaksOnReduceFailure` and
+`TestReduceChunkedRawFaults` add the leak and IO-fault halves, both
+checking the rule above that no value comes back with an error.
+
+Status: `Count`, `MinMax` and the fold driver done (STRATA-12): the
+`Reducer`/`Cells` shape, `Reduce` and `ReduceChunked`, `vec.ReduceMin`
+and `vec.ReduceMax`, and package `reduce`. `Sum`, `Stats`, `Summary` and
+the accumulator decision are next, then `algebra.Normalize`;
+`benchmarks/reduce` lands with them, since what it has to measure is the
+cost of an exact accumulator and a `Min` fold is pure bandwidth.
