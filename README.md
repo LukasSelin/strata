@@ -1,5 +1,7 @@
 # strata
 
+[![CI](https://github.com/LukasSelin/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/LukasSelin/strata/actions/workflows/ci.yml)
+
 A SIMD-accelerated spatial compute engine for Go, focused on large raster
 and environmental array workloads.
 
@@ -109,6 +111,11 @@ injection, bounds-check elimination assertions, and `golangci-lint`.
 ```bash
 go test ./...
 ```
+
+CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
+race detector, and `golangci-lint` in both the default and the
+`GOEXPERIMENT=simd` build, since the vector kernels are behind a build tag
+and a default build never compiles them.
 
 ## Documentation
 
