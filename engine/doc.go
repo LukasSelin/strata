@@ -126,13 +126,44 @@
 // with 4 bytes per float32 operand plus 1/8 per mask, whatever the size
 // of the raster (DESIGN.md §27). Sources and sinks may add their own: the
 // memory and raw implementations read and write straight into and out of
-// the buffers and allocate nothing. The zero Options is one tile, the
+// the buffers and allocate nothing.
+//
+// An operation built from a chain of kernels (DESIGN.md §52) adds its own
+// working memory, one allocation per call shared out between the workers.
+// It is sized by the largest span one kernel call covers, which is a
+// band and not a tile — about 1<<16 cells — so it is roughly
+// Workers × 256 KiB per value the chain keeps between its steps,
+// whatever the tile size. That term does not depend on the raster
+// either, so the bound above still holds; it simply has one more
+// operand-shaped piece in it. The zero Options is one tile, the
 // whole raster, per worker, so set TileHeight (and TileWidth for very wide
 // rasters) for rasters larger than memory. Full-width tiles of a few
 // hundred rows are a good default, for the reasons in Choosing tiles and
 // because a source reads them with few calls: 1024×1024 tiles of a
 // 20000-wide file take a read and a write call per row and ran 3–4×
 // slower (benchmarks/chunked/RESULTS.md).
+//
+// # Traffic
+//
+// Options.Stats, when not nil, receives how many bytes a call moved at
+// each stage: what its sources delivered, what its kernels read and
+// wrote, and what its sinks took. Stats.Amplification divides that by
+// what the work strictly needed — each input cell read once, each output
+// cell written once — so a pointwise Tiled call is 1.0 and the same
+// operation Chunked is 2.0, because every cell goes through a buffer on
+// the way in and another on the way out.
+//
+//	var s engine.Stats
+//	err := terrain.SlopeChunked(ctx, out, in, terrain.SlopeOptions{CellSize: 30},
+//		engine.Options{TileHeight: 256, Stats: &s})
+//	fmt.Println(s.Amplification(), s.Halo(1))
+//
+// It is an out-parameter rather than a setting: the counters are kept
+// whether or not one is passed, so a measured call runs the same code as
+// an unmeasured one. They count the bytes the engine moves between
+// stages, not the bytes that reach memory — a tile buffer that stays in
+// cache is counted twice although DRAM saw it once — which is what makes
+// them a property of the structure rather than of the machine. See Stats.
 //
 // # Cancellation and errors in chunked calls
 //

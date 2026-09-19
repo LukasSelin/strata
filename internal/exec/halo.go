@@ -18,6 +18,18 @@ func (e *job) band(wk *worker, i int) {
 	ix0, ix1 := max(x0, r), min(x1, e.w-r)
 	iy0, iy1 := max(y0, r), min(y1, e.h-r)
 	interior := ix0 < ix1 && iy0 < iy1
+	// The band's output cells, counted once however many outputs there
+	// are, and the Data the edge policy writes into the cells outside the
+	// interior. interior counts the cells the kernel itself writes, so the
+	// two together are exactly Cells × 4 × outputs.
+	cells := int64(x1-x0) * int64(y1-y0)
+	inner := int64(0)
+	if interior {
+		inner = int64(ix1-ix0) * int64(iy1-iy0)
+	}
+	wk.stats.Cells += cells
+	wk.stats.Bands++
+	wk.stats.KernelWritten += (cells - inner) * bytesPerCell * int64(len(e.dst))
 	if interior {
 		e.interior(wk, ix0, iy0, ix1-ix0, iy1-iy0)
 	}
@@ -63,13 +75,21 @@ func (e *job) edges(y0, y1, x0, x1, ix0, ix1, iy0, iy1 int, interior, valid bool
 // set for interiorValidity.
 func (e *job) interior(wk *worker, x, y, w, h int) {
 	r := e.r
+	// The window is the span grown by the radius, so its cells beyond the
+	// span are the halo: read here and read again by whichever band or
+	// tile owns them. Counting the window, not the span, is what makes
+	// Stats.Halo the cost of the tiling rather than an estimate of it.
+	wk.stats.KernelRead += int64(w+2*r) * int64(h+2*r) * bytesPerCell * int64(len(e.src))
+	wk.stats.KernelWritten += int64(w) * int64(h) * bytesPerCell * int64(len(e.dst))
 	for i, d := range e.dst {
 		wk.dstViews[i] = d.Window(x-e.dx, y-e.dy, w, h)
 	}
 	for i, s := range e.src {
 		wk.srcViews[i] = s.Window(x-r-e.sx, y-r-e.sy, w+2*r, h+2*r)
 	}
-	e.k.Process(Span{X: x, Y: y, Width: w, Height: h, Dst: wk.dstViews}, Window{Radius: r, Src: wk.srcViews})
+	e.k.Process(
+		Span{X: x, Y: y, Width: w, Height: h, Dst: wk.dstViews, Scratch: &wk.kscratch},
+		Window{Radius: r, Src: wk.srcViews})
 }
 
 // interiorValidity sets the validity of the interior interior just wrote.

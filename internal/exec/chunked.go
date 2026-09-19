@@ -115,6 +115,8 @@ type chunkJob struct {
 	src []engine.RasterSource
 
 	workers []chunkWorker
+	// out is the caller's Options.Stats, or nil.
+	out *engine.Stats
 }
 
 // chunkWorker is one worker's buffers and the job that runs its tiles.
@@ -127,12 +129,18 @@ type chunkWorker struct {
 	// boundary (DESIGN.md §23); buffers without one are compact.
 	in, out []raster.Float32Raster
 	// t runs the kernel over one tile at a time, with views of in and out
-	// as its operands and one worker, so it takes no locks.
+	// as its operands and one worker, so it takes no locks. Its own
+	// worker holds this worker's kernel counters; stats here holds what
+	// crossed the source and sink interfaces, which t cannot see.
 	t job
+	// stats counts the bytes this worker's tiles read from sources and
+	// wrote to sinks. Padded like worker.stats.
+	stats engine.Stats
+	_     [64]byte
 }
 
 func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r int, opts engine.Options) *chunkJob {
-	c := &chunkJob{r: r, dst: dst, src: src}
+	c := &chunkJob{r: r, dst: dst, src: src, out: opts.Stats}
 	c.w, c.h = dst[0].Size()
 	c.tileW, c.tileH = c.w, c.h
 	if opts.TileWidth > 0 {
@@ -220,8 +228,31 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		t.src, t.dst = views[nin+nout:2*nin+nout:2*nin+nout], views[2*nin+nout:]
 		t.setup(k, r, c.w, c.h, masked, dstMasked)
 		t.allocWorkers(1, c.tileW)
+		t.allocScratch(c.spanSize())
 	}
 	return c
+}
+
+// spanSize is the largest span one Process call can cover in any of this
+// job's tiles. A tile gets its own plan, so a tile clipped at the
+// raster's edge has its own band height — a narrower tile takes taller
+// bands — and the largest span is not always the full tile's. There are
+// only ever two widths and two heights, so all four are checked rather
+// than bounded.
+func (c *chunkJob) spanSize() (w, h int) {
+	lastW := c.w - (c.tilesX-1)*c.tileW
+	lastH := c.h - (ceilDiv(c.h, c.tileH)-1)*c.tileH
+	best := 0
+	for _, tw := range [2]int{c.tileW, lastW} {
+		for _, th := range [2]int{c.tileH, lastH} {
+			p := newPlan(tw, th, 0, 0)
+			sw, sh := p.spanSize()
+			if sw*sh > best {
+				best, w, h = sw*sh, sw, sh
+			}
+		}
+	}
+	return w, h
 }
 
 func roundUp64(n int) int { return (n + 63) &^ 63 }
@@ -232,9 +263,29 @@ func roundUp64(n int) int { return (n + 63) &^ 63 }
 // workers claiming tiles, and never leaves a tile half written.
 func (c *chunkJob) run(ctx context.Context) error {
 	ioCtx := context.WithoutCancel(ctx)
-	return runWorkers(ctx, len(c.workers), c.tiles, func(w, i int) error {
+	err := runWorkers(ctx, len(c.workers), c.tiles, func(w, i int) error {
 		return c.tile(ioCtx, &c.workers[w], i)
 	})
+	c.report()
+	return err
+}
+
+// report totals the workers' counters into the caller's Stats. Each
+// worker's traffic is in two places — the source and sink bytes it moved
+// itself, and the kernel bytes its per-tile job recorded — because the
+// inner job has no idea it is running inside a tile. Adding them here is
+// what makes a chunked call's Amplification comparable with a tiled
+// call's: same denominator, four stages instead of two.
+func (c *chunkJob) report() {
+	if c.out == nil {
+		return
+	}
+	for i := range c.workers {
+		s := c.workers[i].stats
+		s.Add(c.workers[i].t.workers[0].stats)
+		s.Ideal = s.Cells * bytesPerCell * int64(len(c.src)+len(c.dst))
+		c.out.Add(s)
+	}
 }
 
 // tile reads, computes and writes tile i on worker wk.
@@ -246,6 +297,10 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 	rx1, ry1 := min(c.w, x1+r), min(c.h, y1+r)
 
 	t := &wk.t
+	wk.stats.Tiles++
+	// A tile's halo is read from the sources as well as by the kernel, so
+	// the window, not the tile, is what crossed the interface.
+	wk.stats.SourceRead += int64(rx1-rx0) * int64(ry1-ry0) * bytesPerCell * int64(len(c.src))
 	for j, s := range c.src {
 		v := bufferView(wk.in[j], rx1-rx0, ry1-ry0)
 		if err := s.ReadWindow(ctx, v, rx0, ry0); err != nil {
@@ -261,6 +316,7 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 	for b := range t.plan.bands {
 		t.band(&t.workers[0], b)
 	}
+	wk.stats.SinkWritten += int64(x1-x0) * int64(y1-y0) * bytesPerCell * int64(len(c.dst))
 	for j, d := range c.dst {
 		if err := d.WriteWindow(ctx, t.dst[j], x0, y0); err != nil {
 			return &ioError{"writing dst", j, x0, y0, err}
