@@ -154,3 +154,111 @@ func TestChunkedRawFaults(t *testing.T) {
 		}
 	}
 }
+
+// TestReduceChunkedRawFaults is TestChunkedRawFaults for the fold driver.
+// A reduction only reads, so there is no sink to lose a tail, but the
+// same reads come back in pieces, fail, time out or run off the end of a
+// short file — and where a map pass leaves a prefix of tiles behind, a
+// reduction must hand back the error and no value at all (DESIGN.md §49).
+func TestReduceChunkedRawFaults(t *testing.T) {
+	const w, h = 13, 9
+	const fill float32 = -9999
+	rng := rand.New(rand.NewPCG(31, 32))
+	dem := newOperand(rng, w, h, true, true)
+	cells := rawCells(dem.r, fill)
+	rawOpts := engine.RawOptions{Fill: fill, HasFill: true}
+	op := tallyOp{1}
+
+	run := func(t *testing.T, id string, workers int,
+		read func(off int64, r io.Reader) io.Reader,
+		wrap func(engine.RasterSource) engine.RasterSource) (tally, error) {
+		t.Helper()
+		in := faultio.New(bytes.Clone(cells))
+		in.Read = read
+		var src engine.RasterSource = engine.NewRawSource(in, w, h, rawOpts)
+		if wrap != nil {
+			src = wrap(src)
+		}
+		got, err := exec.ReduceChunked(context.Background(), []engine.RasterSource{src}, op,
+			engine.Options{TileWidth: 4, TileHeight: 3, Workers: workers})
+		requireNoLeaks(t, id)
+		return got, err
+	}
+
+	// A file that answers in pieces reduces to the same value as one that
+	// answers whole, for every worker count.
+	for _, workers := range []int{1, 3} {
+		want, err := run(t, "plain", workers, nil, nil)
+		if err != nil {
+			t.Fatalf("workers=%d: plain run: %v", workers, err)
+		}
+		// The raw file carries validity as the fill value, so the
+		// cells it reports valid are exactly the DEM's valid ones.
+		if wantValid := wantTally([]raster.Float32Raster{dem.r}).count; want.count != wantValid {
+			t.Fatalf("workers=%d: folded %d cells, want the DEM's %d valid ones",
+				workers, want.count, wantValid)
+		}
+		for _, wr := range []struct {
+			name string
+			wrap func(io.Reader) io.Reader
+		}{
+			{"half", iotest.HalfReader},
+			{"one byte", iotest.OneByteReader},
+			{"data with EOF", iotest.DataErrReader},
+		} {
+			id := fmt.Sprintf("workers=%d %s", workers, wr.name)
+			got, err := run(t, id, workers, func(_ int64, r io.Reader) io.Reader { return wr.wrap(r) }, nil)
+			if err != nil {
+				t.Fatalf("%s: %v", id, err)
+			}
+			if got != want {
+				t.Fatalf("%s: got %+v, want %+v", id, got, want)
+			}
+		}
+	}
+
+	errDisk := errors.New("disk failed")
+	errBoom := errors.New("boom")
+	from := int64(4 * w * 5) // the offset of row 5
+	for _, workers := range []int{1, 3} {
+		for _, tc := range []struct {
+			name string
+			read func(off int64, r io.Reader) io.Reader
+			wrap func(engine.RasterSource) engine.RasterSource
+			want error
+		}{
+			{name: "read fails", want: errDisk, read: func(off int64, r io.Reader) io.Reader {
+				if off >= from {
+					return iotest.ErrReader(errDisk)
+				}
+				return r
+			}},
+			{name: "read times out", want: iotest.ErrTimeout, read: func(off int64, r io.Reader) io.Reader {
+				if off >= from {
+					return iotest.TimeoutReader(iotest.OneByteReader(r))
+				}
+				return r
+			}},
+			{name: "file ends early", want: io.ErrUnexpectedEOF, read: func(off int64, r io.Reader) io.Reader {
+				if off >= from {
+					return io.LimitReader(r, 4)
+				}
+				return r
+			}},
+			{name: "a tile fails while reads are short", want: errBoom,
+				read: func(_ int64, r io.Reader) io.Reader { return iotest.HalfReader(r) },
+				wrap: func(s engine.RasterSource) engine.RasterSource {
+					return &failingSource{RasterSource: s, n: 2, err: errBoom}
+				}},
+		} {
+			id := fmt.Sprintf("workers=%d %s", workers, tc.name)
+			got, err := run(t, id, workers, tc.read, tc.wrap)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("%s: err = %v, want %v", id, err, tc.want)
+			}
+			if got != (tally{}) {
+				t.Fatalf("%s: got %+v with error %v, want the zero value", id, got, err)
+			}
+		}
+	}
+}

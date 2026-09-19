@@ -38,11 +38,11 @@ func check(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options
 	nout := checkKernel(len(dst), len(src), k, r, opts)
 
 	for i, d := range dst {
-		requireRaster("dst", i, d, dst[0])
+		requireRaster("dst", i, d, dst[0], "dst[0]")
 	}
 	masked := false
 	for i, s := range src {
-		requireRaster("src", i, s, dst[0])
+		requireRaster("src", i, s, dst[0], "dst[0]")
 		masked = masked || s.Valid != nil
 	}
 	for i, d := range dst {
@@ -107,13 +107,13 @@ func checkKernel(ndst, nsrc int, k Kernel, r int, opts engine.Options) (nout int
 	return nout
 }
 
-func requireRaster(name string, i int, r, ref raster.Float32Raster) {
+func requireRaster(name string, i int, r, ref raster.Float32Raster, refName string) {
 	if err := r.Validate(); err != nil {
 		panic(fmt.Sprintf("engine: %s[%d]: %v", name, i, err))
 	}
 	if r.Width != ref.Width || r.Height != ref.Height {
-		panic(fmt.Sprintf("engine: %s[%d] is %d×%d, dst[0] is %d×%d",
-			name, i, r.Width, r.Height, ref.Width, ref.Height))
+		panic(fmt.Sprintf("engine: %s[%d] is %d×%d, %s is %d×%d",
+			name, i, r.Width, r.Height, refName, ref.Width, ref.Height))
 	}
 }
 

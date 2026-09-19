@@ -9,6 +9,7 @@ import (
 var nan = float32(math.NaN())
 var inf = float32(math.Inf(1))
 var ninf = float32(math.Inf(-1))
+var negZero = float32(math.Copysign(0, -1))
 
 // eqFloat32 treats NaN as equal to NaN, since scalar and future SIMD
 // backends must agree on where NaNs occur, not just on ordinary values.
@@ -110,7 +111,6 @@ func TestClamp(t *testing.T) {
 }
 
 func TestAbs(t *testing.T) {
-	negZero := float32(math.Copysign(0, -1))
 	src := []float32{-3, 3, 0, negZero, inf, ninf, nan}
 	want := []float32{3, 3, 0, 0, inf, inf, nan}
 	dst := make([]float32, len(src))
@@ -190,6 +190,7 @@ func kernelsInUse() kernelSet {
 		addScalar: addScalarFloat32, mulScalar: mulScalarFloat32,
 		min: minFloat32, max: maxFloat32, clamp: clampFloat32,
 		abs: absFloat32, sqrt: sqrtFloat32,
+		reduceMin: reduceMinFloat32, reduceMax: reduceMaxFloat32,
 	}
 }
 
@@ -223,4 +224,78 @@ func TestUseScalar(t *testing.T) {
 	if simdKernels == nil {
 		assertKernels(t, "UseScalar(false) without SIMD", kernelsInUse(), scalarKernels)
 	}
+}
+
+func TestReduceMinMax(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     []float32
+		wantMin float32
+		wantMax float32
+	}{
+		{"empty keeps acc", nil, inf, ninf},
+		{"one", []float32{3}, 3, 3},
+		{"ordinary", []float32{3, 1, 4, 1, 5, 9, 2, 6}, 1, 9},
+		{"negatives", []float32{-3, -1, -4}, -4, -1},
+		{"infinities", []float32{inf, 1, ninf}, ninf, inf},
+		{"nan absorbs", []float32{1, nan, 3}, nan, nan},
+		{"signed zeros", []float32{0, negZero}, negZero, 0},
+		{"signed zeros reversed", []float32{negZero, 0}, negZero, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReduceMin(inf, tc.src); !sameBits(got, tc.wantMin) {
+				t.Errorf("ReduceMin = %v (%#08x), want %v (%#08x)",
+					got, math.Float32bits(got), tc.wantMin, math.Float32bits(tc.wantMin))
+			}
+			if got := ReduceMax(ninf, tc.src); !sameBits(got, tc.wantMax) {
+				t.Errorf("ReduceMax = %v (%#08x), want %v (%#08x)",
+					got, math.Float32bits(got), tc.wantMax, math.Float32bits(tc.wantMax))
+			}
+		})
+	}
+}
+
+// TestReduceSplitsAnywhere is the property the engine leans on: folding a
+// slice in two pieces and combining gives the same bits as folding it
+// whole, at every split point and for every length around the lane width.
+// It is what lets tiles, bands and workers divide a raster however they
+// like (DESIGN.md §49).
+func TestReduceSplitsAnywhere(t *testing.T) {
+	for n := range 40 {
+		src := edgeValues(n)
+		wholeMin, wholeMax := ReduceMin(inf, src), ReduceMax(ninf, src)
+		for k := 0; k <= n; k++ {
+			gotMin := ReduceMin(ReduceMin(inf, src[:k]), src[k:])
+			gotMax := ReduceMax(ReduceMax(ninf, src[:k]), src[k:])
+			if !sameBits(gotMin, wholeMin) {
+				t.Fatalf("n=%d split at %d: min %v (%#08x), want %v (%#08x)",
+					n, k, gotMin, math.Float32bits(gotMin), wholeMin, math.Float32bits(wholeMin))
+			}
+			if !sameBits(gotMax, wholeMax) {
+				t.Fatalf("n=%d split at %d: max %v (%#08x), want %v (%#08x)",
+					n, k, gotMax, math.Float32bits(gotMax), wholeMax, math.Float32bits(wholeMax))
+			}
+		}
+	}
+}
+
+// sameBits is bit equality with any NaN matching any NaN, as everywhere
+// in this package: min and max do not say whose payload survives.
+func sameBits(a, b float32) bool {
+	return math.Float32bits(a) == math.Float32bits(b) || (a != a && b != b)
+}
+
+// edgeValues returns n values covering the DESIGN.md §39 table, arranged
+// so that the extremes fall at different offsets for different n.
+func edgeValues(n int) []float32 {
+	base := []float32{
+		1, -1, 0, negZero, 2.5, -2.5, nan, inf, ninf,
+		100, -100, 0.001, -0.001, math.MaxFloat32, -math.MaxFloat32,
+	}
+	out := make([]float32, n)
+	for i := range out {
+		out[i] = base[(i*7+i/len(base))%len(base)]
+	}
+	return out
 }

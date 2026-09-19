@@ -19,8 +19,11 @@ engine, or a file-format compatibility project.
 Pre-release. The v0.1 scope — float32 rasters, windows, validity bitmaps,
 the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
 tiled and bounded-memory execution — is implemented and measured, but the
-API is not stable and nothing is tagged yet. See [DESIGN.md](DESIGN.md) §42
-for the milestone checklist and §45 for the roadmap.
+API is not stable and nothing is tagged yet. v0.2 is under way: the fold
+side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
+`Stats` follow once their accumulator is benchmarked. See
+[DESIGN.md](DESIGN.md) §42 for the milestone checklist, §49 for
+reductions, and §45 for the roadmap.
 
 ## Installation
 
@@ -61,6 +64,13 @@ err = terrain.SlopeChunked(ctx, out, in,
     terrain.SlopeOptions{CellSize: 30}, engine.Options{TileHeight: 256})
 ```
 
+Or reduce it to numbers instead of another raster, streaming the same
+way:
+
+```go
+mn, mx, count, err := reduce.MinMaxChunked(ctx, in, engine.Options{TileHeight: 256})
+```
+
 The plain, `Tiled`, and `Chunked` forms of an operation produce
 bit-for-bit identical results for every tile size and worker count.
 
@@ -71,6 +81,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
 | `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
+| `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
 | `engine`  | Execution options and the `RasterSource` / `RasterSink` interfaces, with memory and raw float32 file implementations. |
 
 Each package's doc comment is the reference for its operand rules, validity

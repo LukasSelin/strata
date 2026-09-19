@@ -5,10 +5,13 @@
 // workers, so that kernels only compute values (DESIGN.md §22, §23, §25,
 // §26). ProcessN runs over rasters in memory; ProcessChunked runs the same
 // kernels over engine.RasterSources and engine.RasterSinks a tile at a
-// time, in bounded memory (DESIGN.md §24, §27).
+// time, in bounded memory (DESIGN.md §24, §27). Reduce and
+// ReduceChunked are the fold counterparts, which return a value instead
+// of filling an output (DESIGN.md §49).
 //
 //	err := exec.Process(ctx, dst, dem, slopeKernel{...}, opts)
 //	err := exec.ProcessChunked(ctx, sinks, sources, slopeKernel{...}, opts)
+//	n, err := exec.Reduce(ctx, src, countOp{}, opts)
 //
 // The kernel interface is internal (DESIGN.md §22): package algebra and
 // package terrain implement kernels with unexported types and expose
@@ -212,10 +215,46 @@
 // per-call allocations, such as package algebra's plain functions, call
 // their vector kernels directly instead.
 //
+// # Reductions
+//
+// Reduce and ReduceChunked are the fold side of the engine (DESIGN.md
+// §49): the same tiles, bands and workers, but no outputs and no sinks,
+// and a value rather than a raster. A Reducer declares how many inputs it
+// takes, folds a rectangle of Cells into a partial of its own type, and
+// combines two partials; the engine gives every worker a zero partial,
+// folds the plan's bands into them, and combines them on the calling
+// goroutine once every worker has stopped. Combine must be associative
+// and commutative with the zero partial as its identity, because the
+// order it sees depends on the tiling and the worker count and the answer
+// must not.
+//
+//	total, err := exec.Reduce(ctx, src, countOp{}, opts)
+//	total, err := exec.ReduceChunked(ctx, sources, countOp{}, opts)
+//
+// A reduction has radius 0, so none of the halo, edge or erosion
+// machinery above applies: a neighbourhood reduction is a map pass
+// followed by a fold. It reads validity and never writes any, so unlike
+// job.band it takes no mask lock — the input words that neighbouring
+// bands share are only read, and Cells.ValidBits hands a reducer the AND
+// of every masked input over a run of up to 64 cells without materialising
+// anything. Inputs may overlap each other, and each other's validity
+// words, freely; there is no output for them to collide with.
+//
+// Cancellation is where a fold differs from a map. A cancelled ProcessN
+// leaves a prefix of finished cells in its outputs, which is useful; a
+// fold over an unknown subset of a raster is not, so a cancelled or
+// failed reduction returns ctx.Err(), or the source's error, and the zero
+// partial — never what it had folded so far. A call whose every band
+// finishes before ctx is done still returns its value, as ProcessN does.
+//
+// ReduceChunked holds one tile-sized buffer per input per worker and
+// nothing else: with no halo and no output buffers its memory is strictly
+// below ProcessChunked's for the same Options.
+//
 // # Concurrency
 //
-// Process is the only place in this module that starts goroutines
-// (DESIGN.md §26). Kernels must be safe to call concurrently on disjoint
+// Process and Reduce are the only places in this module that start
+// goroutines (DESIGN.md §26). Kernels must be safe to call concurrently on disjoint
 // spans, and must not start goroutines themselves. Each worker has its
 // own views and scratch words; nothing a kernel is handed is shared with
 // another worker except the operands' memory, and in ProcessChunked not

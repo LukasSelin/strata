@@ -31,8 +31,6 @@ func edgeFloat32s(n int) []float32 {
 	return out
 }
 
-var negZero = float32(math.Copysign(0, -1))
-
 // assertSameBits is stricter than assertSlicesEqual: SIMD lanes must match
 // the scalar reference bit-for-bit, so +0 and -0 differ. Any NaN still
 // matches any NaN, since hardware and scalar code may pick different
@@ -197,6 +195,7 @@ func TestBackendSelection(t *testing.T) {
 		addScalar: addScalarFloat32AVX2, mulScalar: mulScalarFloat32AVX2,
 		min: minFloat32AVX2, max: maxFloat32AVX2, clamp: clampFloat32AVX2,
 		abs: absFloat32AVX2, sqrt: sqrtFloat32AVX2,
+		reduceMin: reduceMinFloat32AVX2, reduceMax: reduceMaxFloat32AVX2,
 	})
 	UseScalar(true)
 	if Backend() != "scalar" {
@@ -265,4 +264,66 @@ func BenchmarkClampScalar4096(b *testing.B) { benchmarkClamp(b, scalarClampFloat
 func BenchmarkClampAVX2_4096(b *testing.B) {
 	requireAVX2Bench(b)
 	benchmarkClamp(b, clampFloat32AVX2)
+}
+
+// TestAVX2ReduceMatchesScalar is DESIGN.md §15 for the folds: the vector
+// kernels keep eight accumulator lanes and combine them in a different
+// order from the scalar loop, so this checks the answer is the same bits
+// anyway — which it is because min and max are associative and
+// commutative over NaN and signed zeros alike. Lengths straddle the lane
+// width so the scalar tail and the shorter-than-a-lane path both run, and
+// the special values are rotated through every lane position.
+func TestAVX2ReduceMatchesScalar(t *testing.T) {
+	requireAVX2(t)
+	for _, n := range simdCases() {
+		for rot := range 9 {
+			src := rotated(edgeValues(n), rot)
+			for _, acc := range []float32{inf, ninf, 0, negZero, nan, 1} {
+				gotMin, wantMin := reduceMinFloat32AVX2(acc, src), scalarReduceMinFloat32(acc, src)
+				if !sameBits(gotMin, wantMin) {
+					t.Fatalf("ReduceMin n=%d rot=%d acc=%v: %v (%#08x), want %v (%#08x)",
+						n, rot, acc, gotMin, math.Float32bits(gotMin), wantMin, math.Float32bits(wantMin))
+				}
+				gotMax, wantMax := reduceMaxFloat32AVX2(acc, src), scalarReduceMaxFloat32(acc, src)
+				if !sameBits(gotMax, wantMax) {
+					t.Fatalf("ReduceMax n=%d rot=%d acc=%v: %v (%#08x), want %v (%#08x)",
+						n, rot, acc, gotMax, math.Float32bits(gotMax), wantMax, math.Float32bits(wantMax))
+				}
+			}
+		}
+	}
+}
+
+// TestAVX2ReduceSplitsAnywhere checks the property the engine leans on
+// against the vector kernels specifically: any split of a slice folds to
+// the same bits as the whole, so tiles, bands and workers are free to
+// divide a raster however they like.
+func TestAVX2ReduceSplitsAnywhere(t *testing.T) {
+	requireAVX2(t)
+	for n := range 40 {
+		src := edgeValues(n)
+		wholeMin := reduceMinFloat32AVX2(inf, src)
+		wholeMax := reduceMaxFloat32AVX2(ninf, src)
+		for k := 0; k <= n; k++ {
+			gotMin := reduceMinFloat32AVX2(reduceMinFloat32AVX2(inf, src[:k]), src[k:])
+			if !sameBits(gotMin, wholeMin) {
+				t.Fatalf("n=%d split at %d: min %v, want %v", n, k, gotMin, wholeMin)
+			}
+			gotMax := reduceMaxFloat32AVX2(reduceMaxFloat32AVX2(ninf, src[:k]), src[k:])
+			if !sameBits(gotMax, wholeMax) {
+				t.Fatalf("n=%d split at %d: max %v, want %v", n, k, gotMax, wholeMax)
+			}
+		}
+	}
+}
+
+func rotated(src []float32, by int) []float32 {
+	if len(src) == 0 {
+		return src
+	}
+	out := make([]float32, len(src))
+	for i := range out {
+		out[i] = src[(i+by)%len(src)]
+	}
+	return out
 }

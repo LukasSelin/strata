@@ -38,6 +38,8 @@ func init() {
 		clamp:     clampFloat32AVX2,
 		abs:       absFloat32AVX2,
 		sqrt:      sqrtFloat32AVX2,
+		reduceMin: reduceMinFloat32AVX2,
+		reduceMax: reduceMaxFloat32AVX2,
 	}
 	UseScalar(false)
 }
@@ -178,4 +180,71 @@ func sqrtFloat32AVX2(dst, src []float32) {
 	}
 	archsimd.ClearAVXUpperBits()
 	scalarSqrtFloat32(dst, src)
+}
+
+// reduceMinFloat32AVX2 and reduceMaxFloat32AVX2 keep one accumulator
+// vector, so they fold the lanes in a different order from the scalar
+// loop. min8 and max8 reproduce Go's builtins, which are associative and
+// commutative over NaN and signed zeros alike, so the value is the same
+// either way; only which NaN payload survives may differ, as elsewhere
+// in this file.
+//
+// The lanes array is declared by the wrapper, before the first 256-bit
+// instruction, because zeroing it may emit a legacy SSE store; and the
+// running accumulator stays in the wrapper, so the lane function holds no
+// float32 to spill inside its loop. Both are the rules of
+// internal/stencil/simd_amd64.go, for the same reason: no legacy SSE
+// between the first 256-bit instruction and ClearAVXUpperBits.
+func reduceMinFloat32AVX2(acc float32, src []float32) float32 {
+	var lanes [avxLane]float32
+	i := reduceMinLanes(&lanes, src)
+	if i == 0 {
+		return scalarReduceMinFloat32(acc, src)
+	}
+	return scalarReduceMinFloat32(scalarReduceMinFloat32(acc, lanes[:]), src[i:])
+}
+
+// reduceMinLanes folds the whole lanes of src into lanes and returns how
+// many cells it consumed, or 0 when src is shorter than one lane. It
+// clears the upper AVX bits before it returns, so its caller's scalar
+// work pays no SSE/AVX transition.
+func reduceMinLanes(lanes *[avxLane]float32, src []float32) int {
+	if len(src) < avxLane {
+		return 0
+	}
+	n := len(src)
+	v := load8(src)
+	src = src[avxLane:]
+	for len(src) >= avxLane {
+		v = min8(v, load8(src))
+		src = src[avxLane:]
+	}
+	v.StoreArray(lanes)
+	archsimd.ClearAVXUpperBits()
+	return n - len(src)
+}
+
+func reduceMaxFloat32AVX2(acc float32, src []float32) float32 {
+	var lanes [avxLane]float32
+	i := reduceMaxLanes(&lanes, src)
+	if i == 0 {
+		return scalarReduceMaxFloat32(acc, src)
+	}
+	return scalarReduceMaxFloat32(scalarReduceMaxFloat32(acc, lanes[:]), src[i:])
+}
+
+func reduceMaxLanes(lanes *[avxLane]float32, src []float32) int {
+	if len(src) < avxLane {
+		return 0
+	}
+	n := len(src)
+	v := load8(src)
+	src = src[avxLane:]
+	for len(src) >= avxLane {
+		v = max8(v, load8(src))
+		src = src[avxLane:]
+	}
+	v.StoreArray(lanes)
+	archsimd.ClearAVXUpperBits()
+	return n - len(src)
 }

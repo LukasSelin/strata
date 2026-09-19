@@ -154,8 +154,25 @@ func requireRange(name string, m []uint64, off, n int) {
 	}
 }
 
-// getBits returns the k bits (1 <= k <= 64) of m starting at bit off,
-// LSB first.
+// MaskBits returns the k bits of m starting at bit off, LSB first, as the
+// low k bits of the result: how a reader takes a run of validity from a
+// window whose bits do not start on a word boundary, such as a reduction
+// walking the valid cells of a row (DESIGN.md §49). The Range functions
+// above use it too, through an unchecked form.
+//
+// It panics if k is not in [1, 64] or the range falls outside m. There is
+// no exported write counterpart: masks are written through the Range
+// functions, which keep a window from disturbing bits it does not own.
+func MaskBits(m []uint64, off, k int) uint64 {
+	if k < 1 || k > 64 {
+		panic(fmt.Sprintf("raster: MaskBits takes 1 to 64 bits, got %d", k))
+	}
+	requireRange("m", m, off, k)
+	return getBits(m, off, k)
+}
+
+// getBits is MaskBits without the checks, for callers that have already
+// made them.
 func getBits(m []uint64, off, k int) uint64 {
 	w, s := off>>6, uint(off&63)
 	v := m[w] >> s

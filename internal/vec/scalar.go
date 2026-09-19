@@ -91,3 +91,24 @@ func scalarSqrtFloat32(dst, src []float32) {
 		dst[i] = float32(math.Sqrt(float64(v)))
 	}
 }
+
+// scalarReduceMinFloat32 and scalarReduceMaxFloat32 fold src into acc
+// with Go's builtin min and max, which make NaN absorbing and order -0
+// below +0. Both are associative and commutative under those semantics,
+// so a vector backend may fold its lanes in any order and still agree
+// bit for bit (which NaN's payload survives aside, as everywhere in this
+// package). An empty src returns acc, so acc is the identity across
+// calls and a caller folds a whole band without an empty-slice case.
+func scalarReduceMinFloat32(acc float32, src []float32) float32 {
+	for _, v := range src {
+		acc = min(acc, v)
+	}
+	return acc
+}
+
+func scalarReduceMaxFloat32(acc float32, src []float32) float32 {
+	for _, v := range src {
+		acc = max(acc, v)
+	}
+	return acc
+}

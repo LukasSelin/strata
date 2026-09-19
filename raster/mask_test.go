@@ -161,3 +161,50 @@ func TestMaskRangePanics(t *testing.T) {
 	mustPanic(t, "outside 128-bit mask m", func() { MaskFillRange(m, 128, 1, true) })
 	MaskFillRange(m, 128, 0, true) // empty range at the end is fine
 }
+
+// TestMaskBits checks the exported bit reader against a bit-at-a-time
+// reference at every offset within two words and every run length, plus
+// runs that end exactly on a word boundary and in the last word of a
+// mask. MaskCopyRange and MaskAndRange are built on the same code, so a
+// shift that is wrong across a word boundary shows up here first.
+func TestMaskBits(t *testing.T) {
+	m := []uint64{0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0x5555_5555_5555_5555}
+	bits := len(m) * 64
+	for off := range bits {
+		for k := 1; k <= 64 && off+k <= bits; k++ {
+			var want uint64
+			for i := range k {
+				if MaskGet(m, off+i) {
+					want |= 1 << uint(i)
+				}
+			}
+			if got := MaskBits(m, off, k); got != want {
+				t.Fatalf("MaskBits(m, %d, %d) = %#016x, want %#016x", off, k, got, want)
+			}
+		}
+	}
+}
+
+func TestMaskBitsPanics(t *testing.T) {
+	m := make([]uint64, 2)
+	cases := []struct {
+		name   string
+		off, k int
+	}{
+		{"k zero", 0, 0},
+		{"k too large", 0, 65},
+		{"k negative", 0, -1},
+		{"negative offset", -1, 8},
+		{"past the end", 121, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("MaskBits(m, %d, %d) did not panic", tc.off, tc.k)
+				}
+			}()
+			_ = MaskBits(m, tc.off, tc.k)
+		})
+	}
+}
