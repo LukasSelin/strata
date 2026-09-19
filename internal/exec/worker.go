@@ -19,6 +19,9 @@ type worker struct {
 	// regions and scratch are ErodeBox's arguments for radius > 0.
 	regions []stencil.MaskRegion
 	scratch []uint64
+	// kscratch is the working memory a ScratchKernel asked for, lent to
+	// every Process call this worker makes. Zero for every other kernel.
+	kscratch Scratch
 	// stats counts the bytes this worker's bands moved. It is per worker
 	// and summed once the workers have stopped, so the hot path takes no
 	// atomic and no lock. It is written once per band and padded for the

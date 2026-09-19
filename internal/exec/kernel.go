@@ -27,6 +27,41 @@ type Kernel interface {
 	Process(dst Span, src Window)
 }
 
+// ScratchKernel is a Kernel that needs working memory of its own, such
+// as a Pipeline holding the values between its stages.
+//
+// The engine allocates the memory once per worker and lends the same
+// memory to every Process call that worker makes, in Span.Scratch. That
+// is what keeps the Kernel contract intact: a kernel that keeps nothing
+// between calls stays safe for concurrent spans, and a band still
+// allocates nothing (DESIGN.md §26). What a Process call leaves in
+// scratch is unspecified, and the next call may find anything there.
+type ScratchKernel interface {
+	Kernel
+	// Scratch returns how much working memory one Process call needs for
+	// a span of at most w×h cells. The engine calls it once per call,
+	// with the largest span its plan can produce, so it must not depend
+	// on anything but w, h and the kernel's own parameters.
+	Scratch(w, h int) ScratchSize
+}
+
+// ScratchSize is how much working memory a ScratchKernel asks for.
+type ScratchSize struct {
+	// Cells is float32 cells, Words validity words, and Views
+	// raster.Float32Raster values — the last for kernels that hand
+	// operand slices to other kernels and cannot allocate them per call.
+	Cells, Words, Views int
+}
+
+// Scratch is the working memory the engine lends a ScratchKernel. Its
+// slices are exactly the lengths the kernel asked for, and are empty for
+// a kernel that asked for none.
+type Scratch struct {
+	Cells []float32
+	Bits  []uint64
+	Views []raster.Float32Raster
+}
+
 // EdgeKernel is a Kernel with radius > 0 that chooses the Data value
 // Process writes into output cells whose neighbourhood extends past the
 // edge of the rasters passed to Process. Without it the edge value is NaN.
@@ -48,6 +83,16 @@ type Span struct {
 	// strides, so Row(y) and Stride == Width (a compact view, one
 	// contiguous run of cells) work as on any raster.
 	Dst []raster.Float32Raster
+	// Scratch is the working memory a ScratchKernel asked for. It belongs
+	// to the worker, not to the call: whatever an earlier call left in it
+	// may still be there, and it must not be kept after Process returns.
+	//
+	// A pointer because a Span is built for every band and a 256×256 tile
+	// builds a great many of them: three slice headers by value cost
+	// 8% on the narrowest tiles, where this costs nothing. It is never
+	// nil — a kernel that asked for nothing gets a pointer to empty
+	// slices — so a ScratchKernel may read it without checking.
+	Scratch *Scratch
 }
 
 // Window is the input neighbourhood of a span.

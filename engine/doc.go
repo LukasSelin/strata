@@ -126,7 +126,16 @@
 // with 4 bytes per float32 operand plus 1/8 per mask, whatever the size
 // of the raster (DESIGN.md §27). Sources and sinks may add their own: the
 // memory and raw implementations read and write straight into and out of
-// the buffers and allocate nothing. The zero Options is one tile, the
+// the buffers and allocate nothing.
+//
+// An operation built from a chain of kernels (DESIGN.md §52) adds its own
+// working memory, one allocation per call shared out between the workers.
+// It is sized by the largest span one kernel call covers, which is a
+// band and not a tile — about 1<<16 cells — so it is roughly
+// Workers × 256 KiB per value the chain keeps between its steps,
+// whatever the tile size. That term does not depend on the raster
+// either, so the bound above still holds; it simply has one more
+// operand-shaped piece in it. The zero Options is one tile, the
 // whole raster, per worker, so set TileHeight (and TileWidth for very wide
 // rasters) for rasters larger than memory. Full-width tiles of a few
 // hundred rows are a good default, for the reasons in Choosing tiles and

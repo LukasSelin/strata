@@ -3189,7 +3189,37 @@ a poisoned tail find an overrun. §49's position-mixing trick applies here
 too — a stage that reads the wrong value, or reads one twice, fails a
 hash it cannot accidentally satisfy.
 
-Status: specified, not built. First cut is all-radius-0 stages, one
-output, `internal/exec` only, with the §51 counter as the acceptance
-test: the 4096² five-Mul chain must report 28 B/cell tiled and 56
-chunked, or the mechanism does not work.
+Status: the radius-0 cut is done. `Pipeline`, `NewPipeline`, the
+`ScratchKernel`/`ScratchSize`/`Scratch` contract extension and
+`Span.Scratch`, per-worker scratch in `job.allocScratch` sized by
+`plan.spanSize` and `chunkJob.spanSize`, and
+`internal/exec/pipeline_test.go`.
+
+The acceptance test passes at both numbers: a six-input product over
+256² moves 60 B/cell as five chained calls and 28 as one pipeline,
+Amplification exactly 1.00; chunked it is 56 against the chained 120,
+Amplification exactly 2.00. `TestPipelineMatchesUnfused` and
+`TestPipelineChunkedMatchesUnfused` run the §23 matrix against the same
+stages as separate whole-raster calls, windowed and compact, masked and
+not, bit for bit including validity — which is where the "every input
+must be reachable from the output" rule earns itself: without it the
+engine's single AND over the declared inputs would invalidate cells the
+unfused chain keeps.
+
+`TestScratchBoundsEverySpan` is the one that checks arithmetic rather
+than behaviour. A tile clipped at the raster's edge builds its own plan,
+so a narrower tile takes taller bands and can cover more cells than a
+full one; the spy kernel records the largest span it is actually given
+and fails if the engine sized its scratch for less.
+
+`Span.Scratch` is a pointer because the first version was not. Three
+slice headers by value cost 8% on `Slope/4096/tiles256`, where a Span is
+built for every one of a great many small bands; by pointer the same
+matrix is geomean −0.68% against the parent commit, which is the
+machine's noise. That is the §51 counter's sibling lesson — a cheap
+measurement caught a cost that was invisible in the design.
+
+Still to do, in the order the spec gives them: radius > 0 stages, which
+need `erodedValidity` extracted from `job` and the suffix-sum window;
+more than one output; and the decision about publishing `Kernel`, which
+is what would let a caller build one of these.

@@ -87,7 +87,9 @@ func (e *job) interior(wk *worker, x, y, w, h int) {
 	for i, s := range e.src {
 		wk.srcViews[i] = s.Window(x-r-e.sx, y-r-e.sy, w+2*r, h+2*r)
 	}
-	e.k.Process(Span{X: x, Y: y, Width: w, Height: h, Dst: wk.dstViews}, Window{Radius: r, Src: wk.srcViews})
+	e.k.Process(
+		Span{X: x, Y: y, Width: w, Height: h, Dst: wk.dstViews, Scratch: &wk.kscratch},
+		Window{Radius: r, Src: wk.srcViews})
 }
 
 // interiorValidity sets the validity of the interior interior just wrote.

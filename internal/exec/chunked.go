@@ -228,8 +228,31 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		t.src, t.dst = views[nin+nout:2*nin+nout:2*nin+nout], views[2*nin+nout:]
 		t.setup(k, r, c.w, c.h, masked, dstMasked)
 		t.allocWorkers(1, c.tileW)
+		t.allocScratch(c.spanSize())
 	}
 	return c
+}
+
+// spanSize is the largest span one Process call can cover in any of this
+// job's tiles. A tile gets its own plan, so a tile clipped at the
+// raster's edge has its own band height — a narrower tile takes taller
+// bands — and the largest span is not always the full tile's. There are
+// only ever two widths and two heights, so all four are checked rather
+// than bounded.
+func (c *chunkJob) spanSize() (w, h int) {
+	lastW := c.w - (c.tilesX-1)*c.tileW
+	lastH := c.h - (ceilDiv(c.h, c.tileH)-1)*c.tileH
+	best := 0
+	for _, tw := range [2]int{c.tileW, lastW} {
+		for _, th := range [2]int{c.tileH, lastH} {
+			p := newPlan(tw, th, 0, 0)
+			sw, sh := p.spanSize()
+			if sw*sh > best {
+				best, w, h = sw*sh, sw, sh
+			}
+		}
+	}
+	return w, h
 }
 
 func roundUp64(n int) int { return (n + 63) &^ 63 }

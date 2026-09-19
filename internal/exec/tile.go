@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"math"
 	"runtime"
 	"sync"
@@ -93,6 +94,7 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 		}
 	}
 	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.tileW)
+	e.allocScratch(e.plan.spanSize())
 	return e
 }
 
@@ -186,6 +188,58 @@ func newPlan(w, h, tileW, tileH int) plan {
 }
 
 func ceilDiv(a, b int) int { return (a + b - 1) / b }
+
+// spanSize is the largest span one Process call can cover under p: a
+// band is the tile's width by at most bandRows rows, and a tile clipped
+// at the raster's edge is only ever smaller. It returns 0, 0 for a plan
+// with no bands.
+func (p *plan) spanSize() (w, h int) {
+	if p.bands == 0 {
+		return 0, 0
+	}
+	return p.tileW, min(p.bandRows, p.tileH)
+}
+
+// allocScratch gives each worker the working memory a ScratchKernel asks
+// for, for a span of at most w×h. It is one allocation of each kind for
+// the whole call, like allocWorkers, so the worker count does not
+// multiply the number of allocations — only their size, which is what
+// DESIGN.md §27's bound says it does.
+func (e *job) allocScratch(w, h int) {
+	sk, ok := e.k.(ScratchKernel)
+	if !ok || w <= 0 || h <= 0 {
+		return
+	}
+	need := sk.Scratch(w, h)
+	if need.Cells < 0 || need.Words < 0 || need.Views < 0 {
+		panic(fmt.Sprintf("engine: kernel asked for negative scratch %+v", need))
+	}
+	n := len(e.workers)
+	var cells []float32
+	var bits []uint64
+	var views []raster.Float32Raster
+	if need.Cells > 0 {
+		cells = make([]float32, n*need.Cells)
+	}
+	if need.Words > 0 {
+		bits = make([]uint64, n*need.Words)
+	}
+	if need.Views > 0 {
+		views = make([]raster.Float32Raster, n*need.Views)
+	}
+	for i := range e.workers {
+		s := &e.workers[i].kscratch
+		if need.Cells > 0 {
+			s.Cells = cells[i*need.Cells : (i+1)*need.Cells : (i+1)*need.Cells]
+		}
+		if need.Words > 0 {
+			s.Bits = bits[i*need.Words : (i+1)*need.Words : (i+1)*need.Words]
+		}
+		if need.Views > 0 {
+			s.Views = views[i*need.Views : (i+1)*need.Views : (i+1)*need.Views]
+		}
+	}
+}
 
 // band returns band i's cells [x0, x1) × [y0, y1).
 func (p *plan) band(i int) (x0, y0, x1, y1 int) {
