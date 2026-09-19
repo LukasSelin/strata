@@ -84,6 +84,35 @@ func TestMulScalar(t *testing.T) {
 	assertSlicesEqual(t, "MulScalar", dst, want)
 }
 
+func TestAffine(t *testing.T) {
+	src := []float32{1, -1, 0, negZero, inf, ninf, nan}
+	dst := make([]float32, len(src))
+	Affine(dst, src, -2, 10)
+	want := []float32{8, 12, 10, 10, ninf, inf, nan}
+	assertSlicesEqual(t, "Affine", dst, want)
+}
+
+// TestAffineIsNotFused pins the one property scalarAffineFloat32's
+// float32 conversion exists for: the product is rounded before the add.
+// With a = v = 1 + 2^-23, the float32 above 1, the exact product is
+// 1 + 2^-22 + 2^-46, which rounds to 1 + 2^-22; b cancels that exactly,
+// so the answer is +0. A fused multiply-add keeps the 2^-46 the rounding
+// drops and returns it instead. arm64 emits FMADD for an unwrapped
+// a*v + b and amd64 does not, so without the conversion the canonical
+// scalar result would depend on the architecture
+// (docs/adr/0001-simd-backend.md).
+func TestAffineIsNotFused(t *testing.T) {
+	const eps = 1.0 / (1 << 23)
+	a := float32(1 + eps)
+	b := -float32(1 + 2*eps)
+	dst := make([]float32, 1)
+	Affine(dst, []float32{a}, a, b)
+	if got := dst[0]; got != 0 || math.Signbit(float64(got)) {
+		t.Errorf("Affine(%v, %v, %v) = %v (%#08x), want +0; the multiply-add was fused",
+			a, a, b, got, math.Float32bits(got))
+	}
+}
+
 func TestMin(t *testing.T) {
 	a := []float32{1, 2, -1, inf, ninf}
 	b := []float32{2, 1, 1, ninf, inf}
@@ -160,6 +189,7 @@ func TestLengthMismatchPanics(t *testing.T) {
 		{"Add", func() { Add(make([]float32, 3), make([]float32, 2), make([]float32, 3)) }},
 		{"AddScalar", func() { AddScalar(make([]float32, 3), make([]float32, 2), 1) }},
 		{"Clamp", func() { Clamp(make([]float32, 3), make([]float32, 4), 0, 1) }},
+		{"Affine", func() { Affine(make([]float32, 3), make([]float32, 4), 1, 0) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -187,7 +217,7 @@ func TestInPlace(t *testing.T) {
 func kernelsInUse() kernelSet {
 	return kernelSet{
 		add: addFloat32, sub: subFloat32, mul: mulFloat32, div: divFloat32,
-		addScalar: addScalarFloat32, mulScalar: mulScalarFloat32,
+		addScalar: addScalarFloat32, mulScalar: mulScalarFloat32, affine: affineFloat32,
 		min: minFloat32, max: maxFloat32, clamp: clampFloat32,
 		abs: absFloat32, sqrt: sqrtFloat32,
 		reduceMin: reduceMinFloat32, reduceMax: reduceMaxFloat32,

@@ -30,6 +30,9 @@ var fuzzOps = []struct {
 	{"AddScalar", func(d, a, _ []float32, s, _, _ float32) { AddScalar(d, a, s) }, func(a, _, s, _, _ float32) float32 { return a + s }},
 	{"MulScalar", func(d, a, _ []float32, s, _, _ float32) { MulScalar(d, a, s) }, func(a, _, s, _, _ float32) float32 { return a * s }},
 	{"Clamp", func(d, a, _ []float32, _, lo, hi float32) { Clamp(d, a, lo, hi) }, func(a, _, _, lo, hi float32) float32 { return min(max(a, lo), hi) }},
+	// Affine borrows lo and hi as its a and b. The reference rounds the
+	// product before adding, like the documentation and unlike an FMA.
+	{"Affine", func(d, a, _ []float32, _, lo, hi float32) { Affine(d, a, lo, hi) }, func(a, _, _, lo, hi float32) float32 { return float32(a*lo) + hi }},
 	{"Abs", func(d, a, _ []float32, _, _, _ float32) { Abs(d, a) }, func(a, _, _, _, _ float32) float32 {
 		return math.Float32frombits(math.Float32bits(a) &^ (1 << 31))
 	}},

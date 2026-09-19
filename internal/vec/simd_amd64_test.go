@@ -121,6 +121,15 @@ func TestAVX2MatchesScalar(t *testing.T) {
 			mulScalarFloat32AVX2(got, a, -2)
 			assertSameBits(t, "MulScalar", got, want)
 		})
+		t.Run("Affine", func(t *testing.T) {
+			for _, ab := range [][2]float32{{2, 0.5}, {-0.25, -3}, {0, 7}, {1, 0}, {nan, 1}, {1, nan}, {inf, 1}} {
+				want := make([]float32, n)
+				scalarAffineFloat32(want, a, ab[0], ab[1])
+				got := make([]float32, n)
+				affineFloat32AVX2(got, a, ab[0], ab[1])
+				assertSameBits(t, "Affine", got, want)
+			}
+		})
 		t.Run("Clamp", func(t *testing.T) {
 			want := make([]float32, n)
 			scalarClampFloat32(want, a, -10, 10)
@@ -193,7 +202,8 @@ func TestBackendSelection(t *testing.T) {
 	assertKernels(t, "SIMD set", *simdKernels, kernelSet{
 		add: addFloat32AVX2, sub: subFloat32AVX2, mul: mulFloat32AVX2, div: divFloat32AVX2,
 		addScalar: addScalarFloat32AVX2, mulScalar: mulScalarFloat32AVX2,
-		min: minFloat32AVX2, max: maxFloat32AVX2, clamp: clampFloat32AVX2,
+		affine: affineFloat32AVX2,
+		min:    minFloat32AVX2, max: maxFloat32AVX2, clamp: clampFloat32AVX2,
 		abs: absFloat32AVX2, sqrt: sqrtFloat32AVX2,
 		reduceMin: reduceMinFloat32AVX2, reduceMax: reduceMaxFloat32AVX2,
 	})

@@ -55,6 +55,20 @@ func scalarMulScalarFloat32(dst, src []float32, value float32) {
 	}
 }
 
+// scalarAffineFloat32 computes dst[i] = a*src[i] + b, the kernel of
+// transfer.Rescale. The product is wrapped in an explicit float32
+// conversion, which stops the compiler fusing the multiply and the add
+// into one FMA: arm64 emits FMADD for a*v + b and amd64 does not, so
+// without the conversion the canonical scalar result would differ
+// between architectures, and the AVX2 kernel (a separate VMULPS and
+// VADDPS) could not match it either (docs/adr/0001-simd-backend.md).
+func scalarAffineFloat32(dst, src []float32, a, b float32) {
+	dst = dst[:len(src)]
+	for i, v := range src {
+		dst[i] = float32(v*a) + b
+	}
+}
+
 func scalarMinFloat32(dst, a, b []float32) {
 	a, b = a[:len(dst)], b[:len(dst)]
 	for i := range dst {
