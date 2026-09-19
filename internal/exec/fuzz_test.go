@@ -13,18 +13,28 @@ import (
 	"github.com/LukasSelin/strata/raster"
 )
 
-// FuzzPlan checks the band plan for any raster size, tile size and band
-// size target: the bands cover every cell exactly once, each lies within
-// one tile and spans its full width, and they come tile by tile in
-// row-major order, top to bottom within a tile.
+// FuzzPlan checks the band plan for any raster size, tile size, band size
+// target, band width floor and kernel radius: the bands cover every cell
+// exactly once, each is one cell of its tile's band grid clipped to the
+// tile and the raster, and they come tile by tile in row-major order, then
+// row of bands by row of bands and left to right within a row.
+//
+// The shape the grid has is BandShape's business and TestBandShape's; what
+// is checked here is that the numbering walks it, which is the arithmetic
+// in plan.band that has a corner for every combination of a clipped last
+// tile column and a clipped last tile row.
 func FuzzPlan(f *testing.F) {
-	f.Add(uint8(10), uint8(7), uint8(3), uint8(2), uint16(1))
-	f.Add(uint8(200), uint8(1), uint8(0), uint8(0), uint16(0))
-	f.Add(uint8(5), uint8(255), uint8(6), uint8(0), uint16(65535))
-	f.Fuzz(func(t *testing.T, w8, h8, tw8, th8 uint8, cells uint16) {
+	f.Add(uint8(10), uint8(7), uint8(3), uint8(2), uint16(1), uint8(4), uint8(1))
+	f.Add(uint8(200), uint8(1), uint8(0), uint8(0), uint16(0), uint8(0), uint8(0))
+	f.Add(uint8(5), uint8(255), uint8(6), uint8(0), uint16(65535), uint8(200), uint8(3))
+	f.Fuzz(func(t *testing.T, w8, h8, tw8, th8 uint8, cells uint16, minW8, r8 uint8) {
 		w, h, tw, th := int(w8)%200+1, int(h8)%200+1, int(tw8), int(th8)
+		r := int(r8) % 4
 		if cells > 0 {
 			defer exec.SetBandCells(int(cells))()
+		}
+		if minW8 > 0 {
+			defer exec.SetBandMinWidth(int(minW8))()
 		}
 		tileW, tileH := w, h
 		if tw > 0 {
@@ -33,26 +43,33 @@ func FuzzPlan(f *testing.F) {
 		if th > 0 {
 			tileH = min(th, h)
 		}
-		id := fmt.Sprintf("%d×%d tiles %d×%d cells %d", w, h, tw, th, cells)
+		bandW, bandH := exec.BandShape(tileW, tileH, r)
+		id := fmt.Sprintf("%d×%d tiles %d×%d cells %d minWidth %d r %d bands %d×%d",
+			w, h, tw, th, cells, minW8, r, bandW, bandH)
 		covered := make([]bool, w*h)
-		prevTile, prevY1 := -1, 0
-		for _, b := range exec.Bands(w, h, tw, th) {
+		prev := [3]int{-1, 0, 0} // tile, row of bands, band across
+		for _, b := range exec.Bands(w, h, tw, th, r) {
 			x0, y0, x1, y1 := b[0], b[1], b[2], b[3]
 			if x0 < 0 || y0 < 0 || x1 > w || y1 > h || x0 >= x1 || y0 >= y1 {
 				t.Fatalf("%s: band %v is empty or outside the raster", id, b)
 			}
 			tx, ty := x0/tileW, y0/tileH
-			if x0 != tx*tileW || x1 != min((tx+1)*tileW, w) || y1 > min((ty+1)*tileH, h) {
-				t.Fatalf("%s: band %v does not span the width of one tile", id, b)
+			bc, br := (x0-tx*tileW)/bandW, (y0-ty*tileH)/bandH
+			if x0 != tx*tileW+bc*bandW || y0 != ty*tileH+br*bandH {
+				t.Fatalf("%s: band %v does not start on its tile's band grid", id, b)
+			}
+			if x1 != min(x0+bandW, (tx+1)*tileW, w) || y1 != min(y0+bandH, (ty+1)*tileH, h) {
+				t.Fatalf("%s: band %v is not one band clipped to its tile and the raster", id, b)
 			}
 			tile := ty*((w+tileW-1)/tileW) + tx
-			switch {
-			case tile == prevTile && y0 != prevY1:
-				t.Fatalf("%s: band %v does not follow the previous band's rows (ended at %d)", id, b, prevY1)
-			case tile != prevTile && (tile != prevTile+1 || y0 != ty*tileH):
-				t.Fatalf("%s: band %v starts tile %d after tile %d", id, b, tile, prevTile)
+			at := [3]int{tile, br, bc}
+			if at[0] < prev[0] || (at[0] == prev[0] && (at[1] < prev[1] || (at[1] == prev[1] && at[2] <= prev[2]))) {
+				t.Fatalf("%s: band %v at tile %d row %d column %d does not follow %v", id, b, tile, br, bc, prev)
 			}
-			prevTile, prevY1 = tile, y1
+			if at[0] != prev[0] && (at[0] != prev[0]+1 || at[1] != 0 || at[2] != 0) {
+				t.Fatalf("%s: band %v starts tile %d at row %d column %d after tile %d", id, b, tile, br, bc, prev[0])
+			}
+			prev = at
 			for y := y0; y < y1; y++ {
 				for x := x0; x < x1; x++ {
 					if covered[y*w+x] {
@@ -163,10 +180,18 @@ func FuzzProcess(f *testing.F) {
 			inPlace = false
 		}
 
-		opts := engine.Options{TileWidth: d.Range(0, w+2), TileHeight: d.Range(0, h+2), Workers: d.Range(0, 4)}
+		opts := engine.Options{
+			TileWidth: d.Range(0, w+2), TileHeight: d.Range(0, h+2),
+			ComputeWidth: d.Range(0, w+2), ComputeHeight: d.Range(0, h+2),
+			Workers: d.Range(0, 4),
+		}
 		bandCells := d.Range(0, 3*w)
 		if bandCells > 0 {
 			defer exec.SetBandCells(bandCells)()
+		}
+		minBandW := d.Range(0, w+2)
+		if minBandW > 0 {
+			defer exec.SetBandMinWidth(minBandW)()
 		}
 		box := boxKernel{r: r, inputs: nin, outputs: nout}
 		var k exec.Kernel = box
@@ -175,8 +200,8 @@ func FuzzProcess(f *testing.F) {
 		} else {
 			k = edgeBox{box, edge}
 		}
-		id := fmt.Sprintf("r %d inputs %d outputs %d %d×%d masks in %v out %v shared %v in place %v opts %+v band cells %d edge %v",
-			r, nin, nout, w, h, inMasked, outMasked, sharedRoot, inPlace, opts, bandCells, edge)
+		id := fmt.Sprintf("r %d inputs %d outputs %d %d×%d masks in %v out %v shared %v in place %v opts %+v band cells %d min band width %d edge %v",
+			r, nin, nout, w, h, inMasked, outMasked, sharedRoot, inPlace, opts, bandCells, minBandW, edge)
 
 		// clones returns fresh copies of the operands, keeping shared
 		// roots shared and an in-place output the first input.

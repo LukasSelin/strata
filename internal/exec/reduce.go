@@ -205,7 +205,8 @@ func newReduceJob(src []raster.Float32Raster, ox, oy int, opts engine.Options) *
 			e.masked = append(e.masked, j)
 		}
 	}
-	e.plan = newPlan(src[0].Width, src[0].Height, opts.TileWidth, opts.TileHeight)
+	// A reduction has radius 0, so its bands are whole tile rows.
+	e.plan = newPlan(src[0].Width, src[0].Height, tiling{tileW: opts.TileWidth, tileH: opts.TileHeight})
 	e.allocReduceWorkers(workerCount(opts.Workers, e.plan.bands))
 	return e
 }

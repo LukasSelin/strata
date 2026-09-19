@@ -205,7 +205,7 @@ func foldTile[P any](ctx context.Context, c *reduceChunkJob, wk *reduceChunkWork
 		t.src[j] = v
 	}
 	t.ox, t.oy = x0, y0
-	t.plan = newPlan(x1-x0, y1-y0, 0, 0)
+	t.plan = newPlan(x1-x0, y1-y0, tiling{}) // a reduction has radius 0
 	for b := range t.plan.bands {
 		foldBand(t, &t.workers[0], r, p, b)
 	}

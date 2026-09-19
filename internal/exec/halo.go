@@ -30,10 +30,16 @@ func (e *job) band(wk *worker, i int) {
 	wk.stats.Cells += cells
 	wk.stats.Bands++
 	wk.stats.KernelWritten += (cells - inner) * bytesPerCell * int64(len(e.dst))
+	// A band whose interior is the whole band has no edge cells, and most
+	// bands of a large raster are such a band. edges is correct without
+	// this — every fill it makes would be empty — but it walks the band's
+	// rows to find that out, and a band is no longer a whole tile row, so
+	// there are a tile's worth of those walks rather than one.
+	edged := r > 0 && (!interior || ix0 != x0 || ix1 != x1 || iy0 != y0 || iy1 != y1)
 	if interior {
 		e.interior(wk, ix0, iy0, ix1-ix0, iy1-iy0)
 	}
-	if r > 0 {
+	if edged {
 		e.edges(y0, y1, x0, x1, ix0, ix1, iy0, iy1, interior, false)
 	}
 	if !e.dstMasked {
@@ -44,7 +50,7 @@ func (e *job) band(wk *worker, i int) {
 	if interior {
 		e.interiorValidity(wk, ix1-ix0, iy1-iy0)
 	}
-	if r > 0 {
+	if edged {
 		e.edges(y0, y1, x0, x1, ix0, ix1, iy0, iy1, interior, true)
 	}
 }

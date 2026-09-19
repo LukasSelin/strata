@@ -68,6 +68,7 @@ func TestTilesAndWorkers(t *testing.T) {
 								run := engineRun{
 									opts:      engine.Options{TileWidth: tw, TileHeight: th, Workers: wk},
 									bandCells: []int{1, 97}[n%2],
+									minBandW:  []int{0, 8, 3}[n%3],
 								}
 								n++
 								id := fmt.Sprintf("%s %dx%d inMask=%v outMask=%v %v", sh.name, sh.w, sh.h, m.in, m.out, run)

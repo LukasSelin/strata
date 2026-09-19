@@ -1037,10 +1037,11 @@ Algorithms should not implement tile-boundary coordination individually.
   invalid (zero mask bits). This makes the true raster edge behave like
   the edge of a whole-raster call, with no per-kernel border code.
 - **Contract.** Tiled output must equal the whole-raster call on the same
-  data bit for bit, in Data and in validity, for every tile size and
-  worker count. Tests enforce this (§39): `internal/exec`'s
+  data bit for bit, in Data and in validity, for every tile size, band
+  shape and worker count. Tests enforce this (§39): `internal/exec`'s
   `TestTilesAndWorkers` runs every tile width and height in {1, 7, 64,
-  256, full, larger than the raster} with 1, 2, 3 and GOMAXPROCS workers,
+  256, full, larger than the raster}, over band shapes from one row to
+  two-dimensional (§53), with 1, 2, 3 and GOMAXPROCS workers,
   for Clamp, Add, Slope, Aspect, Hillshade, Gradient and a radius-2
   kernel, with and without masks, on windows whose stride is not a
   multiple of 64.
@@ -1223,8 +1224,9 @@ type Options struct {
 
 The zero value is the default for in-memory rasters: one tile as wide as
 the raster and `Workers` = `GOMAXPROCS`. The engine plans tiles in
-row-major order and splits each into bands of whole rows of about 2¹⁶
-cells, the unit of scheduling and cancellation. Narrow tiles are correct
+row-major order and splits each into bands of about 2¹⁶ cells, the unit
+of scheduling and cancellation — whole tile rows for a pointwise kernel,
+a squarer sub-rectangle for one with a radius (§53). Narrow tiles are correct
 but slower, because row kernels pay a fixed cost per row and pointwise
 kernels lose their one-call-per-band fast path: on one worker 256×256
 tiles cost 15–52% over the default, depending on operation and size, and
@@ -2025,7 +2027,7 @@ strata/
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window
 │   │   ├── process.go         Process, operand checks
-│   │   ├── tile.go            tile and band planning, cancellation
+│   │   ├── tile.go            tile and band planning, band shape (§53)
 │   │   ├── halo.go            halos, edges, validity
 │   │   ├── worker.go          workers, band and tile scheduling, mask lock (STRATA-9)
 │   │   ├── chunked.go         ProcessChunked: per-worker tile buffers, sources and sinks
@@ -2971,7 +2973,8 @@ square band. Full-width strips buy their call-count advantage with about
 is 512 KiB, one Zen 2 core's L2 exactly (§28), so raising it trades halo
 for cache misses. Decoupling the IO tile from the compute tile is — IO
 wants full-width for few calls, compute wants square for small perimeter,
-and today they are one parameter.
+and here they are one parameter. §53 separates them, and reports what
+that was worth.
 
 Status: done. `engine.Stats`, `Options.Stats`, counters in all four
 drivers (`ProcessN`, `ProcessChunked`, `Reduce`, `ReduceChunked`), and
@@ -3223,3 +3226,195 @@ Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
 is what would let a caller build one of these.
+
+## 53. Band Shape
+
+§51 measured the halo and found it was not where the intuition put it.
+Small tiles move *less* traffic than large ones and run 4–10× slower, so
+the halo is not what makes them slow. What governs the halo is not tile
+size at all but the aspect ratio of the band — the rectangle one kernel
+call covers — and the band's width was the tile's width, so one parameter
+set both. §51 named the fix and this section takes it: separate the IO
+tile from the compute tile.
+
+### The arithmetic
+
+A band of `bandW × bandH` cells reads a window of `(bandW+2r) × (bandH+2r)`,
+so its halo is
+
+```text
+(bandW + 2r)(bandH + 2r)
+------------------------ - 1
+      bandW · bandH
+```
+
+With `bandW · bandH` fixed at `bandCells`, that is smallest for a square
+and grows without bound as the band gets thin. Bands were whole tile rows,
+`bandCells / tileW` of them, so the thinness was set by the tile's width:
+
+| tile width | rows per band | halo at r=1 |
+|---:|---:|---:|
+| 1024 | 64 | 3.3% |
+| 4096 | 16 | 12.5% |
+| 16384 | 4 | 50.0% |
+
+That is §51's table read the other way round. Its "1024 × 1024 tiles, 3.1%
+halo" row is not a property of a 1024-wide *tile*; it is a property of a
+1024-wide *band*, which a 1024-wide tile happened to force. A caller who
+wanted the low halo had to take the narrow tile with it, and pay §27's
+price for it: a source makes a call per row of a narrow window, and
+1024×1024 tiles of a 20000-wide file run at 200 M cells/s against 800 for
+full-width strips. The two wants are opposite — IO wants the tile full
+width, compute wants the band square — and they were one number.
+
+### Shape
+
+The band is given its own size, and the IO tile keeps `TileWidth` and
+`TileHeight`:
+
+```go
+type Options struct {
+    TileWidth  int
+    TileHeight int
+    // ComputeWidth and ComputeHeight are the size in cells of the band
+    // one kernel call covers inside a tile. 0 is the engine's choice.
+    ComputeWidth  int
+    ComputeHeight int
+    ...
+}
+
+// bandShape is the size of the bands a tileW×tileH tile is split into.
+func bandShape(tileW, tileH int, t tiling) (bandW, bandH int)
+```
+
+Nothing above `plan` learns that a band is no longer a whole row. A tile
+is still read in one `ReadWindow` per source and written in one
+`WriteWindow` per sink, whatever shape the bands inside it take, so the
+call count — the thing §27 says decides file throughput — is untouched.
+That is the decoupling: the same reads, a different halo.
+
+Three bounds hold the rule in:
+
+- **Radius 0 keeps whole rows.** There is no halo to save, and a band as
+  wide as its tile keeps a pointwise kernel's views compact
+  (`Stride == Width`), which is what lets it and `pointwiseValidity` take
+  their whole-span paths. Reductions are radius 0 by definition (§49), so
+  they are untouched.
+- **A tile no taller than one whole-row band is left alone.** It is
+  already a single band, and splitting it across its width would only add
+  perimeter: a 4096×16 tile in bands of 1024×16 reads 12.7% where the
+  whole tile reads 12.5%.
+- **`minBandWidth` stops the rows getting short**, which is the next
+  subsection.
+
+### Why not square
+
+A square band reads the least halo, and is the wrong shape anyway. §25's
+measurement says why: a row kernel pays a fixed 5–30 ns per row, short
+rows read memory in streams the prefetcher has not seen, and 256×256 tiles
+— which is to say one 256×256 band — cost Slope 15–21% and Hillshade
+21–40% against full-width ones. The halo a band saves is a few per cent of
+one of the four stages a chunked call moves; the row cost is paid on every
+row of every band. So the band is the squarest rectangle of `bandCells`
+whose rows are still at least `minBandWidth` long, not the squarest
+rectangle, and the tile is divided into equal columns rather than into
+`minBandWidth` columns and a narrow remainder.
+
+### What it was worth
+
+`BenchmarkBandWidth` sweeps the band width over one full-width tile, so
+every case reads and writes exactly the same cells through exactly the
+same sources and only the rectangle one call covers changes. Slope,
+Apple M4, scalar backend, median of 6 runs:
+
+| Slope, ms | rows | 2048 | 1024 | 512 | 256 |
+|---|---:|---:|---:|---:|---:|
+| 4096², 1 worker | 52.2 | +2% | +2% | +5% | +13% |
+| 4096², 12 workers | 8.3 | +6% | +4% | +10% | +17% |
+| 4096², masked, 1 worker | 51.9 | +3% | +3% | +6% | +15% |
+| 16384², 1 worker | 847.8 | −2% | −1% | +4% | +12% |
+| 16384², 12 workers | 140.8 | +2% | +3% | +5% | +10% |
+| 16384², masked, 1 worker | 911.4 | −7% | −6% | +0% | +17% |
+| 16384², masked, 12 workers | 151.0 | −3% | +3% | +12% | +21% |
+
+and the traffic those shapes move, which does not depend on the size, the
+worker count or the mask (§51 does not count validity):
+
+| | rows | 2048 | 1024 | 512 | 256 |
+|---|---:|---:|---:|---:|---:|
+| halo, 4096² | 12.4% | 6.3% | 3.2% | 1.9% | 1.5% |
+| halo, 16384² | 50.0% | 6.3% | 3.3% | 1.9% | 1.5% |
+| B/cell, 16384² | 10.00 | 8.25 | 8.13 | 8.08 | 8.06 |
+
+The halo behaves exactly as the arithmetic says, and it is not a rounding
+error: at 16384 wide, a fifth of everything a tiled call moves is halo,
+and shaping the band removes it.
+
+It buys nothing. At 4096² every shaped case is slower, by 2–4% for the
+shape the rule would pick. At 16384² the two run at the same speed — 847.8
+against 842.6 — while moving 10.00 and 8.13 bytes per cell, a 19%
+difference in traffic that costs nothing and saves nothing. Only 16384²
+masked on one worker shows a real gain, and its mirror at 12 workers does
+not. Below 1024 the row cost takes over and every case is worse, up to
+21%.
+
+That is §51's own warning — "these are the bytes the engine moves between
+stages, not the bytes that reach memory" — holding for the change §51
+proposed. Neighbouring full-width bands share halo *rows* and run
+back-to-back in plan order, so the re-read was already an L2 hit; shaping
+the band converts it into shared halo *columns*, also an L2 hit, and the
+cache absorbed it either way.
+
+**So the rule is off.** `minBandWidth` sits above every real tile width,
+bands are whole tile rows as they were, and `ComputeWidth`/`ComputeHeight`
+are there for the caller who wants to measure it again. Turning it back on
+is restoring one constant to 1024.
+
+Two reasons that constant is worth leaving where it can be moved. The
+measurement is from an Apple M4 in the scalar build — the SIMD path is
+`amd64` only (§17) — where the 12-core Zen 2 every other figure in this
+document comes from has a quarter of the L1d and a different prefetcher,
+and the row cost the floor guards against is a SIMD-build number. And a
+19% traffic reduction that is free today is not free on a machine or a
+kernel that is bandwidth-bound rather than latency-bound; §29's fusion and
+§52's pipelines both raise arithmetic intensity per byte moved, which is
+the direction that would make this pay.
+
+What would earn the default: Slope and Hillshade faster than whole-row
+bands beyond the run-to-run noise at one worker *and* at twelve, at 4096²
+*and* 16384², with Clamp — radius 0, and so untouched — flat.
+
+### Where it lives
+
+`engine.Options.ComputeWidth` and `ComputeHeight`; `bandShape`,
+`minBandWidth`, `tiling` and the two-dimensional `plan` in
+`internal/exec/tile.go`; `chunkJob.bandBounds` in `chunked.go`, which must
+size `ErodeBox`'s scratch from the widest band of any tile — a tile
+clipped at the raster's edge can band *wider* than a full one, since the
+rule leaves a narrow tile whole; and an early-out in `job.band` for the
+bands that have no edge cells, which a whole-row band rarely was and a
+sub-rectangle usually is.
+
+### Testing
+
+`TestBandShape` pins the rule, and `TestBands` checks the numbering
+against nested loops, taking the shape from `BandShape` so the rule is
+written down once. `FuzzPlan` covers the four-level index — the corner is
+a band clipped by the last tile column *and* the last tile row — over
+fuzzed sizes, tiles, band areas, floors and radii. Band shape is a new
+axis of §23's bit-for-bit matrix: `TestTilesAndWorkers` and
+`TestChunkedTilesAndWorkers` rotate a low `minBandWidth` through the same
+cross product, so two-dimensional bands are checked against the plain
+whole-raster function for every operation, mask combination, window and
+worker count. `TestStatsBandShapeCutsTheHalo` pins the mechanism in
+hand-derived bytes — 1015808 of halo for whole rows against 242000 for
+1024×64 over the same 4096×512 raster — and asserts that `SourceRead` and
+`SinkWritten` do not move between them, which is the decoupling itself.
+`TestChunkedClippedTileBandsWider` covers the wider-clipped-tile corner;
+breaking `bandBounds` makes it fail inside `ErodeBox`.
+
+Status: done, and off. The mechanism, the options and the tests are in;
+the default is whole tile rows because `BenchmarkBandWidth` says shaping
+the band cuts the halo by up to a factor of 15 and does not make the call
+faster. This retires the lever §51 left open: not by pulling it, but by
+measuring it.

@@ -183,6 +183,7 @@ func TestChunkedTilesAndWorkers(t *testing.T) {
 								run := engineRun{
 									opts:      engine.Options{TileWidth: tw, TileHeight: th, Workers: wk},
 									bandCells: []int{1, 97, 0}[n%3],
+									minBandW:  []int{0, 8, 3}[n%3],
 								}
 								n++
 								id := fmt.Sprintf("%s %dx%d inMask=%v outMask=%v %v", sh.name, sh.w, sh.h, m.in, m.out, run)
@@ -584,4 +585,44 @@ func TestChunkedRawFiles(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestChunkedClippedTileBandsWider covers the corner bandBounds exists
+// for. A tile clipped at the raster's edge plans its own band shape, and
+// it is not always smaller than a full tile's: bandShape leaves a tile no
+// wider than minBandWidth whole, so here the full 4096-wide tile bands at
+// 1024 while the clipped 1500-wide one bands at 1500. The scratch
+// ErodeBox needs is sized from the widest band of any tile, so a call
+// that sized it from the full tile's would index past the end of the
+// scratch on the last tile column. Masked, because that is the only path
+// that erodes; radius 1, and a tile short enough that the clipped tile is
+// a single band while the full one is not.
+func TestChunkedClippedTileBandsWider(t *testing.T) {
+	const w, h = 4096 + 1500, 40
+	// The shaping rule is inert by default (§53); this is the corner it
+	// has when it is on, and a caller's ComputeWidth reaches the same
+	// arithmetic.
+	defer exec.SetBandMinWidth(1024)()
+	if bw, _ := exec.BandShape(4096, h, 1); bw != 1024 {
+		t.Fatalf("the full tile bands at %d, not the 1024 this case needs", bw)
+	}
+	if bw, _ := exec.BandShape(1500, h, 1); bw != 1500 {
+		t.Fatalf("the clipped tile bands at %d, not the 1500 this case needs", bw)
+	}
+	rng := rand.New(rand.NewPCG(7, 8))
+	in := newOperand(rng, w, h, false, true)
+	out := newOperand(rng, w, h, false, true)
+	want := out.clone()
+	naiveBox(want.r, []raster.Float32Raster{in.r}, 1, float32(math.NaN()))
+
+	got := out.clone()
+	err := exec.ProcessChunked(context.Background(),
+		[]engine.RasterSink{engine.NewMemorySink(got.r)},
+		[]engine.RasterSource{engine.NewMemorySource(in.r)},
+		boxKernel{r: 1, inputs: 1},
+		engine.Options{TileWidth: 4096, TileHeight: h, Workers: 2})
+	if err != nil {
+		t.Fatalf("ProcessChunked: %v", err)
+	}
+	requireSameRoots(t, "clipped tile bands wider", got.root, want.root)
 }

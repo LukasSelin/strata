@@ -53,6 +53,14 @@
 //
 // # Choosing tiles
 //
+// ComputeWidth and ComputeHeight are a separate axis: they size the
+// rectangle one kernel call covers inside a tile, which is what decides
+// the halo a neighbourhood kernel reads, where TileWidth and TileHeight
+// decide how many calls a source makes. Leave them at 0, which is the
+// engine's choice of whole tile rows; they exist because the trade
+// between the two is worth being able to measure, and measuring it is
+// what put the default where it is (DESIGN.md §53).
+//
 // For rasters in memory, leave TileWidth and TileHeight at 0. Workers
 // share a full-width tile's rows, so it already runs in parallel, and it
 // is the fastest shape with any number of workers. A narrower tile makes

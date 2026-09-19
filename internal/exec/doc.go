@@ -29,8 +29,9 @@
 // Process calls a kernel once per rectangle, not once per row. A
 // rectangle is the natural unit at every level of DESIGN.md §6's
 // raster → tile → row → span → vector path: Process hands a kernel a
-// band of whole rows of one tile, and the kernel walks its rows and hands
-// row slices to vector code. Row kernels (internal/stencil) wrap in a
+// band of one tile — whole rows of it for a pointwise kernel, a
+// sub-rectangle of it for one with a radius — and the kernel walks its
+// rows and hands row slices to vector code. Row kernels (internal/stencil) wrap in a
 // three-line loop, and pointwise kernels keep algebra's fast path of one
 // vector call over all cells when the views are compact (Stride ==
 // Width), which a per-row interface could not offer. Bands, the unit of
@@ -110,8 +111,21 @@
 //
 // engine.Options.TileWidth and TileHeight split the raster into tiles in
 // row-major order (0 means the raster's width or height), and each tile
-// into bands of max(1, (1<<16)/TileWidth) whole rows. The bands, numbered
-// in that order, are the plan. Workers run them: 0 means
+// into bands of about 1<<16 cells. The bands, numbered in that order —
+// tile by tile, then row of bands by row of bands and left to right
+// within a row — are the plan.
+//
+// A band's shape is the engine's, not the caller's, and today it is
+// whole tile rows: max(1, (1<<16)/TileWidth) of them. The engine can
+// shape a band in two dimensions instead, which is what
+// engine.Options.ComputeWidth and ComputeHeight ask for, and what the
+// engine itself would choose if minBandWidth were lowered. A square band
+// reads far less halo — a 4096-wide tile banded 1024×64 rather than
+// 4096×16 reads 3% instead of 12%, and at 16384 wide 3% instead of 50% —
+// but BenchmarkBandWidth measures that buying no time and sometimes
+// costing a few per cent, so the engine does not do it by default. See
+// DESIGN.md §53: the mechanism is here and tested, the default is a
+// measurement. Workers run them: 0 means
 // runtime.GOMAXPROCS(0), and never more workers than bands. With one
 // worker every band runs on the calling goroutine, which starts no
 // goroutines and takes no locks. With more, the calling goroutine and
@@ -149,6 +163,13 @@
 // of what one call may cover, which matters for sources that read tiles
 // into buffers (DESIGN.md §24, §27).
 //
+// Those figures are also what bounds the band shape. A 256×256 tile is
+// one 256×256 band, so the 15–21% they cost Slope is what a band of that
+// width costs wherever it appears, and BenchmarkBandWidth measures the
+// same curve for bands inside one full-width tile: at 4096² and 16384²,
+// Slope is slowest at 256-cell rows and fastest at the raster's full
+// width, monotonically, whatever the halo those shapes read (§53).
+//
 // # Cancellation
 //
 // Each worker checks ctx before it takes a band (never per cell or inside
@@ -158,7 +179,9 @@
 // stopped, if any band was not written, and nil otherwise. So after a
 // cancelled call every output cell either holds its final Data and
 // validity or is untouched, and the finished bands are a prefix of the
-// plan, with any number of workers: with one tile, a prefix of rows. With
+// plan, with any number of workers: with one tile, a prefix of its rows
+// for a pointwise kernel and of its sub-rectangles, row-major, for one
+// with a radius. With
 // W workers, at most W-1 kernel calls start after ctx is done (the bands
 // other workers took just before). A context that is done before the
 // call writes nothing. Only cancellation is reported as an error;
@@ -181,8 +204,10 @@
 // that sources and sinks can move consecutive full-width rows in one call
 // and pointwise kernels keep their whole-span path. For each tile the worker
 // reads the tile's cells grown by the radius and clipped to the raster
-// from every source, then runs every band of the tile, in order, through
-// the same band code as ProcessN, with the buffers as operands placed at
+// from every source — one call per source per tile, whatever shape the
+// bands inside it take, which is what lets a call read full-width strips
+// and still compute over square-ish bands — then runs every band of the
+// tile, in order, through the same band code as ProcessN, with the buffers as operands placed at
 // their raster positions: a job's dst and src start at (dx, dy) and (sx,
 // sy), Span.X and Span.Y are raster positions, and only cells within the
 // radius of the raster's edge get the edge policy. Cells on a tile's edge

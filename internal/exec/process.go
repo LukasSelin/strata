@@ -101,7 +101,8 @@ func checkKernel(ndst, nsrc int, k Kernel, r int, opts engine.Options) (nout int
 		panic(fmt.Sprintf("engine: kernel takes %d inputs and %d outputs, got %d and %d",
 			nin, nout, nsrc, ndst))
 	}
-	if opts.TileWidth < 0 || opts.TileHeight < 0 || opts.Workers < 0 {
+	if opts.TileWidth < 0 || opts.TileHeight < 0 ||
+		opts.ComputeWidth < 0 || opts.ComputeHeight < 0 || opts.Workers < 0 {
 		panic(fmt.Sprintf("engine: negative Options %+v", opts))
 	}
 	return nout

@@ -18,12 +18,36 @@ import (
 const bytesPerCell = 4
 
 // bandCells is the target number of cells in a band, the unit of work
-// between cancellation checks and of scheduling across workers: bands are
-// whole rows of a tile, at least one. 1<<16 cells keeps a check within a
+// between cancellation checks and of scheduling across workers. It sets a
+// band's area; bandShape sets its shape. 1<<16 cells keeps a check within a
 // millisecond or so of work for the slowest kernels while amortising the
 // per-call cost of pointwise ones, and a band of a few operands fits in
 // L2 cache. It is a variable so tests can force one-row bands.
 var bandCells = 1 << 16
+
+// minBandWidth is the shortest row a band is given when a tile is split
+// across its width, and so the knob that turns band shaping on: a band is
+// the squarest rectangle of bandCells whose rows are still this long, not
+// the squarest rectangle, because a row kernel pays a fixed 5-30 ns per
+// row in the SIMD build (stencil's BenchmarkRowWidth) and short rows read
+// memory in streams the prefetcher has not seen. 256-cell rows cost Slope
+// 15-21% and Hillshade 21-40% against 4094-cell ones
+// (benchmarks/engine/RESULTS.md), where a 1024-cell row already amortises
+// the call (algebra's BenchmarkAddNarrow).
+//
+// It sits above every real tile width, so the rule is inert and bands are
+// whole tile rows, as they were before §53 separated the compute tile
+// from the IO tile. That is a measurement, not a preference. Shaping the
+// band does cut the halo exactly as the arithmetic says — 12.4% to 3.2%
+// at 4096 wide, 50.0% to 3.3% at 16384, where it is a fifth of all the
+// traffic a tiled call moves — and BenchmarkBandWidth then finds that
+// buys nothing: at 4096² it costs 1.4-4.2%, and at 16384² the two shapes
+// run at the same speed with 19% different traffic, which is §51's
+// "logical traffic is not DRAM traffic" holding for the very change §51
+// proposed. 1024 is the value to restore to turn it back on; §53 records
+// what the number would have to look like to earn it, and why the
+// measurement is machine-specific.
+var minBandWidth = 1 << 30
 
 // job is one ProcessN call after its checks, or one worker's tile of a
 // ProcessChunked call. Everything a band needs is allocated here, once per
@@ -81,7 +105,7 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 		dstMasked = dstMasked || d.Valid != nil
 	}
 	e.setup(k, r, dst[0].Width, dst[0].Height, masked, dstMasked)
-	e.plan = newPlan(e.w, e.h, opts.TileWidth, opts.TileHeight)
+	e.plan = newPlan(e.w, e.h, tilingOf(opts, r))
 	for i, d := range dst {
 		if e.sameBits == nil {
 			break
@@ -93,7 +117,7 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 			}
 		}
 	}
-	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.tileW)
+	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.bandW)
 	e.allocScratch(e.plan.spanSize())
 	return e
 }
@@ -125,8 +149,8 @@ func workerCount(workers, n int) int {
 }
 
 // allocWorkers gives the job n workers, with views for its operands and,
-// when validity is eroded, scratch for tiles up to tileW cells wide.
-func (e *job) allocWorkers(n, tileW int) {
+// when validity is eroded, scratch for bands up to bandW cells wide.
+func (e *job) allocWorkers(n, bandW int) {
 	erode := e.dstMasked && len(e.masked) > 0 && e.r > 0
 	// One backing array per kind for all workers, so a call's allocations
 	// do not grow with the worker count.
@@ -139,7 +163,7 @@ func (e *job) allocWorkers(n, tileW int) {
 	sw := 0
 	if erode {
 		regions = make([]stencil.MaskRegion, n*len(e.masked))
-		sw = stencil.ErodeScratch(tileW, e.r)
+		sw = stencil.ErodeScratch(bandW, e.r)
 		scratch = make([]uint64, n*sw)
 	}
 	for i := range e.workers {
@@ -153,51 +177,150 @@ func (e *job) allocWorkers(n, tileW int) {
 	}
 }
 
+// tiling is the geometry a plan is built from: the IO tile the caller
+// asked for, the compute tile it forced, and the kernel's radius. A 0
+// size means the engine's choice.
+type tiling struct {
+	tileW, tileH       int
+	computeW, computeH int
+	r                  int
+}
+
+func tilingOf(opts engine.Options, r int) tiling {
+	return tiling{opts.TileWidth, opts.TileHeight, opts.ComputeWidth, opts.ComputeHeight, r}
+}
+
+// inner is the tiling for a plan over a tile a Chunked call has already
+// read: that tile is the whole raster the plan sees, so only the compute
+// tile and the radius carry over.
+func (t tiling) inner() tiling {
+	return tiling{computeW: t.computeW, computeH: t.computeH, r: t.r}
+}
+
+// bandShape is the size of the bands a tileW×tileH tile is split into:
+// the compute tile, which the caller's TileWidth and TileHeight no longer
+// decide (DESIGN.md §53).
+//
+// At radius 0 the band is whole tile rows, exactly as it always was: there
+// is no halo to save, and a band as wide as its tile keeps a pointwise
+// kernel's views compact (Stride == Width), which is what lets it and
+// pointwiseValidity take their whole-span paths. Above radius 0 the band
+// is made squarer, because the halo it reads is its perimeter.
+//
+// Two bounds keep that from going too far. A tile no taller than one
+// whole-row band is already a single band, so splitting it across its
+// width only adds perimeter: a 4096×16 tile in bands of 1024×16 reads a
+// 12.7% halo where the whole tile reads 12.5%, with shorter rows as well.
+// And minBandWidth stops the rows getting short. The tile is divided into
+// equal columns by rounding to nearest rather than up, so that no band is
+// left narrow — ceilDiv(1500, 1024) would give two columns of 750, where
+// this gives one of 1500 — which bounds a band at 3/4 of minBandWidth once
+// there is more than one column, not at minBandWidth itself.
+//
+// Band width is deliberately not rounded to a multiple of 64 for mask
+// alignment. It would fight the equal division in almost every case (a
+// 4000-wide tile divides into four clean columns of 1000, which rounding
+// would make 1024, 1024, 1024, 928), and §23's stride-64 reasoning is
+// about where a row's bits start, which is set by Stride, not by a band's
+// x0. A band's horizontal offset only reaches partial words inside
+// ErodeBox, whose cost is dominated by the AND of 2r+1 source rows. If a
+// benchmark ever shows the shifts there mattering, that is the
+// measurement that would justify the uneven columns.
+func bandShape(tileW, tileH int, t tiling) (bandW, bandH int) {
+	if t.computeW > 0 || t.computeH > 0 {
+		bandW = tileW
+		if t.computeW > 0 {
+			bandW = min(t.computeW, tileW)
+		}
+		bandH = max(1, bandCells/bandW)
+		if t.computeH > 0 {
+			bandH = min(t.computeH, tileH)
+		}
+		return bandW, bandH
+	}
+	rows := max(1, bandCells/tileW)
+	if t.r == 0 || tileW*tileH <= bandCells {
+		return tileW, rows
+	}
+	want := max(minBandWidth, isqrt(bandCells))
+	cols := max(1, (tileW+want/2)/want)
+	bandW = ceilDiv(tileW, cols)
+	return bandW, max(1, bandCells/bandW)
+}
+
 // plan divides a w×h raster into tiles in row-major order and each tile
-// into bands of whole rows, and numbers the bands in that order. Band i
-// is found by arithmetic, so a plan of millions of bands costs nothing.
+// into bands, and numbers the bands in that order: tile by tile, then row
+// of bands, then band across. Band i is found by arithmetic, so a plan of
+// millions of bands costs nothing.
+//
+// A band is bandW×bandH, clipped by its tile and by the raster, so the
+// last tile column and the last tile row each hold a different number of
+// bands from a full one — the four counts below. Every other tile holds
+// colsFull×rowsFull, because ceilDiv leaves the last column of a full tile
+// non-empty.
 type plan struct {
 	w, h         int
 	tileW, tileH int
-	bandRows     int
+	bandW, bandH int
 	tilesX       int // tiles per tile row
 	tileRows     int // rows of tiles
-	perTile      int // bands in a tile of full height
-	perLastTile  int // bands in a tile of the last tile row
+	colsFull     int // bands across a tile of full width
+	colsLast     int // bands across a tile of the last tile column
+	rowsFull     int // rows of bands in a tile of full height
+	rowsLast     int // rows of bands in a tile of the last tile row
+	perTileRow   int // bands across a whole row of tiles
 	bands        int // total
 }
 
-func newPlan(w, h, tileW, tileH int) plan {
+func newPlan(w, h int, t tiling) plan {
 	p := plan{w: w, h: h, tileW: w, tileH: h}
-	if tileW > 0 {
-		p.tileW = min(tileW, w)
+	if t.tileW > 0 {
+		p.tileW = min(t.tileW, w)
 	}
-	if tileH > 0 {
-		p.tileH = min(tileH, h)
+	if t.tileH > 0 {
+		p.tileH = min(t.tileH, h)
 	}
 	if w == 0 || h == 0 {
 		return p // no bands
 	}
-	p.bandRows = max(1, bandCells/p.tileW)
+	p.bandW, p.bandH = bandShape(p.tileW, p.tileH, t)
 	p.tilesX = ceilDiv(w, p.tileW)
 	p.tileRows = ceilDiv(h, p.tileH)
-	p.perTile = ceilDiv(p.tileH, p.bandRows)
-	p.perLastTile = ceilDiv(h-(p.tileRows-1)*p.tileH, p.bandRows)
-	p.bands = p.tilesX * ((p.tileRows-1)*p.perTile + p.perLastTile)
+	p.colsFull = ceilDiv(p.tileW, p.bandW)
+	p.colsLast = ceilDiv(w-(p.tilesX-1)*p.tileW, p.bandW)
+	p.rowsFull = ceilDiv(p.tileH, p.bandH)
+	p.rowsLast = ceilDiv(h-(p.tileRows-1)*p.tileH, p.bandH)
+	p.perTileRow = (p.tilesX-1)*p.colsFull + p.colsLast
+	p.bands = ((p.tileRows-1)*p.rowsFull + p.rowsLast) * p.perTileRow
 	return p
 }
 
 func ceilDiv(a, b int) int { return (a + b - 1) / b }
 
+// isqrt is the integer square root of n, 0 for n <= 0.
+func isqrt(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	x := int(math.Sqrt(float64(n)))
+	for x > 0 && x*x > n {
+		x--
+	}
+	for (x+1)*(x+1) <= n {
+		x++
+	}
+	return x
+}
+
 // spanSize is the largest span one Process call can cover under p: a
-// band is the tile's width by at most bandRows rows, and a tile clipped
-// at the raster's edge is only ever smaller. It returns 0, 0 for a plan
+// band is bandW by at most bandH rows, and a band clipped by its tile or
+// by the raster's edge is only ever smaller. It returns 0, 0 for a plan
 // with no bands.
 func (p *plan) spanSize() (w, h int) {
 	if p.bands == 0 {
 		return 0, 0
 	}
-	return p.tileW, min(p.bandRows, p.tileH)
+	return p.bandW, min(p.bandH, p.tileH)
 }
 
 // allocScratch gives each worker the working memory a ScratchKernel asks
@@ -241,18 +364,30 @@ func (e *job) allocScratch(w, h int) {
 	}
 }
 
-// band returns band i's cells [x0, x1) × [y0, y1).
+// band returns band i's cells [x0, x1) × [y0, y1). It undoes the
+// numbering one level at a time — tile row, tile column, then the band
+// within the tile — each level a division and one comparison against the
+// clipped last row or column. With whole-row bands colsFull, colsLast and
+// the band column are all 1 and this is the tile-and-rows arithmetic it
+// replaced.
 func (p *plan) band(i int) (x0, y0, x1, y1 int) {
-	perRow := p.tilesX * p.perTile // bands per full tile row
-	tr, j, per := i/perRow, i%perRow, p.perTile
+	perFullRow := p.rowsFull * p.perTileRow // bands in a full row of tiles
+	tr, j, rows := i/perFullRow, i%perFullRow, p.rowsFull
 	if tr >= p.tileRows-1 {
-		tr, j, per = p.tileRows-1, i-(p.tileRows-1)*perRow, p.perLastTile
+		tr, j, rows = p.tileRows-1, i-(p.tileRows-1)*perFullRow, p.rowsLast
 	}
-	tx, b := j/per, j%per
-	x0 = tx * p.tileW
-	x1 = min(x0+p.tileW, p.w)
-	ty := tr * p.tileH
-	y0 = ty + b*p.bandRows
-	y1 = min(y0+p.bandRows, ty+p.tileH, p.h)
+	perFullTile := rows * p.colsFull
+	tx, cols := p.tilesX-1, p.colsLast
+	if j < (p.tilesX-1)*perFullTile {
+		tx, cols, j = j/perFullTile, p.colsFull, j%perFullTile
+	} else {
+		j -= (p.tilesX - 1) * perFullTile
+	}
+	br, bc := j/cols, j%cols
+	tx0, ty0 := tx*p.tileW, tr*p.tileH
+	x0 = tx0 + bc*p.bandW
+	x1 = min(x0+p.bandW, tx0+p.tileW, p.w)
+	y0 = ty0 + br*p.bandH
+	y1 = min(y0+p.bandH, ty0+p.tileH, p.h)
 	return x0, y0, x1, y1
 }

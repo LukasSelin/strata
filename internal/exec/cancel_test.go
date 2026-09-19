@@ -115,7 +115,7 @@ func TestCancellationWorkers(t *testing.T) {
 				for _, deadline := range []bool{false, true} {
 					o := engine.Options{TileWidth: tiles[0], TileHeight: tiles[1], Workers: workers}
 					id := fmt.Sprintf("%+v %s in round %d", o, stopName(deadline), round)
-					bands := exec.Bands(w, h, tiles[0], tiles[1])
+					bands := exec.Bands(w, h, tiles[0], tiles[1], box.r)
 					want, _ := claimed(workers, len(bands), round)
 					synctest.Test(t, func(t *testing.T) {
 						got := out.clone()

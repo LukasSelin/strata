@@ -106,6 +106,9 @@ func memoryMeet(a, b raster.Float32Raster) bool {
 type chunkJob struct {
 	r    int
 	w, h int
+	// band is the tiling a tile's own plan is built from: the compute
+	// tile the caller forced, if any, and the radius.
+	band tiling
 	// tileW and tileH are the tile size, tilesX the tiles per tile row
 	// and tiles their number. Tiles are numbered in row-major order.
 	tileW, tileH  int
@@ -140,7 +143,7 @@ type chunkWorker struct {
 }
 
 func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r int, opts engine.Options) *chunkJob {
-	c := &chunkJob{r: r, dst: dst, src: src, out: opts.Stats}
+	c := &chunkJob{r: r, band: tilingOf(opts, r).inner(), dst: dst, src: src, out: opts.Stats}
 	c.w, c.h = dst[0].Size()
 	c.tileW, c.tileH = c.w, c.h
 	if opts.TileWidth > 0 {
@@ -227,32 +230,38 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		t := &wk.t
 		t.src, t.dst = views[nin+nout:2*nin+nout:2*nin+nout], views[2*nin+nout:]
 		t.setup(k, r, c.w, c.h, masked, dstMasked)
-		t.allocWorkers(1, c.tileW)
-		t.allocScratch(c.spanSize())
+		spanW, spanH, bandW := c.bandBounds()
+		t.allocWorkers(1, bandW)
+		t.allocScratch(spanW, spanH)
 	}
 	return c
 }
 
-// spanSize is the largest span one Process call can cover in any of this
-// job's tiles. A tile gets its own plan, so a tile clipped at the
-// raster's edge has its own band height — a narrower tile takes taller
-// bands — and the largest span is not always the full tile's. There are
-// only ever two widths and two heights, so all four are checked rather
-// than bounded.
-func (c *chunkJob) spanSize() (w, h int) {
+// bandBounds is the largest span one Process call can cover in any of
+// this job's tiles, and the widest band any of them plans. A tile gets
+// its own plan, so a tile clipped at the raster's edge has its own band
+// shape, and the largest is not always the full tile's: a narrower tile
+// takes taller bands, and — since bandShape leaves a tile no wider than
+// minBandWidth whole — a *wider* band as well, so a clipped tile of 1500
+// bands at 1500 where the full 4096 tile bands at 1024. The widest band
+// is what ErodeScratch must cover and it is not the largest span's width,
+// so the two are tracked separately. There are only ever two widths and
+// two heights, so all four are checked rather than bounded.
+func (c *chunkJob) bandBounds() (spanW, spanH, bandW int) {
 	lastW := c.w - (c.tilesX-1)*c.tileW
 	lastH := c.h - (ceilDiv(c.h, c.tileH)-1)*c.tileH
 	best := 0
 	for _, tw := range [2]int{c.tileW, lastW} {
 		for _, th := range [2]int{c.tileH, lastH} {
-			p := newPlan(tw, th, 0, 0)
+			p := newPlan(tw, th, c.band)
 			sw, sh := p.spanSize()
 			if sw*sh > best {
-				best, w, h = sw*sh, sw, sh
+				best, spanW, spanH = sw*sh, sw, sh
 			}
+			bandW = max(bandW, p.bandW)
 		}
 	}
-	return w, h
+	return spanW, spanH, bandW
 }
 
 func roundUp64(n int) int { return (n + 63) &^ 63 }
@@ -312,7 +321,7 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 		t.dst[j] = bufferView(wk.out[j], x1-x0, y1-y0)
 	}
 	t.dx, t.dy, t.sx, t.sy = x0, y0, rx0, ry0
-	t.plan = newPlan(x1-x0, y1-y0, 0, 0)
+	t.plan = newPlan(x1-x0, y1-y0, c.band)
 	for b := range t.plan.bands {
 		t.band(&t.workers[0], b)
 	}

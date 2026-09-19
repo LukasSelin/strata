@@ -303,3 +303,100 @@ func TestStatsZeroValue(t *testing.T) {
 		t.Errorf("Halo(0) = %d, want 0", s.Halo(0))
 	}
 }
+
+// TestStatsBandShapeCutsTheHalo is what decoupling the IO tile from the
+// compute tile was for (DESIGN.md §51, §53). A full-width strip is the
+// shape §27 tells callers to use, because a source groups consecutive
+// full-width rows into one call, but it used to force the kernel into
+// bands of the tile's full width: 1<<16 cells over a 4096-wide tile is 16
+// rows, a 256:1 perimeter, and a halo of 12%. The band can now be shaped
+// independently of the tile, and this is what that is worth in bytes;
+// §53 has what it turned out to be worth in time, which is why the
+// engine does not do it unasked.
+//
+// Counted by hand for a 4096×512 raster, radius 1, TileHeight 256, one
+// input. Every band's interior is its own cells minus those within the
+// radius of the raster's edge, and its window is that grown by 1:
+//
+//   - Whole rows. 32 bands of 4096×16, interiors 4094 wide; the first and
+//     last are 15 rows tall, the other 30 are 16. Windows are 4096 wide by
+//     17, 18 or 17 rows: 4096 × (17 + 30×18 + 17) × 4 = 9404416 bytes read
+//     for 8388608 bytes of input cells, a halo of 1015808 (12.1%).
+//   - Shaped bands. 32 bands of 1024×64 in a 4×8 grid. Window widths are
+//     1025, 1026, 1026, 1025 (the outer columns lose a cell to the raster
+//     edge) and heights 65, 66×6, 65, and the grid is a product, so the
+//     read is (4102 × 526) × 4 = 8630608: a halo of 242000 (2.9%).
+//
+// The chunked case is the one §51's table measured. Its SourceRead must
+// not move: the tiles, and so the source calls, are exactly what they
+// were. That is the decoupling — fewer halo bytes, the same reads.
+func TestStatsBandShapeCutsTheHalo(t *testing.T) {
+	const w, h = 4096, 512
+	const cellBytes = int64(w) * int64(h) * 4
+	k := boxKernel{r: 1, inputs: 1, outputs: 1}
+	opts := func(computeW int, s *engine.Stats) engine.Options {
+		return engine.Options{TileHeight: 256, ComputeWidth: computeW, Stats: s}
+	}
+
+	tiled := func(computeW int) engine.Stats {
+		t.Helper()
+		var s engine.Stats
+		dst, src := rasters(1, w, h), rasters(1, w, h)
+		if err := exec.ProcessN(context.Background(), dst, src, k, opts(computeW, &s)); err != nil {
+			t.Fatalf("ProcessN: %v", err)
+		}
+		return s
+	}
+
+	// 0 is the engine's choice, which is whole tile rows while
+	// minBandWidth sits above every tile width (§53); 1024 is the shape a
+	// caller asks for, and the shape the engine would choose if the
+	// measurement ever justified turning the rule back on.
+	rows, shaped := tiled(0), tiled(1024)
+
+	if got, want := rows.Halo(1), int64(1015808); got != want {
+		t.Errorf("whole-row bands: Halo = %d, want %d (%v)", got, want, rows)
+	}
+	if got, want := shaped.Halo(1), int64(242000); got != want {
+		t.Errorf("shaped bands: Halo = %d, want %d (%v)", got, want, shaped)
+	}
+	if rows.Cells != shaped.Cells || shaped.Cells != int64(w)*int64(h) {
+		t.Errorf("cells moved: %d and %d, want %d", rows.Cells, shaped.Cells, int64(w)*int64(h))
+	}
+	if shaped.Halo(1)*4 > rows.Halo(1) {
+		t.Errorf("shaping the band must cut the halo several-fold: %d against %d",
+			shaped.Halo(1), rows.Halo(1))
+	}
+
+	// The same call over sources and sinks: the halo is the band's, and
+	// the source traffic is the tile's and does not move.
+	chunked := func(computeW int) engine.Stats {
+		t.Helper()
+		var s engine.Stats
+		dstR, srcR := ramp(w, h), ramp(w, h)
+		err := exec.ProcessChunked(context.Background(),
+			[]engine.RasterSink{engine.NewMemorySink(dstR)},
+			[]engine.RasterSource{engine.NewMemorySource(srcR)}, k, opts(computeW, &s))
+		if err != nil {
+			t.Fatalf("ProcessChunked: %v", err)
+		}
+		return s
+	}
+
+	cRows, cShaped := chunked(0), chunked(1024)
+
+	if got, want := cShaped.Halo(1), int64(242000); got != want {
+		t.Errorf("chunked shaped bands: Halo = %d, want %d (%v)", got, want, cShaped)
+	}
+	// Two tiles of 4096×256, each read with a row of halo above or below:
+	// 4096 × 257 cells twice.
+	const sourceBytes = int64(4096) * 257 * 2 * 4
+	if cRows.SourceRead != sourceBytes || cShaped.SourceRead != sourceBytes {
+		t.Errorf("SourceRead moved with the band shape: %d then %d, want %d both",
+			cRows.SourceRead, cShaped.SourceRead, sourceBytes)
+	}
+	if cRows.SinkWritten != cellBytes || cShaped.SinkWritten != cellBytes {
+		t.Errorf("SinkWritten moved with the band shape: %d then %d, want %d both",
+			cRows.SinkWritten, cShaped.SinkWritten, cellBytes)
+	}
+}

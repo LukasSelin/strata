@@ -124,11 +124,13 @@ func (l layout) String() string { return fmt.Sprintf("windowedIn=%v windowedOut=
 type engineRun struct {
 	opts      engine.Options
 	bandCells int  // band size target, 0 for the default
+	minBandW  int  // band width floor, 0 for the default
 	cancelOK  bool // a cancellable context that is never cancelled
 }
 
 func (run engineRun) String() string {
-	return fmt.Sprintf("opts=%+v bandCells=%d cancellable=%v", run.opts, run.bandCells, run.cancelOK)
+	return fmt.Sprintf("opts=%+v bandCells=%d minBandWidth=%d cancellable=%v",
+		run.opts, run.bandCells, run.minBandW, run.cancelOK)
 }
 
 // engineRuns are the runs of the broad tests: tiles of many shapes, bands
@@ -136,16 +138,22 @@ func (run engineRun) String() string {
 // them) and several worker counts. TestTilesAndWorkers covers the full
 // cross product on fewer fixtures.
 var engineRuns = []engineRun{
-	{engine.Options{Workers: 1}, 0, false},
-	{engine.Options{Workers: 1}, 1, true},
-	{engine.Options{}, 1, false},
-	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 1}, 0, false},
-	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 3}, 0, false},
-	{engine.Options{TileWidth: 2, TileHeight: 3, Workers: 4}, 1, false},
-	{engine.Options{TileWidth: 3, TileHeight: 2, Workers: 2}, 0, true},
-	{engine.Options{TileWidth: 5, TileHeight: 4, Workers: 1}, 1, false},
-	{engine.Options{TileWidth: 64, TileHeight: 1}, 0, false},
-	{engine.Options{TileWidth: 7, TileHeight: 1000, Workers: 2}, 3, false},
+	{engine.Options{Workers: 1}, 0, 0, false},
+	{engine.Options{Workers: 1}, 1, 0, true},
+	{engine.Options{}, 1, 0, false},
+	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 1}, 0, 0, false},
+	{engine.Options{TileWidth: 1, TileHeight: 1, Workers: 3}, 0, 0, false},
+	{engine.Options{TileWidth: 2, TileHeight: 3, Workers: 4}, 1, 0, false},
+	{engine.Options{TileWidth: 3, TileHeight: 2, Workers: 2}, 0, 0, true},
+	{engine.Options{TileWidth: 5, TileHeight: 4, Workers: 1}, 1, 0, false},
+	{engine.Options{TileWidth: 64, TileHeight: 1}, 0, 0, false},
+	{engine.Options{TileWidth: 7, TileHeight: 1000, Workers: 2}, 3, 0, false},
+	// Two-dimensional bands: a floor low enough that these small tiles
+	// split across their width, and a compute tile named outright.
+	{engine.Options{Workers: 1}, 97, 4, false},
+	{engine.Options{TileWidth: 64, TileHeight: 64, Workers: 3}, 97, 8, false},
+	{engine.Options{ComputeWidth: 3, ComputeHeight: 2, Workers: 2}, 0, 0, false},
+	{engine.Options{TileWidth: 9, TileHeight: 9, ComputeWidth: 4, Workers: 4}, 0, 0, true},
 }
 
 // process runs ProcessN the way run says and fails the test on an error.
@@ -162,6 +170,9 @@ func processWith(t *testing.T, run engineRun, f func(context.Context, engine.Opt
 	t.Helper()
 	if run.bandCells > 0 {
 		defer exec.SetBandCells(run.bandCells)()
+	}
+	if run.minBandW > 0 {
+		defer exec.SetBandMinWidth(run.minBandW)()
 	}
 	ctx := context.Background()
 	if run.cancelOK {
