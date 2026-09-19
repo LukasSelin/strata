@@ -739,6 +739,12 @@ func Clamp(dst, src []float32, min, max float32)
 func Abs(dst, src []float32)
 func Sqrt(dst, src []float32)
 
+// dst[i] = a*src[i] + b, the kernel of transfer.Rescale (STRATA-13,
+// §50). The multiply and the add round separately: it is never a fused
+// multiply-add, which is what keeps the scalar reference canonical on
+// arm64 as well (ADR 0001).
+func Affine(dst, src []float32, a, b float32)
+
 // Folds. acc is the running value, so an empty src returns it and a
 // caller starts from +Inf or -Inf and needs no empty-input case
 // (STRATA-12, §49).
@@ -762,7 +768,6 @@ func ClearBorder(...)
 Future operations:
 
 ```text
-FMA
 Select
 Blend
 Compare
@@ -770,6 +775,11 @@ ReduceSum
 Dot
 Hypot
 ```
+
+`FMA` is deliberately absent rather than pending. A kernel that rounds a
+multiply and an add together is exactly what §15 forbids in a scalar
+reference, since arm64 would fuse where amd64 would not; `Affine` is the
+non-fused form, and §50 has the argument.
 
 `ReduceSum` is deliberately not here yet. An order-independent sum needs
 an accumulator that does not round as it goes (§49), and its per-cell
@@ -830,10 +840,15 @@ algebra.Mask(dst, src, mask)
 Later:
 
 ```go
-algebra.Scale(dst, src, 1.25)  // MulScalar / AddScalar exist in internal/vec
 algebra.Normalize(dst, src)     // needs reduce.MinMax over a whole
                                 //   raster, which §49 has (STRATA-12)
 ```
+
+`algebra.Scale(dst, src, 1.25)` stood here and is not being added.
+`transfer.Rescale(dst, src, a, b)` subsumes it (§50), over a single
+`vec.Affine` kernel rather than a `MulScalar` pass and an `AddScalar`
+one; two spellings of one operation is what this section exists to
+prevent.
 
 `Normalize` is not a pointwise operation. It needs global statistics (min
 and max, or mean and standard deviation, over valid cells). Under chunked
@@ -1981,6 +1996,12 @@ strata/
 │   └── reduce.go              Count, MinMax, their engine entry
 │                               points and their reducers
 │
+├── transfer/                  implemented (STRATA-13, §50)
+│   ├── doc.go
+│   ├── transfer.go            Reclass, Lookup, Rescale, RescaleRange,
+│   │                           table checks and the three kernels
+│   └── tiled.go               tiled and chunked entry points
+│
 ├── terrain/                   implemented
 │   ├── gradient.go
 │   ├── slope.go
@@ -1997,6 +2018,10 @@ strata/
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
 │   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── curve/                 implemented (§50): curve.go, scalar.go
+│   │                           table-driven Reclass and Lookup, scalar only
+│   ├── pointwise/             implemented (§50): operand checks and validity
+│   │                           for the radius-0 packages' plain functions
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window
 │   │   ├── process.go         Process, operand checks
@@ -2255,7 +2280,13 @@ order-independent accumulation: the same bits for every tiling,
   worker count and backend
 algebra.Normalize on top of the reduction pass
 benchmarks against the §28 bandwidth ceiling
+transfer: Reclass, Lookup, Rescale, RescaleRange (§50)  done (STRATA-13)
 ```
+
+The transfer family is not a reduction, but it lands in v0.2 for the same
+reason reductions do: both are what turn a computed surface into
+something to act on, and `Rescale` is the building block `Normalize`
+writes through.
 
 **v0.3: Array foundation**
 
@@ -2265,7 +2296,6 @@ strides
 views
 axis reductions (§49 extended to N-D)
 broadcast-style operations
-Scale
 ```
 
 **v0.4: Streaming and pipelines**
@@ -2651,3 +2681,230 @@ and `vec.ReduceMax`, and package `reduce`. `Sum`, `Stats`, `Summary` and
 the accumulator decision are next, then `algebra.Normalize`;
 `benchmarks/reduce` lands with them, since what it has to measure is the
 cost of an exact accumulator and a `Min` fold is pure bandwidth.
+
+## 50. Transfer Functions
+
+Every operation so far computes a physical quantity: a sum, a gradient, a
+slope angle, an extent. None of them turns one into a judgement. A
+wildfire risk model over Swedish terrain wants a slope factor, an aspect
+factor and a fuel factor, each a bounded curve applied per pixel, and
+then *brandriskklass* 1–5, a reclassification of the combined surface.
+The module can produce every input to that model — `terrain.Slope`,
+`terrain.Aspect`, `algebra.Mul` — and can do nothing with them.
+
+Those factors are not three algorithms. They are two, plus a scaling:
+
+```go
+transfer.Reclass(dst, src, breaks, values)   // a step function over breakpoints
+transfer.Lookup(dst, src, xs, ys)            // a bounded piecewise-linear curve
+transfer.Rescale(dst, src, a, b)             // dst = a·src + b
+transfer.RescaleRange(dst, src, inLo, inHi, outLo, outHi)
+```
+
+The model then lives in the caller's tables, and the package stays
+domain-neutral, which §7's scope boundary asks for. There is no `fire`
+package and no fire-risk demo; the chain appears once, as an `Example`.
+
+`Rescale` subsumes the `algebra.Scale(dst, src, 1.25)` §18 has carried as
+a to-do, so `Scale` is not added to `algebra`: two spellings of one
+operation is what §18 exists to prevent. §49 already named
+"classification breakpoints" as one of the things that turn a computed
+surface into something to act on, so this is adjacent to v0.2 rather than
+new territory, but it is new scope.
+
+### Conventions
+
+**Class intervals are half-open upward.** `values[i]` covers
+`[breaks[i-1], breaks[i])`, so a cell exactly on a break takes the class
+above it, the first class runs down to −∞ and the last up to +∞. Three
+reasons, the third the one that decided it:
+
+- Published tables are written that way — "klass 4: FWI 11.2 och uppåt" —
+  so a table typed in from one means what it says.
+- The unbounded classes end up at the ends of the scale, where a risk
+  scale wants them.
+- A raster of integer land-cover codes can be reclassified with the codes
+  themselves as breaks. Upper-inclusive would force 2.5, 40.5, 41.5, which
+  is a trap.
+
+**A table is read, never copied.** Validation is a pass over a handful of
+elements, so it costs nothing and happens on every path, before any cell
+is written; a rejected table leaves `dst` untouched. The cost is that a
+`Tiled` or `Chunked` run holds the table while every worker reads it, so
+a caller must not mutate one mid-call. That is the concrete form of §22's
+"no mutable state" rule for kernels, and the first time the module has
+had to state it, because these are its first kernels taking anything but
+slices and scalars.
+
+**The x side is strictly increasing and free of NaN**, and `Lookup`'s
+knots are finite; the y side is unconstrained. A curve that rises and
+falls is the point — an aspect factor peaks on the south-facing slopes —
+so `ys` cannot be required monotone.
+
+### Values
+
+**A NaN cell gives that same NaN back.** This is not what the arithmetic
+alone does, and the failure it prevents is the sharpest argument for
+settling semantics before writing kernels: every IEEE comparison against
+NaN is false, so a search that only counts breaks at or below a cell
+places NaN above the whole table and reports **the top class**. A model
+would silently turn missing-looking data into the highest fire risk.
+`Reclass` and `Lookup` test for NaN before searching — one compare on top
+of an n-compare scan, so a 1/n overhead not worth being clever about.
+Validity is still never inferred from Data (§31): a NaN with its bit set
+is an ordinary value.
+
+Neither operation narrows validity, because both are total: every cell
+has a class and every curve is bounded. There is no out-of-domain case,
+so §22's "kernels whose validity rule is different need an extension of
+this interface" does not bite, and `algebra.Mask` remains the way to
+narrow validity.
+
+**`Lookup` reproduces every knot exactly, for every table.** A cell equal
+to a knot's x returns that knot's y directly rather than interpolating
+from it. That short circuit is not an optimisation: `t` is 0 at the lower
+knot, but `0·(y1-y0)` is NaN when the next y is NaN or infinite, so one
+undefined knot would swallow the defined one below it, and a −0 would
+come back +0. The fuzzer found it; reasoning had not.
+
+Nothing else is exact. Recovering a cell through a divide and a multiply
+loses an ulp, so `Lookup` with `ys == xs` is the identity only to within
+rounding — the fuzzer produced −185.16173 coming back as −185.16174. The
+one bit-exact bridge to `algebra` is the curve through (0,0) and (1,1),
+which is `algebra.Clamp` to [0, 1].
+
+A segment's value is `y0 + t·(y1-y0)`, so a rise that overflows float32
+gives an infinity between two finite knots. Also from the fuzzer, also
+documented rather than defended against: a factor curve never comes near.
+
+`RescaleRange` resolves its two intervals into `Rescale`'s coefficients
+once per call and is then exactly `Rescale`. Its endpoints therefore land
+*near* their targets, to float32 precision relative to the output span,
+not on them — a zero `inLo` is the exception. The obvious alternative,
+`outLo + (v-inLo)·scale`, buys no more exactness and costs a third
+rounding on every cell and a second kernel. The operation whose endpoints
+*are* exact is the two-knot `Lookup`, which is the substantive difference
+between the two, more than the clamp.
+
+### Determinism
+
+Go permits fusing a multiply-add into one FMA, and arm64 takes it where
+amd64 does not — and CI runs `macos-latest`. ADR 0001 already requires
+explicit `float32(...)` conversions in scalar references for that reason
+(§15). Two expressions here are exposed: `Rescale`'s `a·v + b`, and
+`Lookup`'s segment value. `RescaleRange`'s offset is a third, in float64,
+once per call. The AVX2 `Affine` is correspondingly `VMULPS` then
+`VADDPS`, never `VFMADD`.
+
+`Reclass` does no arithmetic at all — comparisons and a table index — so
+it is identical across architectures by construction. It is the only
+member of the family that needs none of this machinery.
+
+`vec.TestAffineIsNotFused` and `curve.TestLookupIsNotFused` pin it with
+inputs where the two answers differ, each asserting first that its
+fixture still distinguishes them. A local pre-flight for what CI checks
+on arm64:
+
+```bash
+GOOS=linux GOARCH=arm64 go build -gcflags=-S ./internal/vec ./internal/curve ./transfer | grep -E 'FMADD|FMSUB'
+```
+
+### Where the kernels live
+
+`Rescale`'s kernel is `vec.Affine`: a lane-parallel map, so it belongs in
+`internal/vec` with the dispatch table and the AVX2 backend. `MulScalar`
+then `AddScalar` would have read and written the whole span twice.
+
+`Reclass` and `Lookup` live in a new `internal/curve`, not in `vec`.
+`vec`'s `kernelSet` is a backend-swap table and `vec.Backend()` answers
+for all of it; two permanently scalar fields would make that answer
+false, and `TestBackendSelection` compares the SIMD set field by field
+against a literal, which would then have to name scalar functions. Their
+loop is also a per-cell search rather than a map, so it is optimised and
+measured on its own terms, and its bounds-check record is its own. This
+is `internal/stencil`'s precedent (§17): a family with a different kernel
+shape gets a package.
+
+`internal/curve` has no backend machinery until it has a backend, but its
+kernels are named `scalar*` so that adding one only adds files. The
+operand checks and validity bookkeeping the plain path needs moved from
+`algebra` into `internal/pointwise`, so the two packages that document
+the same operand rules share one implementation of them.
+
+### The scan
+
+The search is a forward scan that stops at the first table entry above
+the cell. `BenchmarkTableSize` in `internal/curve` measures it against a
+binary search and against a branchless count of the whole table, over
+uniformly spread cells, cells clustered in one class, and cells outside
+the table.
+
+On spread cells — what a computed surface produces — the scan wins at
+every size that matters: 105 against 83 Mcells/s at four breaks, 90
+against 62 at eight, 72 against 47 at sixteen (Zen 2, scalar, ±2%). A
+binary search only overtakes past about sixteen breaks, and then only on
+clustered or out-of-range cells whose branches it predicts. The
+branchless count — the form one reaches for expecting mispredictions to
+dominate — is the slowest of the three beyond two breaks: never stopping
+early costs more than the branches it avoids. Real tables are four to
+eight breaks or five to ten knots.
+
+Cells are not assumed sorted. One exploitation that would be safe,
+because the answer is a pure function of the cell, is to try the previous
+cell's segment first: adjacent pixels are strongly correlated, so it
+would usually hit in two compares. It adds a loop-carried dependency and
+data-dependent branching, so it is a measurement, not an assumption, and
+not made yet.
+
+### Performance and the open question
+
+At 4096², from `transfer`'s own benchmarks:
+
+```text
+                scalar    AVX2
+Rescale           1290    2011 Mcells/s
+RescaleRange      1313    2099
+Reclass            107     107
+Lookup              87      88
+```
+
+`Rescale` sits in the band §38 measures `Clamp` in, and is
+bandwidth-bound by 4096² like the rest of the pointwise algebra. The
+table-driven pair are an order of magnitude behind it and identical in
+both builds, which is the whole open question: whether a vector `Reclass`
+or `Lookup` — unrolled compare-and-accumulate over a bounded table,
+blends rather than gathers — is worth its complexity and its
+bit-equivalence tests. That is a decision for a measurement, and these
+numbers are the baseline it has to beat. `benchmarks/transfer` lands with
+it, as `benchmarks/reduce` lands with `Sum` (§49).
+
+### Testing
+
+As §39. The reference matrix runs every operation over every layout, size
+and mask combination against a per-cell reference written from the
+documentation; `TestPathsAgree` compares plain, `Tiled` and `Chunked` bit
+for bit over the tiling grid; `FuzzTransfer` runs each operation on a
+path the input chooses, so the three-form agreement is fuzzed rather than
+only tabulated. `FuzzTransferPanics` requires every rejected table to
+panic with this package's own message, before any cell is written, which
+is what keeps the table checks ahead of the kernels.
+
+Metamorphic relations (`FuzzTransferRelations`, and
+`TestTransferRelations` under rapid): every class is one of the values or
+the cell's own NaN; a monotone curve is bounded by its own knots; all
+three operations commute with the grid symmetries in
+`internal/rastertest`; a curve whose ys are its knot indices meets
+`Reclass` over the same breaks at every knot; and `Rescale` by 1 and −0
+is the bit identity, which pins that the addition is real arithmetic
+rather than an elided no-op.
+
+Two of the sharpest rules in this section came from the fuzzers rather
+than from reasoning — the knot short circuit, and the segment overflow —
+and one test bug did too: an insertion sort in a relation silently
+no-ops around a NaN, so the relation read a nonsense range off its own
+fixture. Rapid shrank that one; the corpus had not found it.
+
+Status: done. `vec.Affine` with its AVX2 kernel, `internal/curve`,
+`internal/pointwise`, and package `transfer` with all four operations in
+all three forms. `benchmarks/transfer` and any vector backend for the
+table kernels are open, in that order.

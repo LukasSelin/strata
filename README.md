@@ -21,9 +21,11 @@ the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
 tiled and bounded-memory execution — is implemented and measured, but the
 API is not stable and nothing is tagged yet. v0.2 is under way: the fold
 side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
-`Stats` follow once their accumulator is benchmarked. See
-[DESIGN.md](DESIGN.md) §42 for the milestone checklist, §49 for
-reductions, and §45 for the roadmap.
+`Stats` follow once their accumulator is benchmarked. The `transfer`
+package has landed alongside them, so a computed surface can now be
+turned into a factor or a class. See [DESIGN.md](DESIGN.md) §42 for the
+milestone checklist, §49 for reductions, §50 for transfer functions, and
+§45 for the roadmap.
 
 ## Installation
 
@@ -64,6 +66,19 @@ err = terrain.SlopeChunked(ctx, out, in,
     terrain.SlopeOptions{CellSize: 30}, engine.Options{TileHeight: 256})
 ```
 
+Or turn a surface into a classification — here a five-class fire-risk
+scale from a slope factor, with the breakpoints and the curve supplied
+by the caller:
+
+```go
+transfer.Lookup(factor, slope,
+    []float32{0, 5, 10, 20, 30, 40},      // degrees
+    []float32{1, 1.1, 1.3, 1.9, 3, 4.5})  // spread factor, flat past the last knot
+
+transfer.Reclass(class, factor,
+    []float32{1.2, 1.6, 2.2, 3}, []float32{1, 2, 3, 4, 5})
+```
+
 Or reduce it to numbers instead of another raster, streaming the same
 way:
 
@@ -81,6 +96,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
 | `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
+| `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
 | `engine`  | Execution options and the `RasterSource` / `RasterSink` interfaces, with memory and raw float32 file implementations. |
 
