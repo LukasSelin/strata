@@ -24,6 +24,7 @@
 //
 // The input is not assumed sorted: cells arrive in whatever order the
 // raster holds them.
+
 package curve
 
 // scalarReclassFloat32 writes values[k] for each cell, where k is the
