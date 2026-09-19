@@ -163,12 +163,15 @@
 // of what one call may cover, which matters for sources that read tiles
 // into buffers (DESIGN.md §24, §27).
 //
-// Those figures are also what bounds the band shape. A 256×256 tile is
-// one 256×256 band, so the 15–21% they cost Slope is what a band of that
-// width costs wherever it appears, and BenchmarkBandWidth measures the
-// same curve for bands inside one full-width tile: at 4096² and 16384²,
-// Slope is slowest at 256-cell rows and fastest at the raster's full
-// width, monotonically, whatever the halo those shapes read (§53).
+// The same curve bounds the band shape, and was measured separately for
+// it: BenchmarkBandWidth sweeps the band width inside one full-width
+// tile, and at 4096² and 16384² Slope is slowest at 256-cell rows and
+// fastest at the raster's full width, monotonically, whatever halo those
+// shapes read (DESIGN.md §53). That run is a different machine and a
+// different build from the tile-shape figures above — see
+// benchmarks/engine/RESULTS-bandshape.md, which says what the two may and
+// may not be compared on — so the agreement between them is corroboration
+// rather than one result.
 //
 // # Cancellation
 //

@@ -28,25 +28,27 @@ var bandCells = 1 << 16
 // minBandWidth is the shortest row a band is given when a tile is split
 // across its width, and so the knob that turns band shaping on: a band is
 // the squarest rectangle of bandCells whose rows are still this long, not
-// the squarest rectangle, because a row kernel pays a fixed 5-30 ns per
-// row in the SIMD build (stencil's BenchmarkRowWidth) and short rows read
-// memory in streams the prefetcher has not seen. 256-cell rows cost Slope
-// 15-21% and Hillshade 21-40% against 4094-cell ones
-// (benchmarks/engine/RESULTS.md), where a 1024-cell row already amortises
-// the call (algebra's BenchmarkAddNarrow).
+// the squarest rectangle, because a row kernel pays a fixed cost per row
+// and short rows read memory in streams the prefetcher has not seen.
+// BenchmarkBandWidth measures rows below 1024 cells costing 4-24%,
+// monotonically, whatever halo the shape reads.
 //
 // It sits above every real tile width, so the rule is inert and bands are
 // whole tile rows, as they were before §53 separated the compute tile
 // from the IO tile. That is a measurement, not a preference. Shaping the
 // band does cut the halo exactly as the arithmetic says — 12.4% to 3.2%
 // at 4096 wide, 50.0% to 3.3% at 16384, where it is a fifth of all the
-// traffic a tiled call moves — and BenchmarkBandWidth then finds that
-// buys nothing: at 4096² it costs 1.4-4.2%, and at 16384² the two shapes
-// run at the same speed with 19% different traffic, which is §51's
-// "logical traffic is not DRAM traffic" holding for the very change §51
-// proposed. 1024 is the value to restore to turn it back on; §53 records
-// what the number would have to look like to earn it, and why the
-// measurement is machine-specific.
+// traffic a tiled call moves — and buys no time for it: at 16384² the two
+// shapes run within the run-to-run spread of each other while moving
+// 10.00 and 8.13 bytes per cell. That is §51's "logical traffic is not
+// DRAM traffic" holding for the very change §51 proposed.
+//
+// 1024 is the value to restore to turn it back on. The measurement is one
+// machine's — an Apple M4 in the scalar build, where the rest of the
+// project's figures are from a Zen 2 with AVX2 and a quarter of the L1d —
+// so it is worth rerunning before the default is treated as settled;
+// benchmarks/engine/RESULTS-bandshape.md says what it can and cannot be
+// compared with, and §53 what result would earn the default.
 var minBandWidth = 1 << 30
 
 // job is one ProcessN call after its checks, or one worker's tile of a

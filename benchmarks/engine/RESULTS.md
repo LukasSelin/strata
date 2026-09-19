@@ -140,7 +140,9 @@ difference on one worker or for Clamp, and 3–10% more for Slope on 12–24
 workers with 2¹⁸-cell bands, within the spread of unpinned runs. Larger
 bands would leave a 1024² raster only 4 bands, too few for its
 compute-bound scaling, so 2¹⁶ stays. A band's *shape* at that area is a
-separate question, measured later in [Band shape](#band-shape-53).
+separate question, and not one this run answers: it was measured later
+and on a different machine, in
+[`RESULTS-bandshape.md`](RESULTS-bandshape.md).
 
 ## Results
 
@@ -288,64 +290,3 @@ on this class of machine from 4096² up with 12 workers. Beyond that,
 throughput needs fewer bytes moved per cell, which is what operation
 fusion (§29) offers.
 
-## Band shape (§53)
-
-A later, separate run, on a different machine from the suite above, and
-the measurement that decided whether the engine should shape a band in two
-dimensions or keep it a whole tile row. `BenchmarkBandWidth` sweeps
-`Options.ComputeWidth` over one full-width tile, so every case reads and
-writes the same cells through the same sources and only the rectangle one
-kernel call covers changes.
-
-| | |
-|---|---|
-| CPU | Apple M4, 10 cores (4P + 6E), 128 KiB L1d per P core |
-| OS | Darwin 25.6.0 |
-| Go | go1.27.0 darwin/arm64, `GOEXPERIMENT=simd` set but **scalar**: the SIMD path is `simd_amd64.go` only (DESIGN.md §17) |
-| Run | `GOEXPERIMENT=simd go test ./benchmarks/engine -run '^$' -bench BandWidth -count 6`, not pinned |
-| Raw output | [`testdata/bandwidth.txt`](testdata/bandwidth.txt) |
-
-Slope, median of 6 (12 for 1024, which the sweep ran twice under two
-names), per cent against whole-row bands:
-
-| Slope, ms | rows | 2048 | 1024 | 512 | 256 |
-|---|---:|---:|---:|---:|---:|
-| 4096², 1 worker | 52.2 | +2% | +2% | +5% | +13% |
-| 4096², 12 workers | 8.3 | +6% | +4% | +10% | +17% |
-| 4096², masked, 1 worker | 51.9 | +3% | +3% | +6% | +15% |
-| 4096², masked, 12 workers | 8.5 | +14% | +23% | +24% | +23% |
-| 16384², 1 worker | 847.8 | −2% | −1% | +4% | +12% |
-| 16384², 12 workers | 140.8 | +2% | +3% | +5% | +10% |
-| 16384², masked, 1 worker | 911.4 | −7% | −6% | +0% | +17% |
-| 16384², masked, 12 workers | 151.0 | −3% | +3% | +12% | +21% |
-
-The traffic those shapes move, which does not depend on size, worker count
-or mask (§51 does not count validity):
-
-| | rows | 2048 | 1024 | 512 | 256 |
-|---|---:|---:|---:|---:|---:|
-| halo, 4096² | 12.4% | 6.3% | 3.2% | 1.9% | 1.5% |
-| halo, 16384² | 50.0% | 6.3% | 3.3% | 1.9% | 1.5% |
-| B/cell, 16384² | 10.00 | 8.25 | 8.13 | 8.08 | 8.06 |
-
-- **The halo is exactly what the arithmetic says.** A whole-row band of a
-  16384-wide tile is 4 rows tall, so half of what its kernel reads is
-  halo, and a fifth of everything the call moves. Shaping the band to
-  1024×64 removes it.
-- **It buys no time.** At 16384² the two shapes run at 847.8 ms and
-  842.6 ms while moving 10.00 and 8.13 bytes per cell — a 19% difference
-  in traffic worth nothing either way. At 4096² every shaped case is
-  slower. Only 16384² masked on one worker gains, and its 12-worker mirror
-  does not.
-- **Below 1024 the row cost dominates**, as the suite above found for
-  256×256 tiles: every case is 10–24% worse, monotonically, whatever halo
-  the shape reads.
-- The masked 12-worker case at 4096² is too noisy to read: the two runs of
-  the same 1024×64 shape landed 30% apart.
-
-So bands stay whole tile rows. The mechanism and `ComputeWidth` /
-`ComputeHeight` are in, and `minBandWidth` is the one constant to restore.
-This is a scalar-backend measurement on a machine with four times the L1d
-of the Zen 2 the rest of this file reports, so it is worth rerunning there
-before treating it as settled; §53 says what result would earn the
-default.

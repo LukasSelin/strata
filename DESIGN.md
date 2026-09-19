@@ -10,6 +10,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
+- [benchmarks/engine/RESULTS-bandshape.md](benchmarks/engine/RESULTS-bandshape.md): band shape (§53). A different machine from every other file here, and it says what that does and does not allow.
 
 ## 1. Project Goal
 
@@ -1749,6 +1750,7 @@ benchmarks/
 ├── cmd/stratabench/    go test -bench output → §42 headline, speedups, §28 class
 ├── algebra/            implemented, RESULTS.md
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
+│                        RESULTS-bandshape.md is a later run on another machine (§53)
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
@@ -3162,6 +3164,10 @@ pipeline does nothing about the chunked 2.00×, which is the source and
 sink copy. It makes that copy carry more work, which is the most that can
 be done for a file.
 
+The full run, with the spread between repeats of the same shape and what
+it may and may not be compared against, is in
+[benchmarks/engine/RESULTS-bandshape.md](benchmarks/engine/RESULTS-bandshape.md).
+
 ### Where it lives
 
 `Kernel` is in `internal/exec` and stays there until its shape settles
@@ -3309,36 +3315,52 @@ Three bounds hold the rule in:
 
 ### Why not square
 
-A square band reads the least halo, and is the wrong shape anyway. §25's
-measurement says why: a row kernel pays a fixed 5–30 ns per row, short
-rows read memory in streams the prefetcher has not seen, and 256×256 tiles
-— which is to say one 256×256 band — cost Slope 15–21% and Hillshade
-21–40% against full-width ones. The halo a band saves is a few per cent of
-one of the four stages a chunked call moves; the row cost is paid on every
-row of every band. So the band is the squarest rectangle of `bandCells`
-whose rows are still at least `minBandWidth` long, not the squarest
-rectangle, and the tile is divided into equal columns rather than into
-`minBandWidth` columns and a narrow remainder.
+A square band reads the least halo, and is the wrong shape anyway. A row
+kernel pays a fixed cost per row and short rows read memory in streams the
+prefetcher has not seen, so the halo a band saves — a few per cent of one
+of the four stages a chunked call moves — is set against a cost paid on
+every row of every band. The sweep below measures that directly: 512- and
+256-cell rows are 4–24% slower than whole rows across every case, falling
+off monotonically as the band narrows and whatever halo the shape reads.
+
+So the band is the squarest rectangle of `bandCells` whose rows are still
+at least `minBandWidth` long, not the squarest rectangle, and the tile is
+divided into equal columns rather than into `minBandWidth` columns and a
+narrow remainder. §25 found the same curve for 256×256 *tiles* — 15–21%
+for Slope, 21–40% for Hillshade — on a different machine in the SIMD
+build. That is corroboration, not evidence: the two runs share no
+machine and their numbers cannot be put in one table.
 
 ### What it was worth
 
 `BenchmarkBandWidth` sweeps the band width over one full-width tile, so
 every case reads and writes exactly the same cells through exactly the
-same sources and only the rectangle one call covers changes. Slope,
-Apple M4, scalar backend, median of 6 runs:
+same sources and only the rectangle one call covers changes.
+
+It ran on an Apple M4 in the scalar build — the SIMD path is `amd64` only
+(§17) — and every other figure in this document is from a 12-core Zen 2
+with AVX2. **The two cannot be put in one table**, and nothing below
+should be read against §27's throughputs or §25's tile-shape costs. What
+carries is that each row compares shapes against each other *within one
+run*, in one binary on one machine, interleaved; and that the traffic
+figures are counted rather than timed, so those are arithmetic over the
+plan and hold anywhere. Slope, median of 6 runs, per cent against
+whole-row bands in the same run:
 
 | Slope, ms | rows | 2048 | 1024 | 512 | 256 |
 |---|---:|---:|---:|---:|---:|
 | 4096², 1 worker | 52.2 | +2% | +2% | +5% | +13% |
 | 4096², 12 workers | 8.3 | +6% | +4% | +10% | +17% |
 | 4096², masked, 1 worker | 51.9 | +3% | +3% | +6% | +15% |
+| 4096², masked, 12 workers | 8.5 | +14% | +23% | +24% | +23% |
 | 16384², 1 worker | 847.8 | −2% | −1% | +4% | +12% |
 | 16384², 12 workers | 140.8 | +2% | +3% | +5% | +10% |
 | 16384², masked, 1 worker | 911.4 | −7% | −6% | +0% | +17% |
 | 16384², masked, 12 workers | 151.0 | −3% | +3% | +12% | +21% |
 
-and the traffic those shapes move, which does not depend on the size, the
-worker count or the mask (§51 does not count validity):
+and the traffic those shapes move, which is counted rather than timed and
+so does not depend on the machine, the size, the worker count or the mask
+(§51 does not count validity):
 
 | | rows | 2048 | 1024 | 512 | 256 |
 |---|---:|---:|---:|---:|---:|
@@ -3350,13 +3372,20 @@ The halo behaves exactly as the arithmetic says, and it is not a rounding
 error: at 16384 wide, a fifth of everything a tiled call moves is halo,
 and shaping the band removes it.
 
+The spread to read those percentages against: the sweep ran the 1024×64
+shape twice under two names, and the two medians land 0.5–1.4% apart at
+4096² and 0.6–4.8% apart at 16384². The 4096² masked 12-worker row is not
+readable at all — those two landed 30% apart — and is in the table
+because leaving it out would be choosing the rows that agree.
+
 It buys nothing. At 4096² every shaped case is slower, by 2–4% for the
-shape the rule would pick. At 16384² the two run at the same speed — 847.8
-against 842.6 — while moving 10.00 and 8.13 bytes per cell, a 19%
-difference in traffic that costs nothing and saves nothing. Only 16384²
-masked on one worker shows a real gain, and its mirror at 12 workers does
-not. Below 1024 the row cost takes over and every case is worse, up to
-21%.
+shape the rule would pick, which is outside that size's spread. At 16384²
+the two run at 847.8 against 842.6, inside it, while moving 10.00 and 8.13
+bytes per cell: a 19% difference in traffic that costs nothing and saves
+nothing. Only 16384² masked on one worker shows a gain worth the name, and
+its mirror at 12 workers does not. Below 1024 the row cost takes over and
+every case is worse, up to 21% — and that one is monotonic across every
+row, which is the clearest signal in the table.
 
 That is §51's own warning — "these are the bytes the engine moves between
 stages, not the bytes that reach memory" — holding for the change §51
@@ -3370,15 +3399,21 @@ bands are whole tile rows as they were, and `ComputeWidth`/`ComputeHeight`
 are there for the caller who wants to measure it again. Turning it back on
 is restoring one constant to 1024.
 
-Two reasons that constant is worth leaving where it can be moved. The
-measurement is from an Apple M4 in the scalar build — the SIMD path is
-`amd64` only (§17) — where the 12-core Zen 2 every other figure in this
-document comes from has a quarter of the L1d and a different prefetcher,
-and the row cost the floor guards against is a SIMD-build number. And a
-19% traffic reduction that is free today is not free on a machine or a
-kernel that is bandwidth-bound rather than latency-bound; §29's fusion and
-§52's pipelines both raise arithmetic intensity per byte moved, which is
-the direction that would make this pay.
+That constant is left somewhere it can be moved because the result is
+one machine's. The timing half of it says what these shapes cost each
+other on an M4 in the scalar build, and says nothing about what they cost
+on the Zen 2 box — which has a quarter of the L1d, a different
+prefetcher, and AVX2 row kernels whose fixed per-row cost is the very
+thing being traded against the halo. All three push on this trade, and
+two of them push towards shaping the band. Rerunning the sweep there is
+the obvious next step and it is cheap: the benchmark is in the tree and
+needs no arguments.
+
+The other reason is that a traffic reduction which is free today is not
+free on a machine or a kernel that is bandwidth-bound rather than
+latency-bound. §29's fusion and §52's pipelines both raise arithmetic
+intensity per byte moved, which is the direction that would make a 19%
+cut in bytes start to matter.
 
 What would earn the default: Slope and Hillshade faster than whole-row
 bands beyond the run-to-run noise at one worker *and* at twelve, at 4096²
@@ -3413,8 +3448,12 @@ hand-derived bytes — 1015808 of halo for whole rows against 242000 for
 `TestChunkedClippedTileBandsWider` covers the wider-clipped-tile corner;
 breaking `bandBounds` makes it fail inside `ErodeBox`.
 
-Status: done, and off. The mechanism, the options and the tests are in;
-the default is whole tile rows because `BenchmarkBandWidth` says shaping
-the band cuts the halo by up to a factor of 15 and does not make the call
-faster. This retires the lever §51 left open: not by pulling it, but by
-measuring it.
+Status: done, and off by one constant. The mechanism, the options and the
+tests are in; the default is whole tile rows because `BenchmarkBandWidth`
+says shaping the band cuts the halo by up to a factor of 15 and does not
+make the call faster. That measurement is an Apple M4 in the scalar build
+and so is not comparable with any other figure in this document
+(benchmarks/engine/RESULTS-bandshape.md); rerunning it on the Zen 2 box
+is what would settle the default, either way. This retires the lever §51
+left open — not by pulling it, but by making it measurable and measuring
+it once.
