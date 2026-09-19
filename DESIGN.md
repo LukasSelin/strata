@@ -2908,3 +2908,288 @@ Status: done. `vec.Affine` with its AVX2 kernel, `internal/curve`,
 `internal/pointwise`, and package `transfer` with all four operations in
 all three forms. `benchmarks/transfer` and any vector backend for the
 table kernels are open, in that order.
+
+## 51. Traffic Accounting
+
+Throughput cannot say why a call is slow. The chunked path runs Slope,
+Hillshade and Clamp at the same 770–845 M cells/s although their compute
+costs differ fivefold (§27, benchmarks/chunked/RESULTS.md), which is the
+signature of a fixed per-cell tax — but reading that off three figures
+that happen to coincide is an inference, and an inference cannot be
+falsified by a change that claims to remove the tax.
+
+`engine.Stats`, passed as `Options.Stats`, counts the Data each stage
+moved: what the sources delivered, what the kernels read and wrote, what
+the sinks took, with `Cells`, `Tiles`, `Bands`, and `Ideal` — the bytes a
+pipeline that touched every byte once would have moved, `Cells × 4 ×
+(inputs + outputs)`. `Amplification` is `Total / Ideal`.
+
+It is an out-parameter rather than a return value because twenty typed
+entry points would otherwise change signature for a diagnostic, and the
+counters are kept whether or not a `Stats` is passed, so a measured call
+runs the same code as an unmeasured one. A call adds to the `Stats` it is
+given, so one can total a pipeline of calls of different arities.
+
+Two deliberate limits. It does not count validity: a mask is one bit
+against a float32's 32, so at most 3% of the traffic, and counting it
+exactly through `ErodeBox` and the word-level range operations would
+thread bookkeeping into every branch of `halo.go` for a term smaller than
+the run-to-run variance of the benchmarks it would inform. And it counts
+what the engine moves between stages, not what reaches memory — a tile
+buffer that stays in L2 is counted when the source fills it and again
+when the kernel reads it. That is the intended reading: how many times
+the engine handles each byte is what its structure decides and what §29
+or a windowed tile would change; how much of that reaches DRAM is a
+hardware profiler's question, and the two are most useful together.
+
+### What the first run said
+
+Every pointwise chunked call is exactly 2.00×, independent of size, tile
+shape and worker count: the source fills a buffer, the kernel reads it,
+the kernel writes a buffer, the sink drains it, where the work needs two
+touches. `Gradient`, with two outputs, lands at 2.01, so the arity
+accounting holds.
+
+The halo runs the other way from the obvious guess:
+
+| Slope, 4096², chunked | B/cell | Amplification | halo |
+|---|---:|---:|---:|
+| whole | 16.5 | 2.06 | 11.1% |
+| full-width strips of 256 | 16.5 | 2.07 | 11.1% |
+| 1024 × 1024 tiles | 16.1 | 2.02 | 3.1% |
+| 256 × 256 tiles | 16.1 | 2.01 | 1.4% |
+
+Small tiles move **less** traffic and run 4–10× slower (§27). The halo is
+therefore not why they are slow; the per-row source and sink calls are,
+exactly as §27 says. What governs the halo is band *aspect ratio*, not
+tile size: `bandCells / tileW` rows, so a 4096-wide tile gets 16-row
+bands and a 256:1 perimeter-to-area ratio, where a 256×256 tile is one
+square band. Full-width strips buy their call-count advantage with about
+10% extra halo traffic, and the trade is overwhelmingly worth it.
+
+`bandCells` is not the lever for that: 1<<16 cells × 4 bytes × 2 operands
+is 512 KiB, one Zen 2 core's L2 exactly (§28), so raising it trades halo
+for cache misses. Decoupling the IO tile from the compute tile is — IO
+wants full-width for few calls, compute wants square for small perimeter,
+and today they are one parameter.
+
+Status: done. `engine.Stats`, `Options.Stats`, counters in all four
+drivers (`ProcessN`, `ProcessChunked`, `Reduce`, `ReduceChunked`), and
+`internal/exec/stats_test.go`. Measured cost against the parent commit
+over Slope and Clamp at `-count 6`: geomean −0.67%, within the machine's
+noise.
+
+## 52. Pipelines
+
+A chain of operations pays the per-tile cost once per operation. Five
+chained `algebra.MulTiled` calls over 4096², the shape of a weighted
+factor product, move 60 bytes per cell where one pass over the same six
+inputs and one output would move 28 — and every individual call is
+already optimal, so `Stats.Amplification` reads 1.00 for all five (§51).
+Chunked it is worse: `Mul` costs 24 B/cell there, so the same chain is
+120 against the same 28.
+
+That waste is between calls, not inside them, and nothing in the engine
+can see it. The fix is not a new execution model. It is to run the whole
+chain on a tile while the tile is loaded, instead of the whole raster per
+operation:
+
+```text
+for op { for tile { read; compute; write } }     ->  now
+for tile { read; for op { compute }; write }     ->  wanted
+```
+
+`chunkJob.tile` already reads, computes and writes in exactly that order.
+It runs one kernel.
+
+### Shape
+
+A `Pipeline` is a `Kernel` whose `Process` runs other kernels. That is the
+whole design: every driver, tiling rule, halo, worker, cancellation path
+and counter keeps working, because nothing above `Kernel` learns that a
+pipeline exists.
+
+```go
+// Stage is one operation of a Pipeline: a kernel and where its inputs
+// come from.
+type Stage struct {
+    Kernel Kernel
+    // In names the kernel's inputs by value id, and must have exactly
+    // the kernel's input count.
+    In []int
+}
+
+// Pipeline runs a chain of kernels over one span, keeping the values
+// between them in scratch rather than in rasters.
+//
+// Values are numbered in one sequence: ids [0, Inputs) are the
+// pipeline's own inputs, and each stage appends its outputs in order.
+// A stage may only name values already defined, so a Pipeline is a DAG
+// by construction with no cycle check to write.
+type Pipeline struct {
+    Inputs  int
+    Stages  []Stage
+    // Outputs names the values the pipeline writes, in the order its
+    // Span expects them.
+    Outputs []int
+}
+
+func (p *Pipeline) Radius() int                  { ... }
+func (p *Pipeline) Arity() (inputs, outputs int) { return p.Inputs, len(p.Outputs) }
+func (p *Pipeline) Process(dst Span, src Window) { ... }
+```
+
+Value numbering rather than a `(stage, output)` pair because it makes the
+ordering constraint structural: an id that is not yet defined cannot be
+named, so "defined before use" is a comparison against the stage's own
+first output id and needs no traversal. It is also what lets one input
+feed several stages, and a stage's output feed both a later stage and
+`Outputs`, with no special case.
+
+### Radius composes by suffix sum
+
+To write a W×H span of the last stage, the stage before it must produce a
+span grown by that stage's radius, and so on back to the sources. With
+stage radii r₁…rₙ, let
+
+```text
+R_k = r_k + r_{k+1} + … + r_n
+```
+
+Stage k then reads a window of (W+2R_k)×(H+2R_k) and writes a span of
+(W+2R_{k+1})×(H+2R_{k+1}), the last stage writes W×H, and
+`Pipeline.Radius()` is R₁.
+
+Radii add along a chain, so a deep chain of stencils grows its halo
+quickly. A pipeline is not a way to make radius free; it is a way to stop
+reloading a tile. §51's halo table is where that trade shows up, and an
+all-pointwise pipeline has R₁ = 0 and no halo at all — which is why it is
+the first case to build.
+
+### Scratch: the one contract extension
+
+`Process` needs somewhere to put the values between stages, and the
+`Kernel` contract forbids mutable state so that concurrent calls on
+disjoint spans stay safe. Allocating inside `Process` would also break
+"bands allocate nothing" (§26).
+
+So the engine allocates it, the way it already carves tile buffers per
+worker:
+
+```go
+// ScratchKernel is a Kernel that needs working memory of its own. The
+// engine allocates it once per worker and passes the same memory to
+// every Process call on that worker, so a kernel that keeps nothing
+// between calls stays safe for concurrent spans.
+type ScratchKernel interface {
+    Kernel
+    // Scratch returns the cells and mask words one Process call needs
+    // for a span of at most w×h.
+    Scratch(w, h int) (cells, words int)
+}
+```
+
+`Span` gains `Scratch []float32` and `ScratchBits []uint64`, empty for a
+kernel that does not ask. A `Pipeline` asks for the sum, over its
+intermediate values v produced by stage k, of (W+2R_{k+1})(H+2R_{k+1})
+cells plus the mask words where validity is carried — exactly computable
+from the radii, with nothing allocated to plan it.
+
+This is the only change to the contract. Everything else about `Kernel`,
+`Span` and `Window` stands.
+
+### Edges compose; edge *values* do not
+
+The engine never calls `Process` for an output cell whose neighbourhood
+leaves the rasters, and fills those cells with the kernel's `Edge()`
+itself. So inside `Process` every window cell exists and no stage meets a
+raster boundary: the pipeline's composite R₁-wide border is the engine's
+business, exactly as a single kernel's r-wide border is.
+
+Validity agrees with running the stages separately: n erosions of width
+r_k leave the same invalid ring as one of width R₁.
+
+Data does not, when a stage declares a non-NaN `Edge()`. Run separately,
+the outer rₙ ring gets the last stage's edge value and the ring inside it
+gets whatever arithmetic on the previous stage's edge cells produced;
+fused, the whole R₁ ring gets the pipeline's edge value. For NaN they
+agree, because NaN propagates, and every kernel in the tree declares NaN
+today (`terrain/stencil.go`). So:
+
+> A non-final stage that implements `EdgeKernel` with a non-NaN edge
+> panics. Lifting that means deciding which of the two readings is
+> correct, and no caller is asking.
+
+### Validity, for an all-pointwise pipeline, is one pass
+
+Per stage, validity is what it already is: the AND of masked inputs for
+radius 0, an erosion for radius r. But AND is associative and idempotent,
+so when every stage is pointwise, each value's validity is the AND of the
+masked *pipeline inputs it transitively depends on* — and an output
+depending on all of them is the AND of all of them. The pipeline computes
+output validity once, from the inputs, rather than once per stage: n
+pointwise stages do one mask pass, not n.
+
+`halo.go` already has the word loops for it (`andBits`, `copyBits`) as
+free functions over views. The radius > 0 path wants `erodedValidity`
+extracted from `job` the same way, and that refactor is the bulk of the
+work beyond the pointwise case.
+
+### What it is worth, as the counter will read it
+
+Five chained Muls over 4096², as one `Pipeline` of 6 inputs and 1 output:
+
+| | today | as a Pipeline |
+|---|---:|---:|
+| Tiled, B/cell | 60 | **28** |
+| Tiled, Amplification | 1.00, ×5 calls | **1.00, ×1 call** |
+| Chunked, B/cell | 120 | **56** |
+| Chunked, Amplification | 2.00, ×5 calls | **2.00, ×1 call** |
+
+Amplification does not move, and should not: each call was always
+optimal. `Total` per cell is the figure that halves, which is what §51
+was built to expose.
+
+Two honest limits. The scratch traffic between stages is not counted —
+the counter sees a pipeline as one kernel with its declared arity — so 28
+B/cell is the DRAM figure only while the intermediates stay in cache.
+That understatement is the argument for §29 on top: register-level fusion
+removes the intermediates rather than relegating them to L2. And a
+pipeline does nothing about the chunked 2.00×, which is the source and
+sink copy. It makes that copy carry more work, which is the most that can
+be done for a file.
+
+### Where it lives
+
+`Kernel` is in `internal/exec` and stays there until its shape settles
+(package `engine` documentation). A `Pipeline` there can compose strata's
+own kernels — a `terrain` stencil feeding `algebra` arithmetic — behind a
+typed public entry point, which is how every other operation is exposed,
+and needs no decision about publishing the contract.
+
+It cannot be built by a caller. A caller who wants a weighted factor
+product gets a typed entry point for that shape instead, which needs no
+public `Kernel` and is the smaller commitment. Publishing `Kernel`, `Span`
+and `Window` is a separate decision with its own consequences; `Pipeline`
+is evidence for it rather than a reason to take it now.
+
+### Testing
+
+The §23 matrix, as everywhere else: every tile size and worker count
+against the same pipeline run as separate calls over whole rasters, bit
+for bit, Data and validity. That reference is the point — a pipeline that
+does not equal its unfused form is a bug, and the unfused form has a
+reference of its own already.
+
+Add to it: a pipeline of one stage must equal that stage, which catches
+wiring; a pipeline whose stages are permuted into another valid order
+must give the same result; and `Scratch` must be exactly enough, checked
+by allocating exactly what it asks for and letting the race detector and
+a poisoned tail find an overrun. §49's position-mixing trick applies here
+too — a stage that reads the wrong value, or reads one twice, fails a
+hash it cannot accidentally satisfy.
+
+Status: specified, not built. First cut is all-radius-0 stages, one
+output, `internal/exec` only, with the §51 counter as the acceptance
+test: the 4096² five-Mul chain must report 28 B/cell tiled and 56
+chunked, or the mechanism does not work.

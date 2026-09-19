@@ -8,7 +8,8 @@ const bytesPerCell = 4
 
 // Stats records how many bytes a call moved, stage by stage, and what the
 // same work would have cost a pipeline that touched every byte once
-// (DESIGN.md §27, §28). Pass a pointer to one in Options to have a call
+// (DESIGN.md §51, and §27–§28 for the limits it exists inside). Pass a
+// pointer to one in Options to have a call
 // report into it.
 //
 // It exists because throughput alone cannot say why a call is slow. The
