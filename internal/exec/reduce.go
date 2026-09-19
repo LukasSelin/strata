@@ -112,6 +112,7 @@ func Reduce[P any](ctx context.Context, src []raster.Float32Raster, r Reducer[P]
 		foldBand(e, &e.workers[w], r, &slots[w].p, i)
 		return nil
 	})
+	e.report()
 	if err != nil {
 		return zero, err
 	}
@@ -178,6 +179,9 @@ type reduceJob struct {
 	// workers holds each worker's views; workers[0] runs on the calling
 	// goroutine.
 	workers []reduceWorker
+	// out is the caller's Options.Stats, or nil. A chunked reduction's
+	// per-tile job leaves it nil and is totalled by its reduceChunkJob.
+	out *engine.Stats
 }
 
 // reduceWorker is the state one goroutine uses for its bands. Nothing in
@@ -188,10 +192,14 @@ type reduceWorker struct {
 	// views are the Cells views handed to the reducer, overwritten for
 	// every band.
 	views []raster.Float32Raster
+	// stats counts the bytes this worker's bands read. Padded like
+	// reduceSlot, and for the same reason.
+	stats engine.Stats
+	_     [64]byte
 }
 
 func newReduceJob(src []raster.Float32Raster, ox, oy int, opts engine.Options) *reduceJob {
-	e := &reduceJob{src: src, ox: ox, oy: oy}
+	e := &reduceJob{src: src, ox: ox, oy: oy, out: opts.Stats}
 	for j, s := range src {
 		if s.Valid != nil {
 			e.masked = append(e.masked, j)
@@ -214,10 +222,29 @@ func (e *reduceJob) allocReduceWorkers(n int) {
 	}
 }
 
+// report totals the workers' counters into the caller's Stats. A
+// reduction has no outputs, so Ideal is the inputs alone and
+// KernelWritten stays 0: an Amplification of 1.0 is a fold that read
+// every cell once and wrote nothing, which is what Reduce over rasters in
+// memory should be.
+func (e *reduceJob) report() {
+	if e.out == nil {
+		return
+	}
+	for i := range e.workers {
+		s := e.workers[i].stats
+		s.Ideal = s.Cells * bytesPerCell * int64(len(e.src))
+		e.out.Add(s)
+	}
+}
+
 // foldBand folds band i of the plan into p on worker wk.
 func foldBand[P any](e *reduceJob, wk *reduceWorker, r Reducer[P], p *P, i int) {
 	x0, y0, x1, y1 := e.plan.band(i)
 	w, h := x1-x0, y1-y0
+	wk.stats.Cells += int64(w) * int64(h)
+	wk.stats.Bands++
+	wk.stats.KernelRead += int64(w) * int64(h) * bytesPerCell * int64(len(e.src))
 	for j, s := range e.src {
 		wk.views[j] = s.Window(x0, y0, w, h)
 	}

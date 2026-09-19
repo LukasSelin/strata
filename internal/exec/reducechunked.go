@@ -40,6 +40,7 @@ func ReduceChunked[P any](ctx context.Context, src []engine.RasterSource, r Redu
 	err := runWorkers(ctx, len(c.workers), c.tiles, func(w, i int) error {
 		return foldTile(ioCtx, c, &c.workers[w], r, &slots[w].p, i)
 	})
+	c.report(opts.Stats)
 	if err != nil {
 		return zero, err
 	}
@@ -89,8 +90,13 @@ type reduceChunkWorker struct {
 	// and a reducer keeps its whole-rectangle path.
 	in []raster.Float32Raster
 	// t folds one tile at a time, with views of in as its operands and one
-	// worker.
+	// worker. Its own worker holds this worker's fold counters; stats
+	// here holds what crossed the source interface.
 	t reduceJob
+	// stats counts the bytes this worker's tiles read from sources.
+	// Padded like reduceSlot.
+	stats engine.Stats
+	_     [64]byte
 }
 
 func newReduceChunkJob(src []engine.RasterSource, opts engine.Options) *reduceChunkJob {
@@ -166,12 +172,31 @@ func reduceBuffer(w, h int, masked bool) (stride, cells, words int) {
 	return stride, cells, words
 }
 
+// report totals the workers' counters into out, if it is not nil. It
+// takes the Stats rather than holding one because ReduceChunked is
+// generic and builds its job before its slots; there is no other reason.
+func (c *reduceChunkJob) report(out *engine.Stats) {
+	if out == nil {
+		return
+	}
+	for i := range c.workers {
+		s := c.workers[i].stats
+		s.Add(c.workers[i].t.workers[0].stats)
+		s.Ideal = s.Cells * bytesPerCell * int64(len(c.src))
+		out.Add(s)
+	}
+}
+
 // foldTile reads tile i on worker wk and folds its bands into p.
 func foldTile[P any](ctx context.Context, c *reduceChunkJob, wk *reduceChunkWorker, r Reducer[P], p *P, i int) error {
 	x0, y0 := (i%c.tilesX)*c.tileW, (i/c.tilesX)*c.tileH
 	x1, y1 := min(x0+c.tileW, c.w), min(y0+c.tileH, c.h)
 
 	t := &wk.t
+	wk.stats.Tiles++
+	// A reduction has radius 0, so a tile is read exactly once: no halo
+	// here, unlike ProcessChunked.
+	wk.stats.SourceRead += int64(x1-x0) * int64(y1-y0) * bytesPerCell * int64(len(c.src))
 	for j, s := range c.src {
 		v := bufferView(wk.in[j], x1-x0, y1-y0)
 		if err := s.ReadWindow(ctx, v, x0, y0); err != nil {

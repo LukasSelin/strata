@@ -11,6 +11,11 @@ import (
 	"github.com/LukasSelin/strata/raster"
 )
 
+// bytesPerCell is the size of one float32 cell. engine.Stats counts the
+// same unit; the two constants are separate only because engine cannot
+// import this package.
+const bytesPerCell = 4
+
 // bandCells is the target number of cells in a band, the unit of work
 // between cancellation checks and of scheduling across workers: bands are
 // whole rows of a tile, at least one. 1<<16 cells keeps a check within a
@@ -52,13 +57,18 @@ type job struct {
 	// workers holds each worker's views and scratch; workers[0] runs on
 	// the calling goroutine.
 	workers []worker
+	// out is the caller's Options.Stats, or nil. A chunked call's
+	// per-tile job leaves it nil and is totalled by its chunkJob instead,
+	// so the caller's Stats is written once per call rather than once per
+	// tile.
+	out *engine.Stats
 	// maskMu serialises all validity work (reads and writes) when there
 	// is more than one worker. See maskLock.
 	maskMu sync.Mutex
 }
 
 func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options) *job {
-	e := &job{dst: dst, src: src}
+	e := &job{dst: dst, src: src, out: opts.Stats}
 	var masked []int
 	for j, s := range src {
 		if s.Valid != nil {

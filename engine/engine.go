@@ -15,4 +15,11 @@ type Options struct {
 	// goroutine included. 0 means runtime.GOMAXPROCS(0); 1 starts no
 	// goroutines. A call never uses more workers than it has bands.
 	Workers int
+	// Stats, when not nil, receives how many bytes the call moved at each
+	// stage of its pipeline. It is an out-parameter, not a setting: it
+	// changes neither the result nor the work, and the counters are kept
+	// whether or not one is given, so a call measures the same code a call
+	// without it runs. A call adds to it after every worker has stopped;
+	// see Stats.
+	Stats *Stats
 }

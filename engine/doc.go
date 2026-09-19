@@ -134,6 +134,28 @@
 // 20000-wide file take a read and a write call per row and ran 3–4×
 // slower (benchmarks/chunked/RESULTS.md).
 //
+// # Traffic
+//
+// Options.Stats, when not nil, receives how many bytes a call moved at
+// each stage: what its sources delivered, what its kernels read and
+// wrote, and what its sinks took. Stats.Amplification divides that by
+// what the work strictly needed — each input cell read once, each output
+// cell written once — so a pointwise Tiled call is 1.0 and the same
+// operation Chunked is 2.0, because every cell goes through a buffer on
+// the way in and another on the way out.
+//
+//	var s engine.Stats
+//	err := terrain.SlopeChunked(ctx, out, in, terrain.SlopeOptions{CellSize: 30},
+//		engine.Options{TileHeight: 256, Stats: &s})
+//	fmt.Println(s.Amplification(), s.Halo(1))
+//
+// It is an out-parameter rather than a setting: the counters are kept
+// whether or not one is passed, so a measured call runs the same code as
+// an unmeasured one. They count the bytes the engine moves between
+// stages, not the bytes that reach memory — a tile buffer that stays in
+// cache is counted twice although DRAM saw it once — which is what makes
+// them a property of the structure rather than of the machine. See Stats.
+//
 // # Cancellation and errors in chunked calls
 //
 // Workers check ctx before each tile, stop taking tiles once ctx is done

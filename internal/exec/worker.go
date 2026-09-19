@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/internal/stencil"
 	"github.com/LukasSelin/strata/raster"
 )
@@ -18,14 +19,39 @@ type worker struct {
 	// regions and scratch are ErodeBox's arguments for radius > 0.
 	regions []stencil.MaskRegion
 	scratch []uint64
+	// stats counts the bytes this worker's bands moved. It is per worker
+	// and summed once the workers have stopped, so the hot path takes no
+	// atomic and no lock. It is written once per band and padded for the
+	// same reason reduceSlot is: workers lie next to each other in one
+	// slice, and a counter they share a cache line for would show up as
+	// scaling that flattens for no visible reason — in a measurement of
+	// exactly that, which is worse than not measuring.
+	stats engine.Stats
+	_     [64]byte
 }
 
 // run processes every band of the plan on the job's workers.
 func (e *job) run(ctx context.Context) error {
-	return runWorkers(ctx, len(e.workers), e.plan.bands, func(w, i int) error {
+	err := runWorkers(ctx, len(e.workers), e.plan.bands, func(w, i int) error {
 		e.band(&e.workers[w], i)
 		return nil
 	})
+	e.report()
+	return err
+}
+
+// report totals the workers' counters into the caller's Stats. It runs
+// after runWorkers, so every worker has stopped and nothing else is
+// writing them; a cancelled or failed call reports the bands that ran.
+func (e *job) report() {
+	if e.out == nil {
+		return
+	}
+	for i := range e.workers {
+		s := e.workers[i].stats
+		s.Ideal = s.Cells * bytesPerCell * int64(len(e.src)+len(e.dst))
+		e.out.Add(s)
+	}
 }
 
 // runWorkers runs do(w, i) for every unit of work i in [0, n) on workers
