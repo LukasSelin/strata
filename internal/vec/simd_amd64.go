@@ -33,6 +33,7 @@ func init() {
 		div:       divFloat32AVX2,
 		addScalar: addScalarFloat32AVX2,
 		mulScalar: mulScalarFloat32AVX2,
+		affine:    affineFloat32AVX2,
 		min:       minFloat32AVX2,
 		max:       maxFloat32AVX2,
 		clamp:     clampFloat32AVX2,
@@ -148,6 +149,21 @@ func mulScalarFloat32AVX2(dst, src []float32, value float32) {
 	}
 	archsimd.ClearAVXUpperBits()
 	scalarMulScalarFloat32(dst, src, value)
+}
+
+// affineFloat32AVX2 multiplies and adds in two separate instructions,
+// VMULPS then VADDPS, never a fused VFMADD: scalarAffineFloat32 rounds
+// the product before adding, and a fused lane would not match it.
+func affineFloat32AVX2(dst, src []float32, a, b float32) {
+	va := archsimd.BroadcastFloat32x8(a)
+	vb := archsimd.BroadcastFloat32x8(b)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Mul(va).Add(vb), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	scalarAffineFloat32(dst, src, a, b)
 }
 
 func clampFloat32AVX2(dst, src []float32, lo, hi float32) {

@@ -1,9 +1,7 @@
 package algebra
 
 import (
-	"unsafe"
-
-	"github.com/LukasSelin/strata/internal/overlap"
+	"github.com/LukasSelin/strata/internal/pointwise"
 	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 )
@@ -26,9 +24,9 @@ func Max(dst, a, b raster.Float32Raster) { binary("algebra.Max", dst, a, b, vec.
 // Clamp computes dst = min(max(src, lo), hi) cell by cell.
 func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
 	const op = "algebra.Clamp"
-	check(op, "dst", dst, dst)
-	check(op, "src", dst, src)
-	checkMasks(op, dst, src)
+	pointwise.Check(op, "dst", dst, dst)
+	pointwise.Check(op, "src", dst, src)
+	pointwise.CheckMasks(op, dst, src)
 	clamp(dst, src, lo, hi, compact(dst) && compact(src))
 }
 
@@ -37,41 +35,22 @@ func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
 // input means all valid.
 func Mask(dst, src, mask raster.Float32Raster) {
 	const op = "algebra.Mask"
-	check(op, "dst", dst, dst)
-	check(op, "src", dst, src)
-	check(op, "mask", dst, mask)
-	checkMasks(op, dst, src, mask)
+	pointwise.Check(op, "dst", dst, dst)
+	pointwise.Check(op, "src", dst, src)
+	pointwise.Check(op, "mask", dst, mask)
+	pointwise.CheckMasks(op, dst, src, mask)
 	// Values and validity choose the whole-raster path independently:
 	// the copy never touches mask, and mask's stride only constrains the
 	// bits. Like the other operations, values are written first.
-	copyValues(dst, src, compact(dst) && compact(src))
-	binaryValidity(dst, src, mask, compact(dst) && compact(src) && compact(mask))
-}
-
-// copyValues copies src's cells into dst, the values of Mask. It needs no
-// internal/vec kernel: copy is a memmove, which already moves cells at
-// memory speed, and there is nothing to compute. whole selects one call
-// over all cells, which requires both operands to be compact (see
-// binaryApply); dst's cells being src's own, as in place, copies nothing.
-func copyValues(dst, src raster.Float32Raster, whole bool) {
-	if overlap.Data(dst, src) == overlap.Same {
-		return
-	}
-	if whole {
-		n := dst.Width * dst.Height
-		copy(dst.Data[:n], src.Data[:n])
-		return
-	}
-	for y := range dst.Height {
-		copy(dst.Row(y), src.Row(y))
-	}
+	pointwise.CopyValues(dst, src, compact(dst) && compact(src))
+	pointwise.BinaryValidity(dst, src, mask, compact(dst) && compact(src) && compact(mask))
 }
 
 // clamp is Clamp after the checks. whole selects one kernel call over all
 // cells, which requires every operand to be compact (see binaryApply).
 func clamp(dst, src raster.Float32Raster, lo, hi float32, whole bool) {
 	clampValues(dst, src, lo, hi, whole)
-	unaryValidity(dst, src, whole)
+	pointwise.UnaryValidity(dst, src, whole)
 }
 
 // clampValues is the arithmetic of clamp, without validity.
@@ -86,15 +65,19 @@ func clampValues(dst, src raster.Float32Raster, lo, hi float32, whole bool) {
 	}
 }
 
+// compact is internal/pointwise's, named locally because the operations
+// ask it about every operand.
+func compact(r raster.Float32Raster) bool { return pointwise.Compact(r) }
+
 // binaryKernel is an internal/vec kernel over equal-length flat slices.
 // It is called once per raster or once per row, never per cell.
 type binaryKernel func(dst, a, b []float32)
 
 func binary(op string, dst, a, b raster.Float32Raster, kernel binaryKernel) {
-	check(op, "dst", dst, dst)
-	check(op, "a", dst, a)
-	check(op, "b", dst, b)
-	checkMasks(op, dst, a, b)
+	pointwise.Check(op, "dst", dst, dst)
+	pointwise.Check(op, "a", dst, a)
+	pointwise.Check(op, "b", dst, b)
+	pointwise.CheckMasks(op, dst, a, b)
 	binaryApply(dst, a, b, kernel, compact(dst) && compact(a) && compact(b))
 }
 
@@ -105,7 +88,7 @@ func binary(op string, dst, a, b raster.Float32Raster, kernel binaryKernel) {
 // is its parent's cells.
 func binaryApply(dst, a, b raster.Float32Raster, kernel binaryKernel, whole bool) {
 	binaryValues(dst, a, b, kernel, whole)
-	binaryValidity(dst, a, b, whole)
+	pointwise.BinaryValidity(dst, a, b, whole)
 }
 
 // binaryValues is the arithmetic of binaryApply, without validity.
@@ -118,101 +101,4 @@ func binaryValues(dst, a, b raster.Float32Raster, kernel binaryKernel, whole boo
 	for y := range dst.Height {
 		kernel(dst.Row(y), a.Row(y), b.Row(y))
 	}
-}
-
-func compact(r raster.Float32Raster) bool { return r.Stride == r.Width }
-
-// check panics unless r is a consistent raster with dst's dimensions whose
-// cells either are dst's cells or do not overlap them.
-func check(op, name string, dst, r raster.Float32Raster) {
-	if err := r.Validate(); err != nil {
-		panic(op + ": " + name + ": " + err.Error())
-	}
-	if r.Width != dst.Width || r.Height != dst.Height {
-		panic(op + ": " + name + " dimensions differ from dst")
-	}
-	if name == "dst" {
-		return
-	}
-	if overlap.Data(dst, r) == overlap.Partial {
-		panic(op + ": dst overlaps " + name + " at a different offset or stride")
-	}
-}
-
-// checkMasks panics if an input has a validity mask and dst has none,
-// before anything is written.
-func checkMasks(op string, dst raster.Float32Raster, inputs ...raster.Float32Raster) {
-	if dst.Valid != nil {
-		return
-	}
-	for _, in := range inputs {
-		if in.Valid != nil {
-			panic(op + ": an input has a validity mask but dst.Valid is nil; allocate dst " +
-				"with raster.NewFloat32Like, or set Valid on its root raster before windowing")
-		}
-	}
-}
-
-// binaryValidity sets dst's validity to the AND of a's and b's. dst has a
-// mask if an input does.
-func binaryValidity(dst, a, b raster.Float32Raster, whole bool) {
-	switch {
-	case a.Valid == nil:
-		unaryValidity(dst, b, whole)
-		return
-	case b.Valid == nil:
-		unaryValidity(dst, a, whole)
-		return
-	}
-	if whole {
-		raster.MaskAndRange(dst.Valid, dst.ValidOffset, a.Valid, a.ValidOffset,
-			b.Valid, b.ValidOffset, dst.Width*dst.Height)
-		return
-	}
-	for y := range dst.Height {
-		raster.MaskAndRange(dst.Valid, dst.ValidOffset+y*dst.Stride,
-			a.Valid, a.ValidOffset+y*a.Stride, b.Valid, b.ValidOffset+y*b.Stride, dst.Width)
-	}
-}
-
-// unaryValidity sets dst's validity to src's. dst has a mask if src does.
-func unaryValidity(dst, src raster.Float32Raster, whole bool) {
-	if src.Valid == nil {
-		fillValid(dst, whole)
-		return
-	}
-	if sameBits(dst, src) {
-		return // in place: dst's bits already are src's
-	}
-	if whole {
-		raster.MaskCopyRange(dst.Valid, dst.ValidOffset, src.Valid, src.ValidOffset,
-			dst.Width*dst.Height)
-		return
-	}
-	for y := range dst.Height {
-		raster.MaskCopyRange(dst.Valid, dst.ValidOffset+y*dst.Stride,
-			src.Valid, src.ValidOffset+y*src.Stride, dst.Width)
-	}
-}
-
-// fillValid marks every cell of dst valid. Without a mask there is nothing
-// to do: that is the all-valid fast path.
-func fillValid(dst raster.Float32Raster, whole bool) {
-	if dst.Valid == nil {
-		return
-	}
-	if whole {
-		raster.MaskFillRange(dst.Valid, dst.ValidOffset, dst.Width*dst.Height, true)
-		return
-	}
-	for y := range dst.Height {
-		raster.MaskFillRange(dst.Valid, dst.ValidOffset+y*dst.Stride, dst.Width, true)
-	}
-}
-
-// sameBits reports whether dst and src are backed by the same bits of the
-// same mask, as when dst is src.
-func sameBits(dst, src raster.Float32Raster) bool {
-	return unsafe.SliceData(dst.Valid) == unsafe.SliceData(src.Valid) &&
-		dst.ValidOffset == src.ValidOffset && (dst.Stride == src.Stride || dst.Height == 1)
 }

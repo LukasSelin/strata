@@ -10,6 +10,7 @@ var (
 	divFloat32       = scalarDivFloat32
 	addScalarFloat32 = scalarAddScalarFloat32
 	mulScalarFloat32 = scalarMulScalarFloat32
+	affineFloat32    = scalarAffineFloat32
 	minFloat32       = scalarMinFloat32
 	maxFloat32       = scalarMaxFloat32
 	clampFloat32     = scalarClampFloat32
@@ -24,6 +25,7 @@ type kernelSet struct {
 	add, sub, mul, div   func(dst, a, b []float32)
 	addScalar            func(dst, src []float32, value float32)
 	mulScalar            func(dst, src []float32, value float32)
+	affine               func(dst, src []float32, a, b float32)
 	min, max             func(dst, a, b []float32)
 	clamp                func(dst, src []float32, lo, hi float32)
 	abs, sqrt            func(dst, src []float32)
@@ -37,6 +39,7 @@ var scalarKernels = kernelSet{
 	div:       scalarDivFloat32,
 	addScalar: scalarAddScalarFloat32,
 	mulScalar: scalarMulScalarFloat32,
+	affine:    scalarAffineFloat32,
 	min:       scalarMinFloat32,
 	max:       scalarMaxFloat32,
 	clamp:     scalarClampFloat32,
@@ -52,6 +55,7 @@ var simdKernels *kernelSet
 func (k *kernelSet) install() {
 	addFloat32, subFloat32, mulFloat32, divFloat32 = k.add, k.sub, k.mul, k.div
 	addScalarFloat32, mulScalarFloat32 = k.addScalar, k.mulScalar
+	affineFloat32 = k.affine
 	minFloat32, maxFloat32, clampFloat32 = k.min, k.max, k.clamp
 	absFloat32, sqrtFloat32 = k.abs, k.sqrt
 	reduceMinFloat32, reduceMaxFloat32 = k.reduceMin, k.reduceMax
@@ -125,6 +129,15 @@ func AddScalar(dst, src []float32, value float32) {
 func MulScalar(dst, src []float32, value float32) {
 	requireEqualLen2(dst, src)
 	mulScalarFloat32(dst, src, value)
+}
+
+// Affine computes dst[i] = a*src[i] + b, with the multiply and the add
+// rounded separately: it is never a fused multiply-add, so the scalar and
+// vector backends agree bit for bit on every architecture. See
+// scalarAffineFloat32.
+func Affine(dst, src []float32, a, b float32) {
+	requireEqualLen2(dst, src)
+	affineFloat32(dst, src, a, b)
 }
 
 // Min computes dst[i] = min(a[i], b[i]).

@@ -5,6 +5,7 @@ import (
 
 	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/pointwise"
 	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 )
@@ -125,7 +126,7 @@ func (maskOp) Arity() (inputs, outputs int) { return 2, 1 }
 
 func (maskOp) Process(dst exec.Span, src exec.Window) {
 	d, s := dst.Dst[0], src.Src[0]
-	copyValues(d, s, compact(d) && compact(s))
+	pointwise.CopyValues(d, s, compact(d) && compact(s))
 }
 
 type binaryOp struct{ kernel binaryKernel }
