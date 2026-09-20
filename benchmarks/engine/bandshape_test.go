@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/LukasSelin/strata/engine"
-	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/terrain"
 )
 
@@ -53,7 +52,6 @@ func BenchmarkBandWidth(b *testing.B) {
 					})
 				}
 			}
-			_ = raster.Float32Raster(dst)
 		}
 	}
 }
