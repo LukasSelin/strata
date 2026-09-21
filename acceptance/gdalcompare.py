@@ -27,7 +27,10 @@ are reconciled, and the reconciliations are the interesting part:
     dividing by the cell size; strata divides. They agree only for
     square cells, which this raster has (12.5 m both ways).
 
-Usage:  python gdalcompare.py [dir] [width] [height]
+Usage:  python gdalcompare.py [dir] [width] [height] [nodata] [cell]
+
+nodata and cell are the DEM's own NoData value and cell size;
+gdalcheck.sh reads both from the ENVI header GDAL wrote.
 """
 
 import os
@@ -39,10 +42,12 @@ import numpy as np
 D = sys.argv[1] if len(sys.argv) > 1 else "out-gdal"
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 4096
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 4096
+# The DEM is float32, so compare against the fill as float32 holds it.
+DEM_NODATA = float(np.float32(sys.argv[4])) if len(sys.argv) > 4 else 65535.0
+CELL = float(sys.argv[5]) if len(sys.argv) > 5 else 12.5
 
 GDAL_NODATA = -9999.0
 STRATA_FILL = -9999.0
-DEM_NODATA = 65535.0
 
 results = []
 
@@ -62,7 +67,10 @@ def u8(name):
 
 dem = f32("dem.raw")
 src_valid = dem != DEM_NODATA
-print(f"{W}x{H} cells, {100 * src_valid.mean():.1f}% of the DEM is valid\n")
+print(
+    f"{W}x{H} cells, NoData {DEM_NODATA:g}, cell {CELL:g}: "
+    f"{100 * src_valid.mean():.1f}% of the DEM is valid\n"
+)
 
 # Where both tools say a result exists.
 gslope = f32("gdal-slope.raw")
@@ -81,6 +89,10 @@ record(
     f"{disagree} cells differ; {int(g_has.sum())} carry data",
 )
 both = g_has & s_has
+if not both.any():
+    # Agreeing that there is no data anywhere says nothing about the kernels.
+    record("some cells to compare", False, "neither tool produced data in this window")
+    sys.exit(1)
 
 # --------------------------------------------------------------------
 # 2. Slope.
@@ -108,6 +120,9 @@ record(
 )
 
 sloped = both & ~g_flat & ~s_flat
+if not sloped.any():
+    record("some sloped cells to compare", False, "the window is entirely flat")
+    sys.exit(1)
 diff = np.abs(gasp[sloped] - sasp[sloped]) % 360.0
 diff = np.minimum(diff, 360.0 - diff)
 record(
@@ -145,7 +160,6 @@ record(
 # --------------------------------------------------------------------
 
 zz = np.where(dem == DEM_NODATA, np.nan, dem)
-CELL = 12.5
 a_, b_, c_ = zz[:-2, :-2], zz[:-2, 1:-1], zz[:-2, 2:]
 d_, f_ = zz[1:-1, :-2], zz[1:-1, 2:]
 g_, h_, i_ = zz[2:, :-2], zz[2:, 1:-1], zz[2:, 2:]
