@@ -47,16 +47,13 @@ gdalinfo --version
 gdalinfo dem.tif | grep -E 'Pixel Size|NoData'
 "
 
-# The DEM's own NoData and cell size, as GDAL reports them.
-FILL=$(grep -oP 'NoData Value=\K[-0-9.e+]+' "$OUT/dem.hdr" 2>/dev/null || echo 65535)
-CELL=$(python - "$OUT" <<'PY'
-import re, sys, os
-# ENVI map info: {projection, x, y, easting, northing, xsize, ysize, ...}
-hdr = open(os.path.join(sys.argv[1], "dem.hdr")).read()
-m = re.search(r"map info\s*=\s*\{([^}]*)\}", hdr)
-print(m.group(1).split(",")[5].strip() if m else "12.5")
-PY
-)
+# The DEM's own NoData and cell size, read from the ENVI header GDAL wrote.
+# ENVI spells NoData "data ignore value = ..."; map info is
+# {projection, x, y, easting, northing, xsize, ysize, ...}. No fallbacks:
+# guessing either value would make the comparison meaningless.
+FILL=$(sed -n 's/.*data ignore value[[:space:]]*=[[:space:]]*\([-0-9.eE+]*\).*/\1/p' "$OUT/dem.hdr" | head -1)
+CELL=$(sed -n 's/.*map info[[:space:]]*=[[:space:]]*{[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,\([^,]*\),.*/\1/p' "$OUT/dem.hdr" | tr -d ' ')
+: "${FILL:?no NoData (data ignore value) in $OUT/dem.hdr}" "${CELL:?no cell size (map info) in $OUT/dem.hdr}"
 
 echo
 echo "== strata (cell size $CELL, NoData $FILL, tile height $TILE) =="
@@ -64,4 +61,4 @@ echo "== strata (cell size $CELL, NoData $FILL, tile height $TILE) =="
 
 echo
 echo "== difference =="
-(cd "$HERE" && STRATA_TILE="$TILE" python gdalcompare.py out-gdal "$SIZE" "$SIZE")
+(cd "$HERE" && STRATA_TILE="$TILE" python gdalcompare.py out-gdal "$SIZE" "$SIZE" "$FILL" "$CELL")
