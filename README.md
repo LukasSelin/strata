@@ -23,9 +23,17 @@ API is not stable and nothing is tagged yet. v0.2 is under way: the fold
 side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
 `Stats` follow once their accumulator is benchmarked. The `transfer`
 package has landed alongside them, so a computed surface can now be
-turned into a factor or a class. See [DESIGN.md](DESIGN.md) §42 for the
-milestone checklist, §49 for reductions, §50 for transfer functions, and
-§45 for the roadmap.
+turned into a factor or a class. The engine also counts the bytes each
+call moves (`engine.Stats`), and it can run a chain of pointwise kernels
+as a single pass over each tile. That chain (the `Pipeline`) is internal
+for now. Two things judge the library from outside: an acceptance
+harness checks it against numpy and `gdaldem`, and a benchmark times it
+against `gdaldem`.
+
+The status table at the top of [DESIGN.md](DESIGN.md) summarizes where
+everything stands. In DESIGN.md, §42 has the milestone checklist, §49
+covers reductions, §50 transfer functions, §51 the traffic counter, §52
+pipelines, and §45 the roadmap.
 
 ## Installation
 
@@ -98,7 +106,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
-| `engine`  | Execution options and the `RasterSource` / `RasterSink` interfaces, with memory and raw float32 file implementations. |
+| `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
 
 Each package's doc comment is the reference for its operand rules, validity
 semantics, edge handling, and cancellation behaviour.
@@ -147,6 +155,13 @@ injection, bounds-check elimination assertions, and `golangci-lint`.
 ```bash
 go test ./...
 ```
+
+Those tests share the library author's understanding of the problem.
+[`acceptance/`](acceptance/README.md) is the independent check. It is a
+separate module that drives strata through its public API. A numpy
+program written from published definitions then judges the results.
+`gdalcheck.sh` differences strata's output against `gdaldem` on a real
+raster.
 
 CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
 race detector, and `golangci-lint` in both the default and the
