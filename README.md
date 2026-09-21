@@ -129,6 +129,15 @@ Pointwise algebra is memory-bandwidth-bound from 4096² on. The suites live
 under `benchmarks/`, each with its own `RESULTS.md`, and run through
 `stratabench`.
 
+Those numbers all compare strata with strata. For an outside one,
+[`benchmarks/gdal/`](benchmarks/gdal/RESULTS.md) times the same
+operations against GDAL's `gdaldem` in the same container, on a 126.9M
+cell raster, and then differences the files it timed. Single-threaded on
+one core, strata computes slope, aspect and hillshade in 2.57 s against
+gdaldem's 9.39 s; on 12 workers, 1.33 s. On the scalar kernels — a build
+without `GOEXPERIMENT=simd` — it is roughly a tie, so the advantage is
+AVX2, not the language.
+
 ## Testing
 
 Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also

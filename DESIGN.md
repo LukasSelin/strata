@@ -1749,6 +1749,7 @@ benchmarks/
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
+├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── remote_sensing/
 ├── convolution/
@@ -1785,6 +1786,16 @@ peak memory
   that run through the engine (`benchmarks/engine`) have `workers` above
   1; they add a `tiles` level for the tile shape.
 - Published numbers come from a `GOEXPERIMENT=simd` build (§3).
+- **An external baseline.** The suite's speedups are all measured against
+  strata's own scalar kernels, which says how much the lanes are worth
+  but nothing about whether the whole thing is fast. `benchmarks/gdal`
+  answers that against another program: it times `gdaldem` and strata on
+  the same raster, in the same container, under the same timer, and then
+  differences the files it timed, so the number is a speed at the same
+  answer. `gdaldem` is single-threaded, so the one-worker row is the
+  like-for-like one; the rest show what the engine adds. The suite's
+  scalar/SIMD numbers remain the internal measure, and the two are not
+  interchangeable.
 
 Raster sizes:
 
