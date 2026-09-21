@@ -146,6 +146,9 @@ have hidden.
 ## What this does not tell you
 
 * **Speed.** `benchmarks/` and `benchmarks/cmd/stratademo` measure that.
+  [`benchmarks/gdal/`](../benchmarks/gdal/) times the same three
+  operations against `gdaldem` on the same raster this directory checks
+  them against, and re-runs these checks on the files it timed.
 * **Ground elevation.** The raster used above is canopy height, not a
   DEM. `gdaldem` does not care what Z means, so the numerical
   cross-check is valid either way, but the slopes are not terrain
