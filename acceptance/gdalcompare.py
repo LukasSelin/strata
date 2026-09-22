@@ -27,6 +27,11 @@ are reconciled, and the reconciliations are the interesting part:
     dividing by the cell size; strata divides. They agree only for
     square cells, which this raster has (12.5 m both ways).
 
+  * Ruggedness needs no reconciliation at all. strata documents that
+    TRI (Riley and Wilson), TPI and roughness round exactly as gdaldem
+    does, so those four are compared bit for bit: any difference in any
+    cell that carries data fails.
+
 Usage:  python gdalcompare.py [dir] [width] [height] [nodata] [cell]
 
 nodata and cell are the DEM's own NoData value and cell size;
@@ -150,6 +155,23 @@ record(
     f"{int((delta == 0).sum()):,} of {delta.size:,} exact, {off_by_one:,} off by one "
     f"(gdaldem's approximate sqrt), {worse} off by more",
 )
+
+# --------------------------------------------------------------------
+# 4b. Ruggedness: the same cells, and the same bits in every one.
+# --------------------------------------------------------------------
+
+for op in ("tri", "triwilson", "tpi", "roughness"):
+    graw = np.fromfile(os.path.join(D, f"gdal-{op}.raw"), dtype="<f4").reshape(H, W)
+    sraw = np.fromfile(os.path.join(D, f"strata-{op}.raw"), dtype="<f4").reshape(H, W)
+    gh, sh = graw != GDAL_NODATA, sraw != STRATA_FILL
+    cells = gh & sh
+    differ = int((graw[cells].view(np.uint32) != sraw[cells].view(np.uint32)).sum())
+    record(
+        f"{op} == gdaldem {op}",
+        (gh == sh).all() and differ == 0 and cells.any(),
+        f"{differ:,} of {int(cells.sum()):,} cells differ in any bit; "
+        f"{int((gh != sh).sum())} disagree on carrying data",
+    )
 
 # --------------------------------------------------------------------
 # 5. Which of the two is closer to the truth? Neither tool is the

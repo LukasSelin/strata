@@ -43,8 +43,8 @@ type terrainCall struct {
 	finite func(z [9]float64) bool
 }
 
-// FuzzTerrain runs Gradient, Slope, Aspect, Hillshade and Curvature with options
-// decoded from the fuzz input, sane or arbitrary (NaN, infinities, huge
+// FuzzTerrain runs Gradient, Slope, Aspect, Hillshade, Curvature and
+// Ruggedness with options decoded from the fuzz input, sane or arbitrary (NaN, infinities, huge
 // and tiny values), over DEMs with arbitrary values, windows, strides and
 // masks, and outputs that may lack a mask or overlap the DEM. Invalid
 // options must panic with a "terrain:" message and invalid operands with
@@ -60,10 +60,11 @@ func FuzzTerrain(f *testing.F) {
 	f.Add([]byte{2, 3, 3, 2, 0, 1, 7})
 	f.Add([]byte{0, 66, 6, 0, 3, 3, 1, 1})
 	f.Add([]byte{4, 20, 7, 1, 2, 2, 0, 1, 1, 0})
+	f.Add([]byte{5, 12, 9, 2, 1, 3, 0, 2, 1, 1})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer stencil.UseScalar(false)
 		d := fuzzdata.New(data)
-		kind := d.IntN(5)
+		kind := d.IntN(6)
 		// Options: mostly sane, sometimes arbitrary.
 		opt := func(sane float64) float64 {
 			if d.IntN(4) == 0 {
@@ -83,6 +84,10 @@ func FuzzTerrain(f *testing.F) {
 		curv := CurvatureType(d.IntN(3))
 		if d.IntN(10) == 0 {
 			curv = CurvatureType(d.Range(-1, 5))
+		}
+		rug := RuggednessType(d.IntN(4))
+		if d.IntN(10) == 0 {
+			rug = RuggednessType(d.Range(-1, 6))
 		}
 
 		// The documented option rules.
@@ -212,6 +217,24 @@ func FuzzTerrain(f *testing.F) {
 					return math.Abs(p) < 1e9 && math.Abs(q) < 1e9 &&
 						math.Abs(r) < 1e18 && math.Abs(s) < 1e18 && math.Abs(t) < 1e18
 				},
+			}
+		case 5:
+			// Ruggedness takes no cell size, so none of those rules apply.
+			o := RuggednessOptions{rug}
+			optionsOK = rug >= RuggednessTRI && rug <= RuggednessRoughness
+			call = terrainCall{"ruggedness", 1,
+				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Ruggedness(outs[0], dem, o) },
+				func(ctx context.Context, outs []raster.Float32Raster, dem raster.Float32Raster, e engine.Options) error {
+					return RuggednessTiled(ctx, outs[0], dem, o, e)
+				},
+				func(ctx context.Context, outs []engine.RasterSink, dem engine.RasterSource, e engine.Options) error {
+					return RuggednessChunked(ctx, outs[0], dem, o, e)
+				},
+				// All but TPI are at least +0, never -0.
+				func(v float32) bool { return rug == RuggednessTPI || v >= 0 && math.Float32bits(v) != 1<<31 },
+				// Elevations within 1e37 keep every difference and sum
+				// below float32's limit.
+				func([9]float64) bool { return true },
 			}
 		}
 

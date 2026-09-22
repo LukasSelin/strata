@@ -47,6 +47,7 @@ func init() {
 	simdAspect = hornAspectRowAVX2
 	simdHillshade = hornHillshadeRowAVX2
 	simdCurvature = ztCurvatureRowAVX2
+	simdRuggedness = ruggednessRowAVX2
 	UseScalar(false)
 }
 
@@ -143,7 +144,7 @@ func hornSlopeAtanLanes(dst, r0, r1, r2 []float32, kx, ky, scale float32) int {
 // laneConsts are the constant vectors of the lane functions.
 type laneConsts struct {
 	tan3pi8, tanpi8, pi, pi2, pi4, one, negOne, zero, maxf, c4, c3, c2, c1 archsimd.Float32x8
-	deg, full, hi                                                          archsimd.Float32x8
+	deg, full, hi, eighth, nan                                             archsimd.Float32x8
 	sign                                                                   archsimd.Uint32x8
 	zeroInt                                                                archsimd.Int32x8
 }
@@ -159,7 +160,8 @@ func newLaneConsts() laneConsts {
 		pi: b(atan2Pi), pi2: b(atanPi2), pi4: b(atanPi4),
 		one: b(1), negOne: b(-1), zero: b(0), maxf: b(math.MaxFloat32),
 		c4: b(atanC4), c3: b(atanC3), c2: b(atanC2), c1: b(atanC1),
-		deg: b(radToDeg), full: b(360), hi: b(255),
+		deg: b(radToDeg), full: b(360), hi: b(255), eighth: b(0.125),
+		nan:     b(float32(math.NaN())),
 		sign:    archsimd.BroadcastUint32x8(signBit32),
 		zeroInt: archsimd.BroadcastInt32x8(0),
 	}
@@ -354,6 +356,116 @@ func ztMeanLanes(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32) int {
 		num := c.one.Add(q2).Mul(r).Sub(pq.Add(pq).Mul(s)).Add(c.one.Add(p2).Mul(t))
 		d := w.Mul(w.Sqrt())
 		store8(c.zero.Sub(num.Div(d.Add(d))), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func ruggednessRowAVX2(dst, r0, r1, r2 []float32, kind RuggednessKind) {
+	var i int
+	switch kind {
+	case RugTRIRiley:
+		i = rileyLanes(dst, r0, r1, r2)
+	case RugTRIWilson:
+		i = wilsonLanes(dst, r0, r1, r2)
+	case RugTPI:
+		i = tpiLanes(dst, r0, r1, r2)
+	default:
+		i = roughnessLanes(dst, r0, r1, r2)
+	}
+	n := len(dst)
+	scalarRuggednessRow(dst[i:], r0[i:n+2], r1[i:n+2], r2[i:n+2], kind)
+}
+
+// window8 loads the nine cells of the windows centred on eight adjacent
+// cells. The rows must have at least lane+2 cells.
+func window8(r0, r1, r2 []float32) (z1, z2, z3, z4, z5, z6, z7, z8, z9 archsimd.Float32x8) {
+	return load8(r0), load8(r0[1:]), load8(r0[2:]),
+		load8(r1), load8(r1[1:]), load8(r1[2:]),
+		load8(r2), load8(r2[1:]), load8(r2[2:])
+}
+
+// rileyLanes widens each float32 difference to float64, a half vector
+// at a time (VCVTPS2PD), and sums the squares there, as sq64 does.
+func rileyLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window8(r0, r1, r2)
+		lo1, hi1 := sq4x2(z1.Sub(z5))
+		lo2, hi2 := sq4x2(z2.Sub(z5))
+		lo3, hi3 := sq4x2(z3.Sub(z5))
+		lo4, hi4 := sq4x2(z4.Sub(z5))
+		lo6, hi6 := sq4x2(z6.Sub(z5))
+		lo7, hi7 := sq4x2(z7.Sub(z5))
+		lo8, hi8 := sq4x2(z8.Sub(z5))
+		lo9, hi9 := sq4x2(z9.Sub(z5))
+		lo := lo1.Add(lo2).Add(lo3).Add(lo4).Add(lo6).Add(lo7).Add(lo8).Add(lo9)
+		hi := hi1.Add(hi2).Add(hi3).Add(hi4).Add(hi6).Add(hi7).Add(hi8).Add(hi9)
+		store8(c.zero.SetLo(lo.Sqrt().ConvertToFloat32()).SetHi(hi.Sqrt().ConvertToFloat32()), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+// sq4x2 is sq64 of the low and the high four lanes of d.
+func sq4x2(d archsimd.Float32x8) (lo, hi archsimd.Float64x4) {
+	lo, hi = d.GetLo().ConvertToFloat64(), d.GetHi().ConvertToFloat64()
+	return lo.Mul(lo), hi.Mul(hi)
+}
+
+func wilsonLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	abs := func(x archsimd.Float32x8) archsimd.Float32x8 { return x.ToBits().AndNot(c.sign).BitsToFloat32() }
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window8(r0, r1, r2)
+		s := abs(z1.Sub(z5)).Add(abs(z2.Sub(z5))).Add(abs(z3.Sub(z5))).Add(abs(z4.Sub(z5))).
+			Add(abs(z6.Sub(z5))).Add(abs(z7.Sub(z5))).Add(abs(z8.Sub(z5))).Add(abs(z9.Sub(z5)))
+		store8(s.Mul(c.eighth), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func tpiLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window8(r0, r1, r2)
+		s := z1.Add(z2).Add(z3).Add(z4).Add(z6).Add(z7).Add(z8).Add(z9)
+		store8(z5.Sub(s.Mul(c.eighth)), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+// roughnessLanes uses VMAXPS and VMINPS as they are and repairs the
+// difference once. They differ from Go's max and min only on NaN and on
+// zeros of opposite sign. A NaN anywhere in the window must give NaN, so
+// those lanes are selected afterwards. Picking the wrong zero as the
+// largest or smallest cell changes nothing unless both are zeros, when
+// the difference can come out -0; Go's max - min is never -0, and adding
+// +0 turns -0 into +0 and leaves every other value alone.
+func roughnessLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window8(r0, r1, r2)
+		hi := z1.Max(z2).Max(z3.Max(z4)).Max(z5.Max(z6).Max(z7.Max(z8))).Max(z9)
+		lo := z1.Min(z2).Min(z3.Min(z4)).Min(z5.Min(z6).Min(z7.Min(z8))).Min(z9)
+		nan := z1.IsNaN().Or(z2.IsNaN()).Or(z3.IsNaN()).Or(z4.IsNaN()).Or(z5.IsNaN()).
+			Or(z6.IsNaN()).Or(z7.IsNaN()).Or(z8.IsNaN()).Or(z9.IsNaN())
+		v := hi.Sub(lo).Add(c.zero)
+		store8(c.nan.IfElse(nan, v), dst)
 		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
 	}
 	archsimd.ClearAVXUpperBits()

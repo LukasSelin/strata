@@ -188,6 +188,51 @@ func TestSIMDCurvatureRowsMatchScalar(t *testing.T) {
 	}
 }
 
+func TestSIMDRuggednessRowsMatchScalar(t *testing.T) {
+	requireSIMD(t)
+	rng := rand.New(rand.NewPCG(27, 28))
+	negZero := float32(math.Copysign(0, -1))
+	for n := 0; n <= 150; n++ {
+		for _, special := range []float64{0, 0.1, 0.5} {
+			// mode 0 is terrain, 1 has runs of equal values, 2 runs of
+			// mixed signed zeros (Roughness's max and min must order -0
+			// below +0 and still give +0), 3 elevations near the float32
+			// limit, whose differences overflow.
+			for mode := range 4 {
+				r := make([][]float32, 3)
+				for k := range r {
+					r[k] = make([]float32, n+2+rng.IntN(3))
+					rowValues(rng, r[k], special)
+					for i := range r[k] {
+						if i%16 >= 11 {
+							continue
+						}
+						switch mode {
+						case 1:
+							r[k][i] = 500
+						case 2:
+							r[k][i] = [2]float32{0, negZero}[rng.IntN(2)]
+						case 3:
+							r[k][i] = float32(rng.Float64()*2-1) * math.MaxFloat32
+						}
+					}
+				}
+				for kind := RugTRIRiley; kind <= RugRoughness; kind++ {
+					want, got := make([]float32, n), make([]float32, n)
+					scalarRuggednessRow(want, r[0], r[1], r[2], kind)
+					simdRuggedness(got, r[0], r[1], r[2], kind)
+					for i := range want {
+						if !sameBits(got[i], want[i]) {
+							t.Fatalf("ruggedness kind=%d n=%d mode=%d cell %d: got %g (%#x), want %g (%#x)",
+								kind, n, mode, i, got[i], math.Float32bits(got[i]), want[i], math.Float32bits(want[i]))
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestAtan2LanesMatchAtan2F32 checks the vector two-argument arctangent
 // lane by lane over every pair of special values and a random sample.
 func TestAtan2LanesMatchAtan2F32(t *testing.T) {

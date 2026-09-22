@@ -3,9 +3,11 @@
 //
 //	go run ./gdal -dir out-gdal -w 4096 -h 4096 -cell 12.5 -fill 65535
 //
-// It reads dem.raw and writes strata-slope.raw, strata-aspect.raw and
-// strata-hillshade.raw, each as raw little-endian float32 with -9999
-// under invalid cells, which is the NoData value gdaldem writes.
+// It reads dem.raw and writes strata-slope.raw, strata-aspect.raw,
+// strata-hillshade.raw and, for Ruggedness, strata-tri.raw,
+// strata-triwilson.raw, strata-tpi.raw and strata-roughness.raw, each as
+// raw little-endian float32 with -9999 under invalid cells, which is the
+// NoData value gdaldem writes.
 //
 // Every operation runs twice: once with the whole raster in memory and
 // once streamed through the bounded-memory Chunked path, and the two
@@ -79,6 +81,21 @@ func run() error {
 			func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
 				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
 			}},
+	}
+	for _, r := range []struct {
+		name string
+		t    terrain.RuggednessType
+	}{
+		{"tri", terrain.RuggednessTRI},
+		{"triwilson", terrain.RuggednessTRIWilson},
+		{"tpi", terrain.RuggednessTPI},
+		{"roughness", terrain.RuggednessRoughness},
+	} {
+		o := terrain.RuggednessOptions{Type: r.t}
+		jobs = append(jobs, job{r.name, func(dst, dm raster.Float32Raster) { terrain.Ruggedness(dst, dm, o) },
+			func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.RuggednessChunked(ctx, dst, src, o, eo)
+			}})
 	}
 
 	inOpts := engine.RawOptions{Fill: float32(*fill), HasFill: true}

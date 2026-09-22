@@ -251,6 +251,20 @@ func (d dem) ops() []op {
 		}
 	}
 
+	ruggedness := func(rt terrain.RuggednessType, name string) op {
+		o := terrain.RuggednessOptions{Type: rt}
+		return op{
+			name:  "ruggedness_" + name,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Ruggedness(dst, dm, o) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.RuggednessTiled(ctx, dst, dm, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.RuggednessChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+
 	return []op{
 		slope(terrain.SlopeDegrees),
 		slope(terrain.SlopeRadians),
@@ -296,6 +310,10 @@ func (d dem) ops() []op {
 		curvature(terrain.CurvatureProfile, "profile"),
 		curvature(terrain.CurvaturePlan, "plan"),
 		curvature(terrain.CurvatureMean, "mean"),
+		ruggedness(terrain.RuggednessTRI, "tri"),
+		ruggedness(terrain.RuggednessTRIWilson, "triwilson"),
+		ruggedness(terrain.RuggednessTPI, "tpi"),
+		ruggedness(terrain.RuggednessRoughness, "roughness"),
 	}
 }
 

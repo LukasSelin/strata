@@ -1,8 +1,9 @@
 // Package terrain is the terrain category of the project benchmark suite
 // (DESIGN.md §38, §42). It holds no code of its own: bench_test.go times
 // the four v0.1 operations of strata/terrain (Gradient, Slope, Aspect,
-// Hillshade), and Curvature (profile, the kind with the most work per
-// cell), through their public API, over the
+// Hillshade), Curvature (profile, the kind with the most work per cell)
+// and Ruggedness (Riley's TRI, likewise), through their public API, over
+// the
 // benchmarks/internal/suite matrix:
 //
 //	Benchmark<Op>/size=<256|1024|4096|16384>/mask=<off|on>/backend=<scalar|simd>/workers=1
