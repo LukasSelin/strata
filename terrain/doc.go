@@ -20,9 +20,10 @@
 //
 // Cell sizes are positive ground distances in the elevation's units, not
 // signed geotransform resolutions: pass abs(ResolutionY) for a north-up
-// raster.Grid. A ZFactor multiplies elevations before differencing, for
-// elevations in different units from the cell size; gdaldem's -s scale
-// corresponds to ZFactor 1/scale.
+// raster.Grid. A grid in a geographic CRS has cells in degrees, not ground
+// distances: project it first (DESIGN.md §36). A ZFactor multiplies
+// elevations before differencing, for elevations in different units from
+// the cell size; gdaldem's -s scale corresponds to ZFactor 1/scale.
 //
 // # Edges
 //
