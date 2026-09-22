@@ -126,6 +126,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # kernelborder (lint/, its own module) keeps kernel packages
+      # span-level and SIMD inside them (DESIGN.md §12, §14). It runs as a
+      # vet tool, in this job's build configuration, because the SIMD
+      # kernels only compile with GOEXPERIMENT=simd.
+      - name: Test kernelborder
+        working-directory: lint
+        run: go test ./...
+      - name: Build kernelborder
+        working-directory: lint
+        run: go build -o "$RUNNER_TEMP/kernelborder" ./cmd/kernelborder
+      - name: Run kernelborder
+        env:
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet -vettool="$RUNNER_TEMP/kernelborder" ./...
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
       - name: Check it was built with the module's Go version

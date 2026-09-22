@@ -21,6 +21,9 @@ go run .                        # strata produces results into out/
 python check.py out             # numpy judges them
 python check.py out --png       # ... and writes pictures to out/png
 python sabotage.py out          # check the checker (see below)
+python3 check_resample.py out   # resampling against its definitions (no numpy needed)
+python3 check_resample.py out --sabotage   # ... which must fail on a half-cell shift
+python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's Python bindings)
 ./gdalcheck.sh <some.tif>       # difference against gdaldem in Docker
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ```
@@ -55,6 +58,18 @@ with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
 | 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
 | 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
+
+Resampling is judged separately, by `check_resample.py`: a float64
+reference in plain Python (80×60 sources, so no numpy is needed) written
+from the kernels' definitions and gdalwarp's measured conventions
+(DESIGN.md §54), which requires validity to match exactly, values within
+a tolerance derived per cell from the weighted sums (so renormalised
+cells next to negative lobes get the looser bound their conditioning
+earns), Nearest to match exactly, and plain, Tiled and Chunked to agree
+bit for bit; and by `gdalwarp_resample.py`, which warps the same sources
+with gdalwarp through GDAL's Python bindings and requires the same
+validity and values within twice that tolerance, excluding only the
+departures §54 records.
 
 The reference implementations are derived in `check.py`'s docstring from
 Horn's kernel as gdaldem documents it, from the definition of shaded

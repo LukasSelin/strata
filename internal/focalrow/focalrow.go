@@ -34,6 +34,8 @@
 //
 // Like internal/vec, exported functions panic on mismatched lengths, with
 // a "focalrow: " prefix.
+//
+//strata:kernel
 package focalrow
 
 import "fmt"

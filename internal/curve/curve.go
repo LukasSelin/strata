@@ -35,6 +35,8 @@
 // therefore test for NaN before searching (DESIGN.md §50).
 //
 // Like internal/vec, exported functions panic on operand errors.
+//
+//strata:kernel
 package curve
 
 // Reclass computes dst[i] = values[k], where k is the number of breaks

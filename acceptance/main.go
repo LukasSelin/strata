@@ -7,7 +7,8 @@
 //
 // It builds three small DEMs, runs the terrain, focal, algebra and
 // reduce operations on each in all three forms (plain, Tiled, Chunked),
-// and writes:
+// resamples windows of two of them (resample.go, judged by
+// check_resample.py and gdalwarp_resample.py), and writes:
 //
 //	<dem>.f32              the elevation, raw little-endian float32
 //	<dem>.mask.u8          1 per valid cell, 0 per NoData cell (masked DEMs)
@@ -148,6 +149,9 @@ func run() error {
 		}
 	}
 	if err := runAlgebra(&m, dems[0], dems[1]); err != nil {
+		return err
+	}
+	if err := runResample(); err != nil {
 		return err
 	}
 

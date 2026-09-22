@@ -6,6 +6,9 @@
 # load the packages:
 #
 #	GOTOOLCHAIN=go1.27.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+#
+# The kernel-border rules (DESIGN.md §12) are a custom analyzer in lint/,
+# run separately as a vet tool; see the lint job in .github/workflows/ci.yml.
 version: "2"
 
 linters:

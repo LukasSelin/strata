@@ -44,6 +44,8 @@
 // and one infinity makes it that infinity. A sum of zeros is -0 only when
 // every value was -0, as IEEE addition gives. Results that are NaN are the
 // canonical quiet NaN, whatever payload the inputs carried.
+//
+//strata:kernel
 package accum
 
 import (
