@@ -340,7 +340,7 @@ func FuzzAccum(f *testing.F) {
 // the vector backend, where the build has one, and requires the same
 // exact integer in the bins, not only the same rounded result.
 func TestBackendsAgree(t *testing.T) {
-	defer useScalar(false)
+	defer UseScalar(false)
 	r := rand.New(rand.NewPCG(11, 12))
 	gens := map[string]func(r *rand.Rand) float32{
 		"zeros":    func(r *rand.Rand) float32 { return 0 },
@@ -383,10 +383,10 @@ func TestBackendsAgree(t *testing.T) {
 			}
 			var sc, vc Sum
 			var sm, vm Moments
-			useScalar(true)
+			UseScalar(true)
 			sc.Add(xs)
 			sm.Add(xs)
-			useScalar(false)
+			UseScalar(false)
 			vc.Add(xs)
 			vm.Add(xs)
 			if vm.sum.specials != sm.sum.specials {

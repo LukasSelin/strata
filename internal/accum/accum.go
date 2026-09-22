@@ -182,6 +182,12 @@ func (s *specials) combineSpecials(b *specials) {
 // same integers to the bins in some order, so all give the same bits.
 var sumKernel = addSums
 
+// backend names the loops sumKernel and momentsKernel hold.
+var backend = "scalar"
+
+// Backend names the loops in use: "avx2" or "scalar".
+func Backend() string { return backend }
+
 // addSums is Sum's hot loop: four values per iteration, one into each
 // bin set. It returns the OR of every value's bits with -0's cleared, for
 // notNegZero.

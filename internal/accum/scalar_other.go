@@ -2,5 +2,7 @@
 
 package accum
 
-// useScalar is a no-op where there is no vector backend.
-func useScalar(bool) {}
+// UseScalar switches Sum and Moments to the scalar loops (true) or back to
+// the best available ones (false). This build has only the scalar loops,
+// so it does nothing.
+func UseScalar(bool) {}
