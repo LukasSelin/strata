@@ -28,6 +28,7 @@ func BenchmarkWidth(b *testing.B) {
 		{"add", func(n int) { Add(dst[:n], a[:n], c[:n]) }},
 		{"max", func(n int) { Max(dst[:n], a[:n], c[:n]) }},
 		{"affine", func(n int) { Affine(dst[:n], a[:n], 0.25, -3) }},
+		{"subdiv", func(n int) { SubDiv(dst[:n], a[:n], -3, 7) }},
 	}
 	b.Logf("backend: %s", Backend())
 	for _, op := range ops {

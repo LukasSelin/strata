@@ -25,7 +25,7 @@ the detailed record; this table only points at it.
 | `Float32Raster`, windows, validity bitmap | §9, §21, §31 | done |
 | Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
 | arm64 NEON backend (STRATA-11) | §14, §17 | not started; arm64 runs scalar |
-| `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask | §18 | done; `Normalize` open |
+| `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
 | `terrain`: Gradient, Slope, Aspect, Hillshade | §20 | done; curvature, ruggedness open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
@@ -872,11 +872,12 @@ algebra.Clamp(dst, src, lo, hi)
 algebra.Mask(dst, src, mask)
 ```
 
-Later:
+And one that is not pointwise:
 
 ```go
-algebra.Normalize(dst, src)     // needs reduce.MinMax over a whole
-                                //   raster, which §49 has (STRATA-12)
+// Normalize maps the valid cells' [min, max] onto [0, 1] and returns
+// the min and max it used.
+lo, hi := algebra.Normalize(dst, src)
 ```
 
 `algebra.Scale(dst, src, 1.25)` stood here and is not being added.
@@ -888,6 +889,29 @@ prevent.
 `Normalize` is not a pointwise operation. It needs global statistics (min
 and max, or mean and standard deviation, over valid cells). Under chunked
 execution that means a reduction pass over every tile before the map pass.
+
+It is min-max normalisation, computed as `(v - lo) / (hi - lo)` in float32:
+a subtraction then a division (`vec.SubDiv`), not `transfer.Rescale`'s
+single multiply-add. The multiply-add rounds `1/(hi - lo)` and `-lo/(hi -
+lo)` into coefficients, so the maximum lands near 1 rather than on it.
+Measured on elevation-like data, about one raster in three came out with
+a maximum other than 1, half of those above it, by up to 64 ulps. The
+difference-then-quotient form maps `lo` to +0 and `hi` to exactly 1, and
+since both steps round monotonically, every valid cell lands in [0, 1]. It
+is also, bit for bit, what NumPy computes for
+`(x - x.min()) / (x.max() - x.min())` on a float32 array, which is what
+`acceptance/check.py` holds it to. The division costs more than a
+multiply, but a pass that writes every cell is bound by memory bandwidth.
+
+Degenerate ranges are not special-cased: a constant raster gives 0/0,
+which is NaN, and a NaN or infinity among the valid cells propagates as
+IEEE arithmetic has it. `Normalize` returns `lo` and `hi` so a caller can
+detect those cases, or map a result back. Standardising by mean and
+standard deviation (`reduce.Stats`) would be a separate operation and is
+not added.
+
+Status: done. `Normalize`, `NormalizeTiled` and `NormalizeChunked`; the
+chunked form reads its source twice (§49).
 
 Semantics, as in the `algebra` package documentation:
 
@@ -2391,14 +2415,15 @@ transfer: Reclass, Lookup, Rescale, RescaleRange (§50)  done (STRATA-13)
 Sum, Mean, Stats                                        open
 order-independent accumulation: the same bits for       open
   every tiling, worker count and backend
-algebra.Normalize on top of the reduction pass          open
+algebra.Normalize on top of the reduction pass          done
 benchmarks/reduce, against the §28 bandwidth ceiling    open
 ```
 
 The transfer family is not a reduction, but it lands in v0.2 for the same
 reason reductions do: both are what turn a computed surface into
-something to act on, and `Rescale` is the building block `Normalize`
-writes through.
+something to act on. `Normalize` was to write through `Rescale`, and
+does not: its endpoints need a subtraction and a division, not a
+multiply-add (§18).
 
 **v0.3: Array foundation**
 
@@ -2826,7 +2851,7 @@ and `vec.ReduceMax`, and package `reduce`. The accumulator decision and
 masked fold packs the valid cells of partly valid mask words into a
 per-worker buffer (`summary.Runs`), so the vector blocks apply to
 scattered NoData too. `MinMax` does not use it yet and still walks
-such words cell by cell. `algebra.Normalize` is next.
+such words cell by cell. `algebra.Normalize` done, on `MinMax` (§18).
 
 ## 50. Transfer Functions
 

@@ -34,6 +34,7 @@ func init() {
 		addScalar: addScalarFloat32AVX2,
 		mulScalar: mulScalarFloat32AVX2,
 		affine:    affineFloat32AVX2,
+		subDiv:    subDivFloat32AVX2,
 		min:       minFloat32AVX2,
 		max:       maxFloat32AVX2,
 		clamp:     clampFloat32AVX2,
@@ -164,6 +165,20 @@ func affineFloat32AVX2(dst, src []float32, a, b float32) {
 	}
 	archsimd.ClearAVXUpperBits()
 	scalarAffineFloat32(dst, src, a, b)
+}
+
+// subDivFloat32AVX2 is VSUBPS then VDIVPS. Both are correctly rounded,
+// so each lane matches scalarSubDivFloat32.
+func subDivFloat32AVX2(dst, src []float32, lo, span float32) {
+	vlo := archsimd.BroadcastFloat32x8(lo)
+	vspan := archsimd.BroadcastFloat32x8(span)
+	src = src[:len(dst)]
+	for len(dst) >= avxLane && len(src) >= avxLane {
+		store8(load8(src).Sub(vlo).Div(vspan), dst)
+		dst, src = dst[avxLane:], src[avxLane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	scalarSubDivFloat32(dst, src, lo, span)
 }
 
 func clampFloat32AVX2(dst, src []float32, lo, hi float32) {
