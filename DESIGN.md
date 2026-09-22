@@ -296,6 +296,37 @@ the chunk lifecycle between them without forcing identical high-level
 APIs. In particular, dense sources are random-access windowed readers and
 sparse sources are streams (§24).
 
+**Kernels are span-level.** What the two schedules share is the layer
+below them, so that layer must not know which one called it. A kernel
+package works on spans — slices of cells or mask words — and scalars:
+`vec.Add(dst, a, b []float32)`, `accum.Sum.Add(xs []float32)`,
+`stencil.HornSlopeRow(dst, r0, r1, r2 []float32, …)`. It never takes a
+`raster.Float32Raster`, a grid, a source, a context or a worker, and it
+starts no goroutines. A raster row and a point-batch column are then the
+same argument, and only the engine schedules. The fold driver is the one
+raster-shaped seam (`exec.Cells`); point batches get a counterpart that
+feeds the same reducers, not a generalised `Cells`.
+
+`lint/kernelborder` enforces this. A package declares itself a kernel
+package with a `//strata:kernel` line above its package clause
+(`internal/vec`, `accum`, `stencil`, `curve` and `focalrow` do), and
+then:
+
+```text
+K0  only kernel packages import simd/archsimd (§14); benchmarks/ exempt
+K1  kernel packages import a short standard-library allowlist,
+    simd/archsimd and other kernel packages, nothing else
+K2  exported kernel functions take and return span-level types: basic
+    types, slices, arrays, pointers and funcs of them, type parameters
+    with a type-set constraint, and kernel packages' own types
+K3  kernel packages have no go statements, channels or select
+```
+
+None of the rules applies to `_test.go` files. A new kernel package,
+`internal/focalrow` (§53) or a resampling one, registers by carrying the
+marker; one that imports `simd/archsimd` without it fails K0, which is
+how `focalrow` was found when this check first ran over it.
+
 ## 13. SIMD-First Design
 
 Algorithms should process contiguous spans of values rather than individual cells.
@@ -1535,8 +1566,17 @@ integer overflow rule covers conversions, not arithmetic.
 CI (`.github/workflows/ci.yml`) runs all of this on every push and pull
 request: build, vet and test on Linux, Windows and macOS; the same under
 `GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS (arm64, NEON);
-`go test -race`; and golangci-lint. The race and lint jobs run in both
-builds, and in the SIMD build for arm64 too (lint cross-compiled).
+`go test -race`; golangci-lint; and `kernelborder` (§12), a custom
+analyzer in the separate `lint/` module, run as a vet tool. The race and
+lint jobs run in both builds, and in the SIMD build for arm64 too (lint
+cross-compiled), so the vet tool sees each backend's files:
+
+```text
+(cd lint && go build -o /tmp/kernelborder ./cmd/kernelborder)
+go vet -vettool=/tmp/kernelborder ./...
+GOEXPERIMENT=simd GOARCH=amd64 go vet -vettool=/tmp/kernelborder ./...
+GOEXPERIMENT=simd GOARCH=arm64 go vet -vettool=/tmp/kernelborder ./...
+```
 
 **The outside opinion.** Everything above is written by whoever wrote
 the library, against the same understanding of the problem, so a
@@ -1652,6 +1692,8 @@ strata/
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)
+├── lint/                      custom analyzers, a separate module (§39)
+│   └── kernelborder/          kernel packages stay span-level (§12)
 ├── tools/herbie/              Herbie search for float rewrites (§39)
 └── docs/adr/
 ```
