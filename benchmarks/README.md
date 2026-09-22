@@ -11,6 +11,7 @@ spikes that informed the design.
 | `fusion/` | suite: a six-factor product as five chained `algebra.MulTiled` calls, as one tile-level `Pipeline` (§52) and as a hand-written register-fused kernel (§29), by worker count and tile shape. Measures what register-level fusion would add before a generator is built. Numbers in [`fusion/RESULTS.md`](fusion/RESULTS.md) |
 | `focal/` | suite: `strata/focal` Correlate, Gaussian (CorrelateSeparable), Mean, Min and Max at radii 1, 2, 3 and 5, through the plain public API at every size and backend: how the cost grows with the radius, and whether convolution is compute-bound (§28, §53). Numbers in [`focal/RESULTS.md`](focal/RESULTS.md) |
 | `terrain/` | suite: the four terrain operations (Gradient, Slope, Aspect, Hillshade) through their plain public API, at every size and backend. Numbers in [`terrain/RESULTS.md`](terrain/RESULTS.md) |
+| `resample/` | suite: `resample.Resample` for every method at 2×, 4×, ½ and 1/1.37, the separable passes against direct 2-D evaluation. Numbers in [`resample/RESULTS.md`](resample/RESULTS.md) |
 | `gdal/` | against another program: the same three terrain operations timed against `gdaldem`, both in one container. Numbers in [`gdal/RESULTS.md`](gdal/RESULTS.md). Not a Go benchmark, so not part of the suite |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
