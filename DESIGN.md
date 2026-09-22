@@ -52,7 +52,7 @@ the detailed record; this table only points at it.
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
-| CRS transformation | §36 | not started; `raster.CRS` is a placeholder |
+| CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
@@ -235,7 +235,7 @@ type Grid struct {
     Width, Height            int
     ResolutionX, ResolutionY float64 // signed, as in a GDAL geotransform
     OriginX, OriginY         float64 // outer corner of cell (0, 0)
-    CRS                      CRS     // opaque placeholder, §36
+    CRS                      CRS     // opaque label, §36
 }
 
 type Dataset struct {
@@ -327,7 +327,9 @@ K3  kernel packages have no go statements, channels or select
 None of the rules applies to `_test.go` files. A new kernel package,
 `internal/focalrow` (§53) or a resampling one, registers by carrying the
 marker; one that imports `simd/archsimd` without it fails K0, which is
-how `focalrow` was found when this check first ran over it.
+how `focalrow` was found when this check first ran over it, and
+`internal/resamp` when it met the check on master: its band driver,
+which reads `raster` masks and takes the mask lock, moved to `resample`.
 
 ## 13. SIMD-First Design
 
@@ -1307,12 +1309,44 @@ strata's differentiator is computation, not parsing.
 
 ## 36. CRS and Reprojection
 
-Do not attempt to replace PROJ.
+Do not attempt to replace PROJ. Reprojection is the caller's
+preprocessing, done before data reaches strata (with gdalwarp, PROJ or a
+format adapter), not part of execution.
 
-`raster.CRS` is an opaque placeholder (`Code string`, for example
-`"EPSG:25833"`). A `Grid` carries it along, but nothing interprets it.
-When transformation is needed, define a narrow abstraction over
-coordinate columns rather than point structs (§11):
+### The contract
+
+1. **One CRS per computation.** Every input to one operation, and its
+   output, is in the same CRS. strata never transforms coordinates.
+2. **Grid operations assume a projected CRS with ground units.** Cell
+   sizes, distances and neighbourhoods are taken as lengths on the ground,
+   in the same unit on both axes. A raster in a geographic CRS (degrees)
+   must be projected first; `terrain` would otherwise return wrong slopes
+   and aspects without an error, since it cannot tell.
+3. **The CRS is a label.** `raster.CRS` is opaque (`Code string`, for
+   example `"EPSG:25833"`). A `Grid` carries it along, and nothing
+   interprets it: no parsing, no lookup of units or axis order.
+4. **Operations that see grids check labels.** Wherever an operation takes
+   two or more `raster.Grid`s, it panics unless their CRSs match
+   (`raster.CRS.Matches`): equal codes, or either code empty. Empty means
+   unknown, and the caller vouches for it. Codes are compared as strings,
+   so `"EPSG:25833"` and `"urn:ogc:def:crs:EPSG::25833"` do not match;
+   normalise codes at the IO boundary.
+5. **Operations that take bare rasters cannot check.** `algebra`, `focal`,
+   `terrain`, `transfer`, `reduce` and the engine see `Float32Raster`s and
+   `engine.RasterSource`s, never grids (§9), so for them the contract
+   is the caller's to keep. They require equal dimensions, not equal grids.
+
+Today `resample` is the one operation that takes grids, and it checks
+(§54). Mosaics, alignment helpers (v0.8) and point rasterization (v0.7)
+will take grids too, and must check the same way.
+
+### If transformation is ever needed
+
+Reprojecting inside strata would save a full pass over the data when it
+is fused with the computation after it. That is an optimisation to make
+once a workload shows it matters, not a gap. If it is built, it goes
+through a narrow abstraction over coordinate columns rather than point
+structs (§11), backed by PROJ through an adapter:
 
 ```go
 type Transformer interface {
@@ -1320,8 +1354,9 @@ type Transformer interface {
 }
 ```
 
-A native subset (WGS84, Web Mercator, UTM) may follow; the rest stays
-adapter-driven.
+The outside reference would be `gdalwarp -et 0` (exact), since gdalwarp's
+default transformer interpolates between exact points along each row
+and is off by up to 0.125 source pixels.
 
 ## 37. Memory Management
 
@@ -1649,6 +1684,7 @@ strata/
 │   ├── doc.go
 │   ├── resample.go            Method, Options, Resample, ResampleTiled,
 │   │                           ResampleChunked and their checks
+│   ├── band.go                bands over the resamp kernels, validity
 │   └── tiled.go               tiling, bands, the chunked driver
 │
 ├── terrain/                   implemented
@@ -1680,8 +1716,8 @@ strata/
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
 │   │                           for the radius-0 packages' plain functions
-│   ├── resamp/                implemented (§54): table.go (tap tables), band.go
-│   │                           (bands, validity), scalar.go, dispatch.go,
+│   ├── resamp/                implemented (§54), kernel package: table.go (tap
+│   │                           tables), scalar.go, dispatch.go,
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window
@@ -1937,7 +1973,8 @@ v0.5   Zarr adapter: chunk-native N-D datasets (§34)
 v0.6   GeoTIFF / COG adapters (§34)
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
 v0.8   resampling, alignment, mosaics, interpolation
-       partly done: same-CRS resampling (§54); reprojection waits on §36
+       partly done: same-CRS resampling (§54); reprojection is the
+       caller's preprocessing (§36)
 v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
        register-level fusion measured, not built (§29)
 v0.10  voxel grids as 3-D arrays (§33)
@@ -3129,18 +3166,18 @@ Status: done for grids in one CRS: `resample.Resample`, `ResampleTiled` and
 scalar-canonical passes with AVX2 and NEON kernels that match them bit for
 bit, checked against a float64 reference and against gdalwarp
 (`acceptance/`), measured in `benchmarks/resample`. Open: Mode, mosaics
-and alignment helpers, reprojection (§36), and the AVX2 numbers from the
-Zen 2 machine.
+and alignment helpers, and the AVX2 numbers from the Zen 2 machine.
+Reprojection is not planned; it is the caller's preprocessing (§36).
 
 ### Scope
 
 Resampling between two `raster.Grid`s in the same CRS: a different
 resolution, a different origin, or both, with axis-aligned cells of any
 sign on either axis. That is v0.8's first item (§45) and needs no CRS
-transformation, which `raster.CRS` cannot give yet (§36): the source
-coordinate of an output cell's centre is an affine function of its
-column alone along x and of its row alone along y. Reprojection breaks
-that and is not attempted.
+transformation (§36): the source coordinate of an output cell's centre
+is an affine function of its column alone along x and of its row alone
+along y. Reprojection breaks that and is not attempted. Grids whose CRSs
+do not match (`raster.CRS.Matches`) panic.
 
 ### Separable, table-driven, gather-free
 
