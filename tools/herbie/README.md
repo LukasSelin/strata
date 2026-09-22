@@ -30,6 +30,9 @@ the Go function and give its file and line. Write it in the exact
 evaluation order of the scalar kernel, and bound its inputs with `:pre`.
 Herbie samples float bit patterns over that range, so a range wider than
 real data rewards rewrites that only matter at values no raster holds.
+Herbie inlines every `let`, so a long branchy chain (Atan32 inside a
+whole window) grows past memory. Use the platform's `atan`/`atan2`
+stand-ins there instead, and measure the function on its own.
 
 ## Before a rewrite lands
 

@@ -152,3 +152,127 @@
   :pre (and (<= -1e6 il 1e6) (<= -1e6 ih 1e6) (< il ih)
             (<= -1e6 ol 1e6) (<= -1e6 oh 1e6))
   (- ol (* (/ (- oh ol) (- ih il)) il)))
+
+
+;; ---------------------------------------------------------------------
+;; End to end: a raw 3×3 window through Horn (horn.go hornDX, hornDY) to
+;; each terrain output, so Herbie sees how gradient rounding carries into
+;; the later steps. Atan32 and Atan2F32 appear as atan and atan2, the
+;; platform's stand-ins for them (strata.rkt): spelled out inline, Herbie
+;; inlines every let and the branches blow up past memory. Their own
+;; error is measured separately below.
+
+;; Slope magnitude (HornSlopeRow, percent before the ×100).
+(FPCore (z1 z2 z3 z4 z6 z7 z8 z9 kx ky)
+  :name "window to slope magnitude (horn.go scalarHornMagnitudeRow)"
+  :precision binary32
+  :pre (and (<= 1000 z1 1100) (<= 1000 z2 1100) (<= 1000 z3 1100) (<= 1000 z4 1100)
+            (<= 1000 z6 1100) (<= 1000 z7 1100) (<= 1000 z8 1100) (<= 1000 z9 1100)
+            (<= 1e-4 kx 1.25) (<= 1e-4 ky 1.25))
+  (let* ([dx (let ([d (- z6 z4)]) (+ (+ (- z3 z1) (- z9 z7)) (+ d d)))]
+         [dy (let ([d (- z8 z2)]) (+ (+ (- z7 z1) (- z9 z3)) (+ d d)))]
+         [gx (* dx kx)]
+         [gy (* dy ky)])
+    (sqrt (+ (* gx gx) (* gy gy)))))
+
+;; Slope in degrees: Atan32 of the magnitude, times 180/π (horn.go:159).
+(FPCore (z1 z2 z3 z4 z6 z7 z8 z9 kx ky)
+  :name "window to slope degrees (horn.go scalarHornSlopeRow)"
+  :precision binary32
+  :pre (and (<= 1000 z1 1100) (<= 1000 z2 1100) (<= 1000 z3 1100) (<= 1000 z4 1100)
+            (<= 1000 z6 1100) (<= 1000 z7 1100) (<= 1000 z8 1100) (<= 1000 z9 1100)
+            (<= 1e-4 kx 1.25) (<= 1e-4 ky 1.25))
+  (let* ([dx (let ([d (- z6 z4)]) (+ (+ (- z3 z1) (- z9 z7)) (+ d d)))]
+         [dy (let ([d (- z8 z2)]) (+ (+ (- z7 z1) (- z9 z3)) (+ d d)))]
+         [gx (* dx kx)]
+         [gy (* dy ky)])
+    (* (atan (sqrt (+ (* gx gx) (* gy gy)))) 57.295780181884766)))
+
+;; Compass aspect in degrees, aspectDegrees(Atan2F32(0-gx, gy)) (aspect.go),
+;; on moderate relief and on nearly flat high terrain. Flat cells (both
+;; gradients zero) are outside the sample.
+(FPCore (z1 z2 z3 z4 z6 z7 z8 z9 kx ky)
+  :name "window to aspect, 1000..1100 m (aspect.go aspectDegrees)"
+  :precision binary32
+  :pre (and (<= 1000 z1 1100) (<= 1000 z2 1100) (<= 1000 z3 1100) (<= 1000 z4 1100)
+            (<= 1000 z6 1100) (<= 1000 z7 1100) (<= 1000 z8 1100) (<= 1000 z9 1100)
+            (<= 1e-4 kx 1.25) (<= 1e-4 ky 1.25))
+  (let* ([dx (let ([d (- z6 z4)]) (+ (+ (- z3 z1) (- z9 z7)) (+ d d)))]
+         [dy (let ([d (- z8 z2)]) (+ (+ (- z7 z1) (- z9 z3)) (+ d d)))]
+         [gx (* dx kx)]
+         [gy (* dy ky)]
+         [d0 (* (atan2 (- 0 gx) gy) 57.295780181884766)]
+         [d1 (if (< d0 0) (+ d0 360) d0)])
+    (if (>= d1 360) 0 d1)))
+
+(FPCore (z1 z2 z3 z4 z6 z7 z8 z9 kx ky)
+  :name "window to aspect, 8800..8801 m (aspect.go aspectDegrees)"
+  :precision binary32
+  :pre (and (<= 8800 z1 8801) (<= 8800 z2 8801) (<= 8800 z3 8801) (<= 8800 z4 8801)
+            (<= 8800 z6 8801) (<= 8800 z7 8801) (<= 8800 z8 8801) (<= 8800 z9 8801)
+            (<= 1e-4 kx 1.25) (<= 1e-4 ky 1.25))
+  (let* ([dx (let ([d (- z6 z4)]) (+ (+ (- z3 z1) (- z9 z7)) (+ d d)))]
+         [dy (let ([d (- z8 z2)]) (+ (+ (- z7 z1) (- z9 z3)) (+ d d)))]
+         [gx (* dx kx)]
+         [gy (* dy ky)]
+         [d0 (* (atan2 (- 0 gx) gy) 57.295780181884766)]
+         [d1 (if (< d0 0) (+ d0 360) d0)])
+    (if (>= d1 360) 0 d1)))
+
+;; Hillshade with its clamp to [0, 255] (aspect.go scalarHornHillshadeRow).
+(FPCore (z1 z2 z3 z4 z6 z7 z8 z9 kx ky c bx by)
+  :name "window to hillshade (aspect.go scalarHornHillshadeRow)"
+  :precision binary32
+  :pre (and (<= 1000 z1 1100) (<= 1000 z2 1100) (<= 1000 z3 1100) (<= 1000 z4 1100)
+            (<= 1000 z6 1100) (<= 1000 z7 1100) (<= 1000 z8 1100) (<= 1000 z9 1100)
+            (<= 1e-4 kx 1.25) (<= 1e-4 ky 1.25)
+            (<= 1e-3 c 255) (<= -255 bx 255) (<= -255 by 255))
+  (let* ([dx (let ([d (- z6 z4)]) (+ (+ (- z3 z1) (- z9 z7)) (+ d d)))]
+         [dy (let ([d (- z8 z2)]) (+ (+ (- z7 z1) (- z9 z3)) (+ d d)))]
+         [gx (* dx kx)]
+         [gy (* dy ky)]
+         [v (/ (+ c (+ (* bx gx) (* by gy)))
+               (sqrt (+ 1 (+ (* gx gx) (* gy gy)))))])
+    (if (< v 0) 0 (if (> v 255) 255 v))))
+
+;; ---------------------------------------------------------------------
+;; Atan2F32 as a whole (aspect.go:33-47): the |y|/|x| division, Atan32,
+;; the 0/0 case, the reflection and the sign. Gradients within ±1e3; the
+;; inf/inf case is outside that range. :spec makes the reference the true
+;; atan2, so this one also measures Atan32's approximation error.
+(FPCore (y x)
+  :name "Atan2F32 against atan2 (aspect.go:33)"
+  :precision binary32
+  :pre (and (<= -1e3 y 1e3) (<= -1e3 x 1e3))
+  :spec (atan2 y x)
+  (let* ([ax (fabs x)]
+         [ay (fabs y)]
+         [r (/ ay ax)]
+         [a0 (let* ([num (if (> r 2.4142136573791504) -1 (if (> r 0.4142135679721832) (- r 1) r))]
+                     [den (if (> r 2.4142136573791504) r (if (> r 0.4142135679721832) (+ r 1) 1))]
+                     [y0 (if (> r 2.4142136573791504) 1.5707963705062866 (if (> r 0.4142135679721832) 0.7853981852531433 0))]
+                     [t (/ num den)]
+                     [z (* t t)]
+                     [p (- (* (+ (* (- (* 0.08053744584321976 z) 0.13877685368061066) z) 0.19977711141109467) z) 0.3333294987678528)])
+                (+ y0 (+ (* (* p z) t) t)))]
+         [a1 (if (and (== ay 0) (== ax 0)) 0 a0)]
+         [a2 (if (< x 0) (- 3.1415927410125732 a1) a1)])
+    (copysign a2 y)))
+
+(FPCore (y x)
+  :name "Atan2F32, rounding only (aspect.go:33)"
+  :precision binary32
+  :pre (and (<= -1e3 y 1e3) (<= -1e3 x 1e3))
+  (let* ([ax (fabs x)]
+         [ay (fabs y)]
+         [r (/ ay ax)]
+         [a0 (let* ([num (if (> r 2.4142136573791504) -1 (if (> r 0.4142135679721832) (- r 1) r))]
+                     [den (if (> r 2.4142136573791504) r (if (> r 0.4142135679721832) (+ r 1) 1))]
+                     [y0 (if (> r 2.4142136573791504) 1.5707963705062866 (if (> r 0.4142135679721832) 0.7853981852531433 0))]
+                     [t (/ num den)]
+                     [z (* t t)]
+                     [p (- (* (+ (* (- (* 0.08053744584321976 z) 0.13877685368061066) z) 0.19977711141109467) z) 0.3333294987678528)])
+                (+ y0 (+ (* (* p z) t) t)))]
+         [a1 (if (and (== ay 0) (== ax 0)) 0 a0)]
+         [a2 (if (< x 0) (- 3.1415927410125732 a1) a1)])
+    (copysign a2 y)))

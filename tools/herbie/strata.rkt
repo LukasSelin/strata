@@ -69,6 +69,18 @@
   [fabs.f32 #:spec (fabs x) #:impl (from-libm 'fabsf) #:cost move-cost]
   [sqrt.f32 #:spec (sqrt x) #:impl (from-libm 'sqrtf) #:cost 1.000])
 
+;; Stand-ins for Atan32 and Atan2F32 in the end-to-end inputs only
+;; (kernels.fpcore). They are priced high so Herbie does not reach for
+;; them; a rewrite that adds one anywhere else is rejected, since the
+;; kernels have their own branch-free polynomial.
+(define-operation (atan.f32 [x <binary32>]) <binary32>
+  #:spec (atan x) #:impl (from-libm 'atanf)
+  #:fpcore (! :precision binary32 (atan x)) #:cost 20)
+
+(define-operation (atan2.f32 [y <binary32>] [x <binary32>]) <binary32>
+  #:spec (atan2 y x) #:impl (from-libm 'atan2f)
+  #:fpcore (! :precision binary32 (atan2 y x)) #:cost 20)
+
 (define-operations ([x <binary32>] [y <binary32>]) <binary32> #:fpcore (! :precision binary32 _)
   [copysign.f32 #:spec (copysign x y) #:impl (from-libm 'copysignf) #:cost 0.200]
   [fmax.f32     #:spec (fmax x y)     #:impl (from-libm 'fmaxf)     #:cost 0.250]
