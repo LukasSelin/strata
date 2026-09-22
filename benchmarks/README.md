@@ -9,6 +9,7 @@ spikes that informed the design.
 | `engine/` | suite: Slope, Hillshade and Clamp, plain and through the engine, by worker count and tile shape. Numbers in [`engine/RESULTS.md`](engine/RESULTS.md) |
 | `chunked/` | suite: Slope, Hillshade and Clamp with bounded memory from a raw float32 file to another, by worker count and tile shape, and the §43 demo. Numbers in [`chunked/RESULTS.md`](chunked/RESULTS.md) |
 | `fusion/` | suite: a six-factor product as five chained `algebra.MulTiled` calls, as one tile-level `Pipeline` (§52) and as a hand-written register-fused kernel (§29), by worker count and tile shape. Measures what register-level fusion would add before a generator is built. Numbers in [`fusion/RESULTS.md`](fusion/RESULTS.md) |
+| `focal/` | suite: `strata/focal` Correlate, Gaussian (CorrelateSeparable), Mean, Min and Max at radii 1, 2, 3 and 5, through the plain public API at every size and backend: how the cost grows with the radius, and whether convolution is compute-bound (§28, §53). Numbers in [`focal/RESULTS.md`](focal/RESULTS.md) |
 | `terrain/` | suite: the four terrain operations (Gradient, Slope, Aspect, Hillshade) through their plain public API, at every size and backend. Numbers in [`terrain/RESULTS.md`](terrain/RESULTS.md) |
 | `gdal/` | against another program: the same three terrain operations timed against `gdaldem`, both in one container. Numbers in [`gdal/RESULTS.md`](gdal/RESULTS.md). Not a Go benchmark, so not part of the suite |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
@@ -122,8 +123,8 @@ speedup of `strips` over one worker at each size):
 
 ## Adding a category
 
-A category is a package `benchmarks/<name>` (convolution,
-remote_sensing, pointcloud, nd, per §38) with a `doc.go` and a
+A category is a package `benchmarks/<name>` (remote_sensing,
+pointcloud, nd, per §38; convolution landed as `focal/`) with a `doc.go` and a
 `bench_test.go` that uses `internal/suite`. `terrain/bench_test.go` is the
 smallest complete example; the sketch below is its Slope case:
 

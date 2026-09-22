@@ -21,10 +21,11 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
 - [benchmarks/engine/RESULTS.md](benchmarks/engine/RESULTS.md): worker scaling and tile shape (STRATA-9).
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
+- [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
 
-Where things stand, as of 2026-09-21. Each section's own **Status** line is
+Where things stand, as of 2026-09-22. Each section's own **Status** line is
 the detailed record; this table only points at it.
 
 | Area | § | Status |
@@ -42,6 +43,7 @@ the detailed record; this table only points at it.
 | Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
 | Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | done |
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
+| `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; AVX2 benchmark run pending; median, skip-invalid statistics open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
@@ -167,8 +169,9 @@ GeoPackage, FileGDB, PostGIS, GDAL datasets). Those are adapters (§34).
 
 **Domain algorithms live in modules that import strata.** The core keeps
 operations that are domain-neutral numerical building blocks: pointwise
-algebra (§18), neighbourhood stencils (§20), reductions (§49) and transfer
-functions (§50), whose models live in the caller's tables. `terrain` is
+algebra (§18), neighbourhood stencils (§20, and `focal`'s convolution and
+focal statistics, §53), reductions (§49) and transfer functions (§50),
+whose models live in the caller's tables. `terrain` is
 the one domain package in the core, because it is the proving consumer
 for stencils and halos and the operation the gdaldem comparison checks;
 it grows only local derivatives of a DEM.
@@ -423,6 +426,14 @@ func Erode3x3(...) // validity of radius-1 outputs, word-level
 func ClearBorder(...)
 ```
 
+Package `focal`'s row kernels, for any radius, live in
+`internal/focalrow` (§53): a 2-D weighted row (`CorrelateRow`), and the
+column and row passes of the separable operations (`ColumnCorrelate`,
+`ColumnSum`, `ColumnMin`, `ColumnMax`, `RowCorrelate`, `RowMean`,
+`RowMin`, `RowMax`). They take their input rows as one slice and a
+stride rather than a slice of rows, which would escape through the
+dispatch variables and allocate per band.
+
 Future operations:
 
 ```text
@@ -460,7 +471,8 @@ internal/vec/                      internal/stencil/
 ```
 
 - `internal/accum` has the same pair, with the block loop they share in
-  `blocks.go`. There is no `simd.go` (portable SIMD), per §14.
+  `blocks.go`, and so has `internal/focalrow` (§53), after a scalar
+  `focalrow.go`. There is no `simd.go` (portable SIMD), per §14.
 - **Dispatch.** Kernels are package-level function variables. They start
   scalar, and `init` swaps them for SIMD versions when the build has
   `GOEXPERIMENT=simd` and, on amd64, the CPU has AVX2. This is gated on
@@ -671,7 +683,7 @@ Clamp       radius 0
 Normalize   radius 0 (after a reduction pass, §18)
 Slope       radius 1
 Hillshade   radius 1
-5×5 filter  radius 2
+5×5 filter  radius 2    (focal.Correlate, §53)
 ```
 
 The execution engine can then handle boundaries and halos generically.
@@ -740,8 +752,10 @@ Algorithms should not implement tile-boundary coordination individually.
   worker count. Tests enforce this (§39): `internal/exec`'s
   `TestTilesAndWorkers` runs every tile width and height in {1, 7, 64,
   256, full, larger than the raster} with 1, 2, 3 and GOMAXPROCS workers,
-  for Clamp, Add, Slope, Aspect, Hillshade, Gradient and a radius-2
-  kernel, with and without masks, on windows whose stride is not a
+  for Clamp, Add, Slope, Aspect, Hillshade, Gradient, a radius-2
+  kernel and three focal kernels (a radius-3 Correlate, a radius-2
+  CorrelateSeparable, which uses scratch, and a radius-4 Max, §53), with
+  and without masks, on windows whose stride is not a
   multiple of 64.
 - **Buffers.** Tile and halo buffers of operands with validity are
   allocated with `Stride` rounded up to a multiple of 64, so each row's
@@ -893,7 +907,8 @@ The later packages follow the same pattern: `transfer` has `ReclassTiled`,
 `LookupTiled`, `RescaleTiled`, `RescaleRangeTiled` and their `Chunked`
 counterparts (§50), and `reduce` has `CountTiled`, `CountChunked`,
 `MinMaxTiled` and `MinMaxChunked`, which return a value instead of
-filling a sink (§49).
+filling a sink (§49). `focal` has a Tiled and a Chunked form of each of
+its six operations (§53).
 
 Configuration:
 
@@ -965,7 +980,8 @@ Chunks
 ```
 
 Low-level kernels remain synchronous. `internal/vec`, `internal/stencil`,
-`internal/curve`, `algebra`, `terrain`, `transfer` and `reduce` create no
+`internal/curve`, `internal/focalrow`, `algebra`, `terrain`, `focal`,
+`transfer` and `reduce` create no
 goroutines of their own; their `Tiled` and `Chunked` entry points get
 workers from the engine.
 
@@ -1090,7 +1106,9 @@ and 2.6× to Gradient at 4096². That is why workers scale these operations
 where they barely scale the algebra ones.
 
 Convolution, resampling, interpolation and point-cloud filtering should
-behave like the terrain kernels, and are not measured yet. Benchmarks
+behave like the terrain kernels. Convolution is now measured: §53 and
+benchmarks/focal/RESULTS.md have the numbers by radius. Resampling,
+interpolation and point-cloud filtering are not measured yet. Benchmarks
 distinguish compute-bound, cache-bound, memory-bound and IO-bound
 operations.
 
@@ -1312,6 +1330,7 @@ benchmarks/
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
+├── focal/              implemented: Correlate, Gaussian, Mean, Min, Max by radius, RESULTS.md (§53)
 ├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── reduce/             implemented: Min, MinMax, Sum, Stats against read bandwidth, RESULTS.md (§49)
@@ -1525,7 +1544,8 @@ is a separate module that uses strata only through its public API and
 writes every input and output to plain files. A numpy program written
 from published definitions (`check.py`, Horn's kernel as gdaldem
 documents it, shaded relief as the cosine between the light and the
-surface normal) then judges them in 237 checks. The checks cover terrain,
+surface normal, correlation and convolution as scipy.ndimage defines
+them) then judges them in 600 checks. The checks cover terrain, focal,
 algebra and reduce, in all three forms, on three synthetic DEMs, with
 tolerances derived from the float32 error bound rather than tuned.
 `sabotage.py` injects plausible defects one at a time and requires each to
@@ -1567,6 +1587,13 @@ strata/
 │   │                           table checks and the three kernels
 │   └── tiled.go               tiled and chunked entry points
 │
+├── focal/                     implemented (§53)
+│   ├── doc.go
+│   ├── focal.go               MaxRadius, the engine calls, option checks
+│   ├── correlate.go           Correlate, Convolve
+│   ├── separable.go           CorrelateSeparable, Gaussian
+│   └── box.go                 Mean, Min, Max
+│
 ├── terrain/                   implemented
 │   ├── gradient.go
 │   ├── slope.go
@@ -1585,6 +1612,8 @@ strata/
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
 │   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, mask.go,
+│   │                           simd_amd64.go, simd_arm64.go
+│   ├── focalrow/              implemented (§53): focalrow.go (scalar, dispatch),
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
 │   │                           accum.go, moments.go, result.go, simd_amd64.go
@@ -1851,8 +1880,10 @@ v0.10  voxel grids as 3-D arrays (§33)
 **Not tied to a milestone:** a licence and tagged releases, so domain
 modules can import and pin strata (§7, §42); and revisiting portable
 `simd` with Go 1.28 (ADR 0001). The ARM64 NEON kernels (STRATA-11), the
-traffic counter (§51), the outside benchmark against `gdaldem` (§38) and
-the acceptance harness (§39) landed this way and are done.
+traffic counter (§51), the outside benchmark against `gdaldem` (§38),
+the acceptance harness (§39) and the focal operations (§53) landed this
+way and are done; a focal median and statistics that skip invalid cells
+are open (§53).
 
 **v1.0**
 
@@ -2748,3 +2779,279 @@ Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
 is what would let a caller build one of these.
+
+## 53. Focal Operations
+
+§28 predicted that convolution would behave like the terrain kernels:
+compute-bound, where SIMD and workers pay, rather than capped by memory
+bandwidth like the algebra. Its cost per cell grows with the
+neighbourhood, (2r+1)² products for a full kernel, so if any operation
+turns work into speed it is this one. §7 puts domain-neutral
+neighbourhood stencils in the core and keeps `terrain` to derivatives of
+a DEM, so these operations are a package of their own, `focal`.
+
+### API
+
+Every operation has a plain function, a `Tiled` form and a `Chunked`
+form, shaped as `terrain`'s are (§25):
+
+```go
+focal.Correlate(dst, src, focal.WeightsOptions{Radius: 2, Weights: w})    // 25 weights, row-major
+focal.Convolve(dst, src, focal.WeightsOptions{Radius: 2, Weights: w})     // the same, rotated 180°
+focal.CorrelateSeparable(dst, src, focal.SeparableOptions{Radius: 3, Row: g, Col: g})
+focal.Gaussian(3, 1.5)                                                    // 7 taps for Row and Col
+focal.Mean(dst, src, focal.BoxOptions{Radius: 1})
+focal.Min(dst, src, focal.BoxOptions{Radius: 1})
+focal.Max(dst, src, focal.BoxOptions{Radius: 1})
+```
+
+- **Correlate and Convolve are both public, with one kernel.** A
+  function called Convolve that does not rotate its weights surprises
+  anyone coming from scipy or a textbook, and one that does surprises
+  anyone coming from GIS "focal weights" or OpenCV's `filter2D`, which
+  are correlations. So each name means what it says. Convolve rotates the
+  weights once, when the call starts, and the hot loop always correlates.
+  Since the sum is ordered by the *source* cells it reads (below),
+  `Convolve(w)` is bit for bit `Correlate(rot180(w))` by construction.
+  The separable form is only `CorrelateSeparable`: for symmetric taps,
+  Gaussian and box included, the two coincide.
+- **The radius is required, 1 to `MaxRadius = 8`.** There is no default,
+  unlike terrain's zero-means-default options: a Mean whose radius was
+  forgotten would quietly be 3×3. Radius 0 would be a different engine
+  path (in place is allowed at radius 0). The cap is the engine's
+  cancellation granularity: bands are about 2¹⁶ cells (§25), and at r=8
+  Correlate's 289 products per cell make a band tens of milliseconds of
+  scalar work. A per-kernel band size would lift it; nobody is asking.
+- **Weights must be finite.** A NaN weight is a programming error, and
+  panics with `focal:` before anything is written, as terrain's unusable
+  scales do. Data is another matter: NaN and ±Inf in valid cells flow
+  through IEEE arithmetic (§31), and zero weights are applied, not
+  skipped, so a zero weight on an infinite cell gives NaN — numpy's and
+  scipy's answer too.
+
+### Validity: the whole neighbourhood
+
+An output cell is valid iff it is not an edge cell and all (2r+1)² cells
+of its neighbourhood are valid, whatever their weights: terrain's rule,
+applied by the engine's erosion (§22, `stencil.ErodeBox`, any radius),
+with no mask code in `focal`.
+
+The alternative — a focal mean of the valid cells only, or weights
+renormalised over them — is what many GIS tools do, and it is not built.
+It needs the kernel to read input validity and write its own output
+validity, which the `Kernel` contract forbids (`internal/exec/doc.go`:
+"Kernels whose validity rule is different ... need an extension of this
+interface"). The extension is not large: `Window` would expose the masks
+it already carries, and an optional interface would let a kernel own its
+output validity. But it gives up §31's one-pass word-level validity, and
+the SIMD kernels would need per-lane validity words instead of plain
+arithmetic. It should come with a caller who needs it, as its own
+operations (`MeanValid`, say), rather than as a mode of these.
+
+### Evaluation order, and why nothing slides
+
+Tiled, Chunked, scalar, AVX2 and NEON give the same bits because every
+cell's terms are folded in one fixed order:
+
+- A weighted sum starts from its first product, not from +0, and adds
+  each later one: `acc = float32(acc + float32(w·v))`, never an FMA
+  (§15). Starting from +0 would turn a sum of −0 products into +0.
+- Correlate's terms are in row-major order of the input cells.
+- The separable operations fold each column of the neighbourhood first,
+  top to bottom, then the column results left to right (below for why
+  in that order). The result is the same sum as Correlate's with the
+  outer product of the taps, not the same bits, and the documentation
+  says so. On data whose sums are exact, the two agree to the sign of a
+  zero, and the metamorphic tests hold them to that.
+- Mean is the separable box sum, then a division by (2r+1)², not a
+  multiplication by its reciprocal (§18's argument for Normalize).
+- Min and Max use Go's builtin `min` and `max`, which are associative and
+  commutative with NaN and signed zero included, so their order does not
+  matter at all: the separable result is the brute-force 2-D result bit
+  for bit.
+
+A running sum — add the column entering the window, subtract the one
+leaving — would make Mean and box filters O(1) per cell at any radius.
+It is not used, because its rounding depends on where the running sum
+started, which is the start of a band or tile: tiled output would stop
+equalling whole-raster output (§23). Every cell is summed afresh, O(r²)
+for Correlate and O(r) per pass for the rest. Min and Max are different:
+van Herk/Gil-Werman gives O(1) per cell with exact arithmetic, so its
+result cannot depend on where a band starts. It is a later optimisation
+for large radii, not a contract question.
+
+### Separable kernels: column first, one row of scratch
+
+A separable kernel is one `ScratchKernel` of radius r (§52), not a
+two-stage pipeline: it does both passes inside one `Process` call, and
+no radius > 0 `Pipeline` is needed. The order of the passes matters:
+
+- **Row pass first** would filter every window row horizontally into
+  scratch, (H+2r) rows for an H-row span, then filter those columns. A
+  band is about 2¹⁶ cells of whole rows, so a 4096-wide raster gets
+  16-row bands, and each band would redo the row pass for its 2r halo
+  rows: 1.6× the row-pass work at r=5, and (2r+1)× for one-row bands.
+  Its scratch, W·(H+2r) cells, is 425 KB at 4096×16, r=5: about an L2.
+- **Column pass first**, the one built, folds the 2r+1 rows under each
+  output row into one row of W+2r column results, then folds each run of
+  2r+1 of those into an output cell. The only repeated work is the 2r
+  column results at the ends of each row, (W+2r)/W: 1.002 at 4096 wide.
+  Band height stops mattering, and scratch is one row, W+2r cells, which
+  stays in L1.
+
+Mean, Min and Max are the same kernel with sums, minima or maxima in
+place of weighted sums.
+
+Building it found an engine bug. `ScratchKernel.Scratch(w, h)` is asked
+for the largest span a call can produce, and `ProcessChunked` answered
+with the *largest-area* span among its full and clipped tiles. A clipped
+tile is narrower and so gets taller bands, so the largest-area span can
+be narrower than the widest one: a 2500-wide raster in 1000-wide,
+256-tall tiles has full-tile bands of 1000×65 and last-column bands of
+500×131, and was asked for 500 columns. `Pipeline`'s scratch scales with
+area, so it never showed; a kernel whose scratch is a row panicked out of
+range. `chunkJob.spanSize` now bounds each side separately (the widest
+span's width, the tallest span's height), and `TestScratchBoundsEverySpan`
+checks both sides as well as the area.
+
+Two limits remain. Pooled scratch sits outside §27's memory bound, as a
+`Pipeline`'s does: a row per worker here, which is negligible. And
+`Pipeline` passes no `Scratch` to its stages, so a focal kernel cannot
+be a `Pipeline` stage yet; the radius > 0 `Pipeline` (§52) has to pass
+it on.
+
+### Kernels
+
+The row kernels are in `internal/focalrow`, with the dispatch and
+`Backend`/`UseScalar` of every kernel package (§17), not in
+`internal/stencil`, whose kernels and tests are built around Horn's 3×3
+and the masks:
+
+- **Scalar** kernels loop over terms outside and cells inside,
+  accumulating in `dst` — the same per-cell order as a register
+  accumulator, with every cell loop indexed by its loop variable alone,
+  so they carry no bounds checks (§39).
+- **AVX2 and NEON** kernels keep one output cell's accumulator per lane.
+  A block is four vectors (32 cells on AVX2, 16 on NEON) with an
+  accumulator each, so four add chains hide one's latency, and each term
+  costs one weight broadcast and one bounds check per block: the
+  compiler cannot bound a term's offset, so converting it to an array
+  pointer is checked, and the four loads are constant slices of that
+  pointer, which are not. The BCE test names the four lane functions and
+  says why. Weights are broadcast from memory: on amd64 that is a VEX
+  `VMOVSS` and `VBROADCASTSS`, so no legacy SSE enters the loop (ADR
+  0001). Neither backend emits a fused multiply-add; the §50 disassembly
+  check covers `internal/focalrow`.
+- **Composing from `vec`** — a `MulScalar` then an `AddScaled` per term,
+  over whole rows — was considered and not built. It is BCE-clean and
+  needs two new kernels, but every term becomes a pass that loads and
+  stores the accumulator row, three memory operations per vector per
+  term against one, and the point of this section is to measure what
+  convolution costs, not what that composition costs.
+
+Building the AVX2 min found a hazard in the exact `min8` recipe
+(ADR 0001) that `internal/vec` shares. It restores NaN lanes from the
+first operand only, which assumes `x.Min(y)` becomes `VMINPS` with x
+first. Inside a fold (`acc = min8(acc, load)`) the compiler treated
+`Min` as commutative and swapped the operands for its register
+allocation, and min(+Inf, NaN) came out +Inf. `focalrow`'s `min8` now
+repairs from both operands in one blend: x|y is NaN when either is, and
+the right signed zero when they are equal. `max8` repairs NaN lanes with
+x+y, since the AND it needs for equal lanes can turn a NaN into ±Inf.
+`internal/vec`'s `min8` and `max8` were changed to the same forms
+alongside, and ADR 0001's rule with them.
+
+### Testing
+
+- `internal/focalrow`: the scalar kernels against a per-cell definition,
+  bit for bit, over hazards, odd lengths and strides; the SIMD kernels
+  against scalar for every length to 120 and every neighbourhood to 17
+  cells, with the cells they must not read poisoned differently in the
+  two runs (`simd_test.go`, shared by both architectures); min and max
+  on every ordered pair of hazards; `FuzzFocalRows`; the BCE test.
+- `focal`: every operation against a naive per-cell reference in the
+  documented order, bit for bit, with edges and validity, on windows
+  whose stride and mask offset are not the parent's; hand-worked 3×3
+  cases for orientation and rotation; plain, Tiled and Chunked over a
+  grid of tilings and worker counts for r ∈ {1, 2, 3, 5}; scalar against
+  SIMD; panics before any write. `FuzzFocal` covers the same with fuzzed
+  operations, options and float bits.
+- Metamorphic relations (`FuzzFocalRelations`, and `TestFocalRelations`
+  under rapid), each side through its own path, tiling and layout, all
+  bit-exact: crop, locality of one changed cell and of one invalidated
+  cell, data under invalid cells, power-of-two scaling of data and of
+  weights, negation (to the sign of a zero), Min(−x) = −Max(x),
+  Min(x+c) = Min(x)+c, and the eight grid symmetries for Min and Max.
+  On data whose sums are exact (small integers, integer weights) every
+  order gives the same sum, so every operation is also invariant under
+  the symmetries with its weights mapped, separable equals Correlate
+  with the outer product, and Mean equals a unit-weight Correlate
+  divided by (2r+1)². Fuzzing found that the separable relations hold
+  only to the sign of a zero, since a transposition or an outer product
+  factors a zero term differently; both corpus entries are kept.
+- The §23 matrix in `internal/exec` runs three focal kernels — Correlate
+  at r=3 with asymmetric weights, CorrelateSeparable at r=2, and Max at
+  r=4, which leaves one interior row of the 300×9 window — under poisoned
+  scratch and one-row bands, which only the engine's own tests can set.
+- Mutations of `focal` — Convolve without its rotation, a radius declared
+  one short, the separable taps swapped, Mean multiplying by the
+  reciprocal, a sum started from +0 — each fail the tests.
+- `acceptance/` judges every operation, in all three forms, on its three
+  DEMs against the definition as shifted sums in float64 (Min and Max
+  exactly), with the dot-product error bound `(m+1)·2⁻²⁴·Σ|w||z|`, and
+  cross-checks that reference against `scipy.ndimage.correlate` and
+  `convolve` when scipy is installed. Errors land at 0.05–0.12× the
+  bound. Its border and erosion checks now take each operation's radius.
+  `sabotage.py` adds seven focal defects, all caught. A Mean multiplying
+  by a rounded reciprocal is not among them: it is an ulp off, inside
+  any bound a float64 reference can justify, so the unit tests pin
+  Mean's division instead.
+
+### Benchmarks
+
+`benchmarks/focal` times Correlate, CorrelateSeparable with Gaussian
+taps and Mean and Min at radii 1, 2, 3 and 5, and Max at 3, through the
+plain API at the §38 sizes, masked and not, on both backends. The radius
+is part of the operation's name (`CorrelateR3`), so each radius gets its
+own §28 class from `stratabench` without a change to its name pattern.
+Every operation moves 8 bytes per cell whatever its radius: the other
+rows of the neighbourhood come from cache.
+
+**§28's prediction holds on the NEON run** (Apple M4, one core,
+benchmarks/focal/RESULTS.md): every operation is compute-bound at every
+radius and size, 256² to 16384², masked or not.
+
+- Correlate costs what its products cost: 0.58, 1.35, 2.59 and 6.77 ns
+  per cell at r = 1, 2, 3 and 5 (4096², no mask), a flat 0.053–0.064 ns
+  per product, so its throughput falls as (2r+1)² and its memory demand
+  with it, from 14 GB/s at r = 1 to 1.2 at r = 5.
+- The separable forms grow linearly: Gaussian 0.40 → 1.12 ns per cell
+  from r = 1 to 5, Mean 0.35 → 0.97, Min 0.34 → 0.96. At r = 5 separable
+  is 6× cheaper than the full kernel.
+- The highest demand in the suite is 28 GB/s, Min and Mean at r = 1, and
+  even there throughput rises with the raster size rather than meeting
+  a ceiling.
+- NEON is worth 3.3–6.0× over scalar, more than its four lanes, because
+  the scalar kernels accumulate through memory a term at a time (the
+  canonical order, bounds-check free) where the lanes hold four
+  accumulators in registers.
+- One row was labelled cache-bound, CorrelateR2 unmasked at 16384², on
+  three samples that spread 45%; five more had a median within 20% of
+  the 256² figure. A laptop cannot pin a thread to a core.
+
+So workers should scale these operations as they scale Slope (§26), and
+further, since they ask for less bandwidth per core; that is not
+measured yet. The AVX2 run on the Zen 2 desktop, the suite's headline
+machine, is pending, and is where the §28 classes are rendered between
+the markers and checked by `TestResultsMatch`.
+
+Status: done: `focal` (Correlate, Convolve, CorrelateSeparable,
+Gaussian, Mean, Min, Max, plain, Tiled and Chunked), `internal/focalrow`
+(scalar, AVX2, NEON), the §23 matrix entries, `benchmarks/focal` with an
+Apple M4 NEON run, and the acceptance checks. The `chunkJob.spanSize`
+fix is in. Open: the Zen 2 AVX2 benchmark run, which is the suite's
+headline machine (§38); a focal median (sorting networks up to 5×5, a
+selection algorithm beyond); statistics over valid cells only, with the
+interface extension above; van Herk/Gil-Werman for Min and Max at large
+radii; rectangular and per-axis radii, whose erosion would need to
+follow the footprint; and focal kernels as `Pipeline` stages.
