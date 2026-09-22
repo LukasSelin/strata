@@ -1264,13 +1264,16 @@ at all**, which is the claim this section makes, as an assertion.
 
 ### The two backends are not the same shape, on purpose
 
-The vector backend is the one this section is named for. It carries the
-accumulator in a YMM register for the whole chain — eight cells at a
-time, each input loaded once, `dst` stored once, nothing else written
-anywhere. It follows the file's existing rules: the operand array is
-filled before the first 256-bit instruction, immediates are broadcast at
-the top of the lane function, and `ClearAVXUpperBits` comes before the
-scalar tail (ADR 0001, `internal/stencil/simd_amd64.go`).
+The vector backends are the ones this section is named for. They carry
+the accumulators in registers for the whole chain — four vectors at a
+time, so 32 cells on AVX2 and 16 on NEON, each input loaded once, `dst`
+stored once, nothing else written anywhere. AVX2 follows that file's
+existing rules: the operand array is filled before the first 256-bit
+instruction, immediates are broadcast at the top of the lane function,
+and `ClearAVXUpperBits` comes before the scalar tail (ADR 0001,
+`internal/stencil/simd_amd64.go`). NEON needs none of that, and `min4`
+and `max4` are already Go's builtins where `min8` and `max8` are a
+repair.
 
 The scalar backend carries the value through a block of 2048 cells
 instead. One cell at a time with the operation dispatched per cell would
@@ -1301,49 +1304,74 @@ The two must still agree bit for bit, which is what the tests are for.
 ### What it is worth
 
 Not a counter figure. `engine.Stats` reads 28 B/cell for a six-input
-product either way — it never counted the scratch — so what fusion
-changes is time, and §51's number simply stops being optimistic.
+product whether the stages are staged or fused — it never counted the
+scratch — so what fusion changes is time, and §51's number simply stops
+being optimistic.
 
-A six-input product, `BenchmarkProduct` in `internal/exec`, ns/cell,
-medians of 5, scalar backend, Apple M4 (arm64 has no SIMD backend yet,
-STRATA-11):
+`benchmarks/fusion` is where it is measured, because the spike that asked
+the question was already there. It runs §52's six-factor product four
+ways — five chained `MulTiled` calls, a staged `Pipeline`, that same
+`Pipeline` lowered, and a `Fused` kernel written by hand as a generator
+would have had to emit it — and `TestFormsAgree` holds all four to the
+same bits.
 
-| | chained | staged | fused |
-|---|---:|---:|---:|
-| 1024², 1 worker | 1.280 | 1.360 | 1.358 |
-| 1024², 4 workers | 0.458 | 0.539 | 0.377 |
-| 4096², 1 worker | 1.287 | 1.337 | 1.384 |
-| 4096², 4 workers | 0.649 | 0.461 | 0.427 |
+4096², mask off, NEON, Mcells/s, medians of 3, Apple M4 (10 cores):
 
-The reading is §28's, not a surprise: the intermediates cost where memory
-is the constraint. With four workers fusion is 30% faster than the staged
-pipeline at 1024² and 8% at 4096², and 18% and 34% faster than five
-chained `MulTiled` calls.
+| workers | tiles | chained | staged | lowered | fused | lowered ÷ staged | lowered ÷ fused |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | strips | 1170 | 1171 | 1562 | 2079 | 1.33× | 0.75 |
+| 1 | 256×256 | 209 | 274 | 354 | 437 | 1.29× | 0.81 |
+| 10 | strips | 1581 | 2928 | 3188 | 3502 | 1.09× | 0.91 |
+| 10 | 256×256 | 925 | 1159 | 1769 | 1961 | 1.53× | 0.90 |
 
-On one core it is level at 1024² and 3% behind the staged pipeline at
-4096². Nothing is contended there, so there is no intermediate traffic to
-save, and what is left is the block loop's extra kernel calls. The same
-holds a step further back: §52 itself is 4–6% *slower* than five separate
-calls at one worker, and pays only with workers.
+So the lowering is worth 9–53% over the staged pipeline, and it collects
+three quarters to nine tenths of what hand-written code gets. The gap to
+hand-written is the dispatch: the lane loop runs a switch and a slice
+advance per operation, where the hand-written kernel has the chain in its
+instruction stream. That is the argument for a generator, and it is now a
+number rather than a hope — 10 to 25%, on this machine, for this chain.
 
-The 1024²/4-worker row is the one worth looking at twice: the staged
-pipeline is slower there than the chained calls it replaced, because four
-workers each carrying four span-sized buffers is a working set five
-separate passes never had. Fusion removes the buffers and the anomaly
-with them.
+### Four vectors at a time, which is not a detail
 
-The AVX2 chain is compiled, linted and checked bit-for-bit against the
-scalar one by CI's `test (simd)` job, but it has not been timed: the
-machine these numbers come from is arm64. It is the path where "in a
-register" is literally true, so its numbers should be better than these,
-and they are owed.
+The first version of the lane loop carried one vector, and it was
+*slower* than the staged pipeline it replaced: 840 Mcells/s against 1171
+on one worker. Dispatching an operation costs about as much as performing
+it on four lanes, so a chain that pays that per vector spends more on
+deciding than on arithmetic, and carrying the value in a register buys
+nothing.
+
+Carrying `chainWide` = 4 vectors divides the dispatch by four and took
+the same case to 1562. Four accumulators are four registers of sixteen on
+amd64 and of thirty-two on arm64, so nothing spills, and what is left
+over — fewer than 32 cells of a span — goes to the scalar block
+evaluator rather than to a second copy of the switch.
+
+This is the §51 lesson again: the design said "in a register" and was
+right about the memory, and a cheap measurement caught that the
+instruction it cost was the thing that mattered.
+
+### Where these numbers sit against the spike's
+
+`benchmarks/fusion/RESULTS.md` measured chained, staged and hand-fused on
+a Zen 2 with AVX2 and concluded that out of cache register-level fusion
+was worth about 5%, and that the large in-cache gaps were the
+`Pipeline`'s per-call scratch allocation rather than fusion. Both of its
+caveats have since moved: scratch comes from a pool now, and these
+numbers are a different machine, with far more memory bandwidth per core,
+where the same product is much less memory-bound and so has much more to
+gain from not moving the intermediates. Neither run is wrong; they are
+two machines, and the Zen 2 column of this table is not yet filled in.
+
+What both agree on is the ordering: tile-level fusion (§52) is the larger
+win, and register-level fusion is the smaller one on top.
 
 ### Where it lives
 
-`internal/vec/chain.go`, `chain_amd64.go` and `scalarChainFrom` in
-`scalar.go`; `FusableKernel` and `Scratch.Runs` in `internal/exec`;
-`Pipeline.lower` and `processFused` in `internal/exec/pipeline.go`;
-`Fuse` methods in `algebra` and `transfer`.
+`internal/vec/chain.go`, `chain_amd64.go`, `chain_arm64.go` and
+`scalarChainFrom` in `scalar.go`; `FusableKernel` and `Scratch.Runs` in
+`internal/exec`; `Pipeline.lower` and `processFused` in
+`internal/exec/pipeline.go`; `Fuse` methods in `algebra` and `transfer`.
+The `lowered` arm of `benchmarks/fusion` is what measures it.
 
 Nothing is public. A caller still cannot build a `Pipeline` (§52), so
 fusion is reached only through the typed entry points that will be
@@ -1371,18 +1399,27 @@ on and with it off, and require the same bits.
 - `requireFused` in §52's own tests keeps them covering the fused path
   rather than quietly falling back to the staged one.
 - In `internal/vec`: `TestChainMatchesStaged` over random programs,
-  random data including every float32 class, and lengths straddling both
-  the lane width and the block; `TestChainIsNotFused` for the two
-  multiply-add shapes; `TestAVX2ChainMatchesScalar` for the lane loop.
+  random data including every float32 class, and lengths straddling the
+  lane widths, the unrolled group and the scalar block;
+  `TestChainIsNotFused` for the two multiply-add shapes;
+  `TestSIMDChainMatchesScalar` for the lane loop, on whichever backend
+  the build has.
+- In `benchmarks/fusion`, `TestFormsAgree` holds the lowered chain to the
+  same bits as the chained calls, the staged pipeline and the
+  hand-written kernel, on every backend, tile shape and worker count the
+  benchmarks use.
 
 The acceptance harness (§39) is byte-identical to the parent commit,
 which is the check that a refactor reaching into `algebra` and `transfer`
 changed nothing a caller can see.
 
-Status: done, for the left-deep cut. Still to do: the vector backend's
-numbers on an amd64 machine; a chain with two live intermediates, which
-needs a register file and is worth what it measures; and the typed entry
-point that would let a caller reach any of this.
+Status: done, for the left-deep cut, on all three backends. Still to do:
+the Zen 2 AVX2 run, which is the suite's headline machine (§38) and the
+one the spike's own numbers came from; a chain with two live
+intermediates, which needs a register file and is worth what it measures;
+a generator, which this now prices at 10–25% for a chain of multiplies
+and which nothing yet asks for; and the typed entry point that would let
+a caller reach any of this.
 
 Status: partly done. Tile-level fusion of radius-0 chains is done: the
 internal `Pipeline` (§52) runs a chain of kernels on each tile while it is

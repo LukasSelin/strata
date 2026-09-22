@@ -31,6 +31,12 @@ func (mulStage) Process(dst exec.Span, src exec.Window) {
 	}
 }
 
+// Fuse would make mulStage a step of a lowered chain. It is deliberately
+// absent: mulStage is what NewPipeline builds, and this spike's point is
+// to measure the staged Pipeline against a fused kernel, so the stage
+// the Pipeline runs must stay unfusable. fusableMulStage is the one that
+// lowers (NewLowered).
+
 // NewPipeline returns the chain as one tile-level fused kernel
 // (DESIGN.md §52): five mulStage stages, each folding the running product
 // with the next input. The four intermediates live in the worker's
@@ -43,6 +49,34 @@ func NewPipeline() *exec.Pipeline {
 		acc = Inputs + len(stages) - 1
 	}
 	return exec.NewPipeline(Inputs, stages, acc)
+}
+
+// fusableMulStage is mulStage that names itself as a chain step, so a
+// Pipeline of them lowers to a vec.Chain (DESIGN.md §29). It is the same
+// Process, so a Pipeline of these staged and a Pipeline of these lowered
+// differ in nothing but the lowering.
+type fusableMulStage struct{ mulStage }
+
+func (fusableMulStage) Fuse() (vec.Step, bool) { return vec.Step{Op: vec.OpMul}, true }
+
+// NewLowered returns the chain as the engine ships it: the same stages
+// as NewPipeline, lowered to a vec.Chain, so the running product is
+// carried in a register and the four intermediates have no buffer at
+// all. It is what a caller gets today, where Fused is what a generator
+// would have had to emit; the gap between them is what the lowering
+// costs against hand-written code.
+func NewLowered() *exec.Pipeline {
+	stages := make([]exec.Stage, 0, Inputs-1)
+	acc := 0
+	for i := 1; i < Inputs; i++ {
+		stages = append(stages, exec.Stage{Kernel: fusableMulStage{}, In: []int{acc, i}})
+		acc = Inputs + len(stages) - 1
+	}
+	p := exec.NewPipeline(Inputs, stages, acc)
+	if !p.Fused() {
+		panic("fusion: the lowered pipeline did not lower")
+	}
+	return p
 }
 
 // Fused is the chain fused by hand at register level (DESIGN.md §29): one

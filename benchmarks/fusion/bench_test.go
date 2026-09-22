@@ -135,6 +135,17 @@ func pipelined(ctx context.Context, f *fixture, masked bool, o engine.Options) e
 	return exec.ProcessN(ctx, []raster.Float32Raster{dst}, src, pipeline, o)
 }
 
+// lowered is the same five multiplies as a Pipeline that lowers to a
+// vec.Chain (DESIGN.md §29): the engine's own register-level fusion, as
+// a caller gets it. Against pipelined it is what the lowering is worth;
+// against fused it is what it costs next to hand-written code.
+var lowering = fusion.NewLowered()
+
+func lowered(ctx context.Context, f *fixture, masked bool, o engine.Options) error {
+	dst, src := f.operands(masked)
+	return exec.ProcessN(ctx, []raster.Float32Raster{dst}, src, lowering, o)
+}
+
 // fused is the hand-written register-level kernel (DESIGN.md §29): one
 // loop, six loads, five multiplies and one store per cell.
 func fused(ctx context.Context, f *fixture, masked bool, o engine.Options) error {
@@ -192,4 +203,5 @@ func bench(b *testing.B, name string, run form) {
 
 func BenchmarkMulChained(b *testing.B)  { bench(b, "chained", chained) }
 func BenchmarkMulPipeline(b *testing.B) { bench(b, "pipeline", pipelined) }
+func BenchmarkMulLowered(b *testing.B)  { bench(b, "lowered", lowered) }
 func BenchmarkMulFused(b *testing.B)    { bench(b, "fused", fused) }

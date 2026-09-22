@@ -276,6 +276,12 @@ func (Pipeline) Radius() int { return 0 }
 // Arity is the pipeline's inputs and its one output.
 func (p *Pipeline) Arity() (inputs, outputs int) { return p.inputs, 1 }
 
+// Fused reports whether the stages lowered to a fused chain (§29) rather
+// than running one at a time. Lowering never changes what a pipeline
+// computes, so this is for tests and benchmarks that mean to measure or
+// pin one path; a caller building a pipeline needs no branch on it.
+func (p *Pipeline) Fused() bool { return p.chain != nil }
+
 // Scratch is the working memory one Process call needs: one w×h buffer
 // per value that is neither an input nor the output, and views for the
 // widest stage, reused down the chain.
