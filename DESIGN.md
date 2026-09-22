@@ -1359,9 +1359,10 @@ validity and never write it, so the mask lock below has nothing to guard.
 
 **Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
 goroutines per call and uses the calling goroutine as the last worker;
-there is no global pool. Workers take bands from the plan in order with an
-atomic counter, each with its own views and erosion scratch, and the call
-joins them before it returns. Kernels run concurrently on disjoint bands.
+there is no global pool of goroutines. Workers take bands from the plan
+in order with an atomic counter, each with its own views and erosion
+scratch, and the call joins them before it returns. Kernels run
+concurrently on disjoint bands.
 Validity words can be shared between bands (cells side by side, row ends
 when the stride is not a multiple of 64, inputs and outputs in one mask),
 so all mask work runs under one lock per call, after the band's Data.
@@ -1795,6 +1796,14 @@ Avoid allocating complete temporary rasters for every operation:
   worker per call and reuses them across tiles, with no pooling (§27).
   Raw sources and sinks read and write straight into them and allocate
   nothing.
+- **Done.** A `ScratchKernel`'s working memory (§52) is pooled across
+  calls, in `internal/exec/scratch.go`: one `sync.Pool` per kind and size
+  class, a block per worker lent for the call and returned when its
+  workers have stopped, never zeroed. That is the one pool, and it is
+  allowed by the rule below because scratch's ownership is settled: the
+  engine owns it, lends it for one call, and the contract already says
+  its contents are unspecified and that a kernel must not keep it. Tile
+  buffers are still per call.
 
 Possible future concepts:
 
@@ -3363,7 +3372,7 @@ hash it cannot accidentally satisfy.
 Status: partly done. The radius-0 cut is done: `Pipeline`, `NewPipeline`, the
 `ScratchKernel`/`ScratchSize`/`Scratch` contract extension and
 `Span.Scratch`, per-worker scratch in `job.allocScratch` sized by
-`plan.spanSize` and `chunkJob.spanSize`, and
+`plan.spanSize` and `chunkJob.spanSize` and pooled across calls, and
 `internal/exec/pipeline_test.go`.
 
 The acceptance test passes at both numbers: a six-input product over
@@ -3389,6 +3398,44 @@ built for every one of a great many small bands; by pointer the same
 matrix is geomean −0.68% against the parent commit, which is the
 machine's noise. That is the §51 counter's sibling lesson — a cheap
 measurement caught a cost that was invisible in the design.
+
+Scratch is pooled across calls (`internal/exec/scratch.go`, §37),
+because allocating it per call cost more than the pipeline saved. Every
+call made and zeroed a fresh block per worker — 1 MiB for the four
+intermediates of `benchmarks/fusion`'s five-Mul chain in default strips,
+12 MiB on 12 workers — and at 1024², where the operands are near cache,
+that allocation was the call: the pipeline ran slower on 12 workers
+than on one. Now each worker takes a block from a `sync.Pool` per kind
+and size class (eight to an octave, so at most 1/8 over; the usual
+spans are powers of two and waste nothing) and gives it back when the
+call's workers have stopped. Nothing is zeroed, which the contract
+already allowed. A `sync.Pool` rather than a cache on the `Pipeline`
+because it serves every `ScratchKernel` and both drivers, is already
+safe for concurrent calls, and is emptied by the collector; rather
+than caller-supplied scratch because that would put ownership in the
+public API for a saving the engine can make alone. The slices lent are
+still exactly the lengths asked for, capacity included, so an overrun
+still trips a bounds check; views are cleared on the way back so a
+pooled block does not keep a caller's rasters alive; and tests poison
+every block lent (NaN cells, patterned bits, junk views), so a kernel
+that reads scratch before writing it fails every test, not only a pool
+miss. `TestScratchIsReused` checks that a scratch call allocates no more
+than the same call of a plain kernel, and `TestPipelineConcurrentCalls`
+runs one `Pipeline` from eight goroutines through both drivers.
+
+Measured with `BenchmarkMulPipeline` (AVX2, 12-core Zen 2, -count 5,
+median):
+
+| 1024², default strips | before | after |
+|---|---:|---:|
+| 1 worker, M cells/s | 516 | 547 |
+| 12 workers, M cells/s | 417 | 1065 |
+| 12 workers, B/op | 12.3 MiB | 13.5 KiB |
+
+From 4096² the call is bandwidth-bound and the change is within noise
+(an interleaved re-run of the 1-worker cases: +6% strips, the rest
+unchanged); B/op drops from 1–12 MiB to 13–75 KiB, which is about one
+pool miss per benchmark run spread over its few dozen calls.
 
 Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;

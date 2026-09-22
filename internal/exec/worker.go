@@ -22,6 +22,11 @@ type worker struct {
 	// kscratch is the working memory a ScratchKernel asked for, lent to
 	// every Process call this worker makes. Zero for every other kernel.
 	kscratch Scratch
+	// cells, bits and views are the pooled blocks behind kscratch, held
+	// so releaseScratch can return them. nil when kscratch is empty.
+	cells *[]float32
+	bits  *[]uint64
+	views *[]raster.Float32Raster
 	// stats counts the bytes this worker's bands moved. It is per worker
 	// and summed once the workers have stopped, so the hot path takes no
 	// atomic and no lock. It is written once per band and padded for the
@@ -35,6 +40,7 @@ type worker struct {
 
 // run processes every band of the plan on the job's workers.
 func (e *job) run(ctx context.Context) error {
+	defer e.releaseScratch()
 	err := runWorkers(ctx, len(e.workers), e.plan.bands, func(w, i int) error {
 		e.band(&e.workers[w], i)
 		return nil
