@@ -107,6 +107,31 @@ def wrong_extreme(d):
     json.dump(man, open(p, "w"))
 
 
+def _normalize_inputs(d, stem):
+    z = read(d, f"{stem}.f32")
+    p = os.path.join(d, f"{stem}.mask.u8")
+    valid = np.fromfile(p, dtype=np.uint8).reshape(H, W).astype(bool) if os.path.exists(p) else np.ones((H, W), bool)
+    return z, valid
+
+
+def reciprocal_normalize(d):
+    """Normalize as one multiply-add with a precomputed 1/(hi-lo) - the
+    obvious fast rewrite, which rounds differently."""
+    for stem in ("hill", "plane", "noisy"):
+        z, valid = _normalize_inputs(d, stem)
+        lo, hi = z[valid].min(), z[valid].max()
+        a = np.float32(1) / (hi - lo)
+        for form in ("plain", "tiled", "chunked"):
+            write(d, f"{stem}-normalize-{form}.f32", z * a - lo * a)
+
+
+def normalize_over_nodata(d):
+    """Normalize taking its range from every cell, NoData included."""
+    z, _ = _normalize_inputs(d, "noisy")
+    lo, hi = z.min(), z.max()
+    write(d, "noisy-normalize-chunked.f32", (z - lo) / (hi - lo))
+
+
 MUTATIONS = [
     ("slope 0.05% too large", drift),
     ("dx and dy swapped", transpose_kernel),
@@ -116,6 +141,8 @@ MUTATIONS = [
     ("one NoData cell leaking in", leaky_nodata),
     ("count one too many", miscount),
     ("max slightly wrong", wrong_extreme),
+    ("normalize by a reciprocal", reciprocal_normalize),
+    ("normalize range from NoData", normalize_over_nodata),
 ]
 
 

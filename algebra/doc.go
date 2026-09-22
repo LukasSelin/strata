@@ -1,7 +1,9 @@
 // Package algebra applies pointwise operations to whole rasters: the
-// arithmetic of Add, Sub, Mul, Min, Max and Clamp, and Mask, which
-// narrows validity. Each operation writes into a caller-supplied dst,
-// allocates nothing, and runs the internal/vec kernels over flat spans,
+// arithmetic of Add, Sub, Mul, Min, Max and Clamp, Mask, which narrows
+// validity, and Normalize, which maps the valid cells' range onto [0, 1]
+// after a reduction pass over src. Each operation writes into a
+// caller-supplied dst, allocates nothing (except Normalize, in its
+// reduction), and runs the internal/vec kernels over flat spans,
 // so it picks up the SIMD backend without exposing it. Mask has no
 // kernel of its own: copying cells is a memmove, which already runs at
 // memory speed.
@@ -58,22 +60,24 @@
 //
 // # Tiled execution
 //
-// AddTiled, SubTiled, MulTiled, MinTiled, MaxTiled, MaskTiled and
-// ClampTiled run the same operations in tiles on engine.Options.Workers goroutines (by
+// AddTiled, SubTiled, MulTiled, MinTiled, MaxTiled, MaskTiled,
+// ClampTiled and NormalizeTiled run the same operations in tiles on engine.Options.Workers goroutines (by
 // default one per GOMAXPROCS) with a context, and return ctx.Err() if
 // cancelled (see package engine). They apply the same operand, in-place
 // and validity rules (and also reject a dst whose mask bits partly
 // overlap an input's) and give the same bits for every tiling and worker
-// count. The plain functions do not go through the engine: they keep
-// their promise to allocate nothing, which the engine's per-call setup
-// cannot.
+// count. The plain functions other than Normalize do not go through the
+// engine: they keep their promise to allocate nothing, which the
+// engine's per-call setup cannot.
 //
 // AddChunked, SubChunked, MulChunked, MinChunked, MaxChunked,
-// MaskChunked and ClampChunked read their inputs from
+// MaskChunked, ClampChunked and NormalizeChunked read their inputs from
 // engine.RasterSources and write dst to an engine.RasterSink a tile at a
 // time, so rasters larger than memory, such as raw float32 files, run in
 // Workers × tile buffers (DESIGN.md §27), with the same values and
 // validity. MaskChunked reads the mask source like any other, so a raw
 // mask file carries validity only through engine.RawOptions.Fill. They cannot run in place over
 // memory: a memory sink sharing memory with a memory source panics.
+// NormalizeChunked reads its source twice, once to find the range and
+// once to map it, so it costs two passes over a file.
 package algebra

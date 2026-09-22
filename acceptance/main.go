@@ -239,6 +239,20 @@ func (d dem) ops() []op {
 			},
 		},
 		{
+			// Not a terrain operation, but it needs a whole DEM and all
+			// three forms, which is what this list runs.
+			name:  "normalize",
+			plain: func(dst, dm raster.Float32Raster) { algebra.Normalize(dst, dm) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				_, _, err := algebra.NormalizeTiled(ctx, dst, dm, eo)
+				return err
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				_, _, err := algebra.NormalizeChunked(ctx, dst, src, eo)
+				return err
+			},
+		},
+		{
 			name:     "hillshade",
 			azimuth:  ho.Azimuth,
 			altitude: ho.Altitude,

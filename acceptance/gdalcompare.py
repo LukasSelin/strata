@@ -168,14 +168,40 @@ dy = ((g_ + 2 * h_ + i_) - (a_ + 2 * b_ + c_)) / (8 * CELL)
 truth = np.full((H, W), np.nan)
 truth[1:-1, 1:-1] = np.degrees(np.arctan(np.hypot(dx, dy)))
 
+# How far apart may two correct float32 implementations land? Not a
+# fixed number of ulps of the slope: Horn's weighted sums cancel, so on
+# high, nearly flat terrain (elevations near 500 m, slopes near 0.1 deg)
+# a rounding of the sum moves the gradient by far more than an ulp of
+# the result. Derive it the way check.py's TOLERANCES does. Horn's
+# numerator is six weighted elevations of magnitude at most zmax (here
+# the largest |z| in the cell's own 3x3 window), accumulated in at most
+# six roundings of a partial sum of magnitude at most 4*zmax, so each
+# gradient component is off by at most
+#
+#       gtol = 3 * 2^-24 * zmax / cellsize
+#
+# and |gradient| by at most hypot(gtol, gtol). atan has derivative at
+# most 1, so the slope is off by at most DEG * that. Both tools round,
+# so the gap between them is at most twice it, plus one float32 rounding
+# of each tool's result (an ulp of the slope each). A real defect is
+# wrong by a fraction of the signal, which dwarfs this on any cell with
+# relief; on a cell with none, both tools are rightly allowed to differ.
+EPS = 2.0**-24  # float32 half-ulp
+win = np.stack([a_, b_, c_, d_, zz[1:-1, 1:-1], f_, g_, h_, i_])
+zmax = np.full((H, W), np.nan)
+zmax[1:-1, 1:-1] = np.abs(win).max(axis=0)
+gtol = 3 * EPS * zmax / CELL
 t = both & np.isfinite(truth)
-eg, es = np.abs(gslope[t] - truth[t]), np.abs(sslope[t] - truth[t])
 ulp = np.spacing(np.abs(sslope[t]).astype(np.float32)).astype(np.float64)
-worst_ulp = (np.abs(gslope[t] - sslope[t]) / np.maximum(ulp, 1e-300)).max()
+tol = 2 * np.degrees(np.hypot(gtol[t], gtol[t])) + 2 * ulp
+gap = np.abs(gslope[t] - sslope[t])
+eg, es = np.abs(gslope[t] - truth[t]), np.abs(sslope[t] - truth[t])
+worst = (gap / tol).max()
 record(
-    "strata and gdaldem within 2 ulps of each other",
-    worst_ulp <= 2.0,
-    f"worst {worst_ulp:.2f} ulp, {100 * (eg == es).mean():.2f}% bit-identical",
+    "strata and gdaldem within float32 rounding",
+    worst <= 1.0,
+    f"worst {worst:.2f}x the bound, {int((gap > tol).sum()):,} cells over, "
+    f"{100 * (eg == es).mean():.2f}% bit-identical",
 )
 print(
     f"      both vs a float64 reference: mean error gdaldem {eg.mean():.2e} deg, "

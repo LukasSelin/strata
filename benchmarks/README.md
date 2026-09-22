@@ -8,11 +8,13 @@ spikes that informed the design.
 | `algebra/` | suite: `strata/algebra` Add, Sub, Mul, Min, Max, Clamp. Numbers in [`algebra/RESULTS.md`](algebra/RESULTS.md) |
 | `engine/` | suite: Slope, Hillshade and Clamp, plain and through the engine, by worker count and tile shape. Numbers in [`engine/RESULTS.md`](engine/RESULTS.md) |
 | `chunked/` | suite: Slope, Hillshade and Clamp with bounded memory from a raw float32 file to another, by worker count and tile shape, and the §43 demo. Numbers in [`chunked/RESULTS.md`](chunked/RESULTS.md) |
+| `fusion/` | suite: a six-factor product as five chained `algebra.MulTiled` calls, as one tile-level `Pipeline` (§52) and as a hand-written register-fused kernel (§29), by worker count and tile shape. Measures what register-level fusion would add before a generator is built. Numbers in [`fusion/RESULTS.md`](fusion/RESULTS.md) |
 | `terrain/` | suite: the four terrain operations (Gradient, Slope, Aspect, Hillshade) through their plain public API, at every size and backend. Numbers in [`terrain/RESULTS.md`](terrain/RESULTS.md) |
 | `gdal/` | against another program: the same three terrain operations timed against `gdaldem`, both in one container. Numbers in [`gdal/RESULTS.md`](gdal/RESULTS.md). Not a Go benchmark, so not part of the suite |
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
 | `cmd/stratademo/` | the §43 validation target: a 20000² raw DEM with bounded memory, checked against the whole-raster result, with measured peak memory |
+| `reduce/` | suite: `strata/reduce` Count, MinMax, Sum and Stats at every size, mask, backend and worker count, after the §49 accumulator decision (exact binned sums against float64 and Neumaier, benchmarked in `internal/accum`). Both in [`reduce/RESULTS.md`](reduce/RESULTS.md) |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole

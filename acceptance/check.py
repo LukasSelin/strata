@@ -18,6 +18,11 @@ float64 numpy:
                 (east, north, up), and the surface normal is
                 (-dx, dy, 1) / sqrt(1 + dx^2 + dy^2).
 
+Min-max normalisation is the one float32 exception: it is checked for
+exact equality against the textbook (z - z.min()) / (z.max() - z.min())
+evaluated in float32 numpy over the valid cells, the way the pointwise
+algebra is.
+
 Tolerances are derived, not tuned: see TOLERANCES below.
 
 Usage:  python check.py [dir]        (default: out)
@@ -210,8 +215,11 @@ for case in MAN["rasters"]:
 #    with its validity bit cleared.
 # --------------------------------------------------------------------
 
+# Operations that are not a 3x3 stencil: no border, no eroded validity.
+POINTWISE = ("normalize",)
+
 for case in MAN["rasters"]:
-    if case["op"].startswith("algebra_"):
+    if case["op"].startswith("algebra_") or case["op"] in POINTWISE:
         continue
     got, _ = load(case["out"])
     border = np.ones((H, W), bool)
@@ -291,7 +299,7 @@ for forms in groups.values():
 # --------------------------------------------------------------------
 
 for case in MAN["rasters"]:
-    if not case.get("out_mask"):
+    if not case.get("out_mask") or case["op"] in POINTWISE:
         continue
     src = load_mask(case["dem_mask"])
     want = np.zeros((H, W), bool)
@@ -372,6 +380,38 @@ for surface in {c["surface"] for c in MAN["rasters"]} - {"algebra"}:
     e2 = (np.abs(100 * np.tan(rad[keep]) - pct[keep]) / amp).max()
     record(f"{surface} slope radians == degrees", e1 < 1e-5, f"max {e1:.2e} rad")
     record(f"{surface} slope percent == 100*tan", e2 < 1e-3, f"max {e2:.2e} % (scaled)")
+
+
+# --------------------------------------------------------------------
+# 9. Min-max normalisation, against numpy in float32 over the valid
+#    cells: the same bits, the input's validity, and the endpoints 0
+#    and 1 hit exactly.
+# --------------------------------------------------------------------
+
+for case in MAN["rasters"]:
+    if case["op"] != "normalize":
+        continue
+    z = np.fromfile(os.path.join(OUT, case["dem"]), dtype="<f4").reshape(H, W)
+    dem_mask = load_mask(case.get("dem_mask"))
+    valid = dem_mask if dem_mask is not None else np.ones((H, W), bool)
+    lo, hi = z[valid].min(), z[valid].max()
+    want = (z - lo) / (hi - lo)  # float32 throughout
+    got = np.fromfile(os.path.join(OUT, case["out"]), dtype="<f4").reshape(H, W)
+    bad = int((got[valid] != want[valid]).sum())
+    out_mask = load_mask(case.get("out_mask"))
+    mask_ok = out_mask is None if dem_mask is None else np.array_equal(out_mask, dem_mask)
+    record(
+        f"{case['name']} == numpy float32",
+        bad == 0 and mask_ok,
+        f"{bad} differing cells" + ("" if mask_ok else ", validity differs from the input's"),
+    )
+    g = got[valid]
+    ends = g.min() == 0 and g.max() == 1
+    record(
+        f"{case['name']} spans [0, 1] exactly",
+        ends,
+        f"min {g.min():.9g}, max {g.max():.9g} over {int(valid.sum())} cells",
+    )
 
 
 # --------------------------------------------------------------------

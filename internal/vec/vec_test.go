@@ -113,6 +113,23 @@ func TestAffineIsNotFused(t *testing.T) {
 	}
 }
 
+// TestSubDiv checks the endpoints Normalize relies on: lo maps to +0 and
+// lo + span to exactly 1, including where a reciprocal would miss.
+func TestSubDiv(t *testing.T) {
+	src := []float32{1000, 1010, 1005, negZero, inf, nan}
+	dst := make([]float32, len(src))
+	SubDiv(dst, src, 1000, 10)
+	want := []float32{0, 1, 0.5, -100, inf, nan}
+	assertSlicesEqual(t, "SubDiv", dst, want)
+	if math.Signbit(float64(dst[0])) {
+		t.Errorf("SubDiv(lo) = -0, want +0")
+	}
+	SubDiv(dst[:1], []float32{3}, 3, 0)
+	if v := dst[0]; v == v {
+		t.Errorf("SubDiv with a zero span = %v, want NaN", v)
+	}
+}
+
 func TestMin(t *testing.T) {
 	a := []float32{1, 2, -1, inf, ninf}
 	b := []float32{2, 1, 1, ninf, inf}
@@ -190,6 +207,7 @@ func TestLengthMismatchPanics(t *testing.T) {
 		{"AddScalar", func() { AddScalar(make([]float32, 3), make([]float32, 2), 1) }},
 		{"Clamp", func() { Clamp(make([]float32, 3), make([]float32, 4), 0, 1) }},
 		{"Affine", func() { Affine(make([]float32, 3), make([]float32, 4), 1, 0) }},
+		{"SubDiv", func() { SubDiv(make([]float32, 3), make([]float32, 4), 0, 1) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -218,7 +236,8 @@ func kernelsInUse() kernelSet {
 	return kernelSet{
 		add: addFloat32, sub: subFloat32, mul: mulFloat32, div: divFloat32,
 		addScalar: addScalarFloat32, mulScalar: mulScalarFloat32, affine: affineFloat32,
-		min: minFloat32, max: maxFloat32, clamp: clampFloat32,
+		subDiv: subDivFloat32,
+		min:    minFloat32, max: maxFloat32, clamp: clampFloat32,
 		abs: absFloat32, sqrt: sqrtFloat32,
 		reduceMin: reduceMinFloat32, reduceMax: reduceMaxFloat32,
 	}

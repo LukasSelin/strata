@@ -5,10 +5,13 @@ kernels, SIMD, the execution engine, validity, and how each is tested and
 measured. Formats, domain algorithms and GIS workflows sit outside it
 (§7) and appear here only where they constrain the core.
 
-Section numbers are cited from code comments, ADRs and benchmark results.
-Add new material inside existing sections or at the end rather than
-renumbering; a section whose subject left the core keeps its number and a
-short note.
+Section numbers in this document are cited from code comments, ADRs and
+benchmark results. Add new material inside existing sections or at the end
+rather than renumbering. That is why §49–§52, which specify work that
+landed after v0.1, follow the long-term sections §46–§48, and why a
+section whose subject left the core keeps its number and a short note.
+When a section's Status line changes, update the status table below as
+well.
 
 Decisions recorded elsewhere and summarized here:
 
@@ -16,8 +19,38 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
-- [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): speed against gdaldem (§38).
-- [acceptance/README.md](acceptance/README.md): black-box correctness checks (§39).
+- [benchmarks/engine/RESULTS.md](benchmarks/engine/RESULTS.md): worker scaling and tile shape (STRATA-9).
+- [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
+- [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
+- [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
+
+Where things stand, as of 2026-09-21. Each section's own **Status** line is
+the detailed record; this table only points at it.
+
+| Area | § | Status |
+|---|---|---|
+| `Float32Raster`, windows, validity bitmap | §9, §21, §31 | done |
+| Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
+| arm64 NEON backend (STRATA-11) | §14, §17 | not started; arm64 runs scalar |
+| `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
+| `terrain`: Gradient, Slope, Aspect, Hillshade | §20 | done; curvature, ruggedness open |
+| Engine: tiled, multi-worker, halos | §22–§26 | done |
+| Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
+| First validation target: 20000² DEM | §43 | done |
+| Traffic counter (`engine.Stats`) | §51 | done |
+| Reductions: Count, MinMax, the fold driver | §49 | done |
+| Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
+| Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | done |
+| `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
+| `Pipeline`, radius 0, internal | §52 | done |
+| `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
+| Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
+| N-dimensional arrays | §10 | not started (v0.3) |
+| Point clouds | §11 | not started (v0.7) |
+| Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
+| CRS transformation | §36 | not started; `raster.CRS` is a placeholder |
+| Publishing: module path, README, CI | §42 | done |
+| Publishing: licence, first tag | §42 | not started |
 
 ## 1. Project Goal
 
@@ -296,14 +329,15 @@ Experimental SIMD APIs should never leak into the public API.
 The layering is:
 
 ```text
-algebra        terrain        (later: array, pointcloud)
-   │              │
-   │           raster
-   ▼              ▼
-internal/vec   internal/stencil
-(pointwise)    (neighbourhood row kernels, mask erosion)
-   │              │
-   └──────┬───────┘
+algebra, reduce,       transfer         terrain     (later: array, pointcloud)
+transfer.Rescale       Reclass, Lookup     │
+   │                      │             raster
+   ▼                      ▼                ▼
+internal/vec           internal/curve   internal/stencil
+(pointwise, folds)     (table search,   (neighbourhood row kernels,
+   │                    scalar only)     mask erosion)
+   │                                       │
+   └──────────────────┬────────────────────┘
           ├── simd/archsimd, amd64 AVX2    (GOEXPERIMENT=simd)
           ├── simd/archsimd, arm64 NEON    (planned, STRATA-11)
           └── scalar                       (canonical, every build)
@@ -460,11 +494,12 @@ algebra.Clamp(dst, src, lo, hi)
 algebra.Mask(dst, src, mask)
 ```
 
-Later:
+And one that is not pointwise:
 
 ```go
-algebra.Normalize(dst, src)     // needs reduce.MinMax over a whole
-                                //   raster, which §49 has (STRATA-12)
+// Normalize maps the valid cells' [min, max] onto [0, 1] and returns
+// the min and max it used.
+lo, hi := algebra.Normalize(dst, src)
 ```
 
 `algebra.Scale(dst, src, 1.25)` stood here and is not being added.
@@ -476,6 +511,29 @@ prevent.
 `Normalize` is not a pointwise operation. It needs global statistics (min
 and max, or mean and standard deviation, over valid cells). Under chunked
 execution that means a reduction pass over every tile before the map pass.
+
+It is min-max normalisation, computed as `(v - lo) / (hi - lo)` in float32:
+a subtraction then a division (`vec.SubDiv`), not `transfer.Rescale`'s
+single multiply-add. The multiply-add rounds `1/(hi - lo)` and `-lo/(hi -
+lo)` into coefficients, so the maximum lands near 1 rather than on it.
+Measured on elevation-like data, about one raster in three came out with
+a maximum other than 1, half of those above it, by up to 64 ulps. The
+difference-then-quotient form maps `lo` to +0 and `hi` to exactly 1, and
+since both steps round monotonically, every valid cell lands in [0, 1]. It
+is also, bit for bit, what NumPy computes for
+`(x - x.min()) / (x.max() - x.min())` on a float32 array, which is what
+`acceptance/check.py` holds it to. The division costs more than a
+multiply, but a pass that writes every cell is bound by memory bandwidth.
+
+Degenerate ranges are not special-cased: a constant raster gives 0/0,
+which is NaN, and a NaN or infinity among the valid cells propagates as
+IEEE arithmetic has it. `Normalize` returns `lo` and `hi` so a caller can
+detect those cases, or map a result back. Standardising by mean and
+standard deviation (`reduce.Stats`) would be a separate operation and is
+not added.
+
+Status: done. `Normalize`, `NormalizeTiled` and `NormalizeChunked`; the
+chunked form reads its source twice (§49).
 
 Semantics, as in the `algebra` package documentation:
 
@@ -622,7 +680,9 @@ call typed entry points (§25). STRATA-8 settled a first shape:
   erosion.
 
 It stays internal until worker pools, sources and fusion have exercised
-it.
+it. Worker pools (§26) and sources (§24) now have, and so has tile-level
+fusion, as the radius-0 `Pipeline` (§52); §52's "Where it lives" is why
+the contract is still not published.
 
 `Reducer` is the fold counterpart (§49): inputs and no outputs, radius
 fixed at 0, and a value rather than a raster. It is a separate interface
@@ -815,6 +875,12 @@ take sources and sinks instead of rasters and run with bounded memory
 (§27), through `exec.ProcessChunked`. Their sinks receive the bits the
 plain function would write, for every `Options`.
 
+The later packages follow the same pattern: `transfer` has `ReclassTiled`,
+`LookupTiled`, `RescaleTiled`, `RescaleRangeTiled` and their `Chunked`
+counterparts (§50), and `reduce` has `CountTiled`, `CountChunked`,
+`MinMaxTiled` and `MinMaxChunked`, which return a value instead of
+filling a sink (§49).
+
 Configuration:
 
 ```go
@@ -822,6 +888,7 @@ type Options struct {
     TileWidth  int
     TileHeight int
     Workers    int
+    Stats      *Stats // optional traffic counter, §51
 }
 ```
 
@@ -856,9 +923,10 @@ written completely, except a tile whose read failed (untouched) or whose
 write failed (unspecified). After a cancellation the sinks hold a prefix
 of whole tiles.
 
-Status: tiled execution over in-memory rasters done, on one or many
-workers (STRATA-8, STRATA-9). Chunked execution over sources and sinks
-done.
+Status: done. Tiled execution over in-memory rasters, on one or many
+workers (STRATA-8, STRATA-9); chunked execution over sources and sinks;
+the fold driver (§49); the traffic counter (§51); and the radius-0
+`Pipeline` (§52).
 
 ## 26. Parallelism Model
 
@@ -883,7 +951,9 @@ Chunks
 ```
 
 Low-level kernels remain synchronous. `internal/vec`, `internal/stencil`,
-`algebra` and `terrain` create no goroutines.
+`internal/curve`, `algebra`, `terrain`, `transfer` and `reduce` create no
+goroutines of their own; their `Tiled` and `Chunked` entry points get
+workers from the engine.
 
 Concurrency belongs in the execution engine.
 
@@ -1059,6 +1129,27 @@ keep it open:
 - Validity is a separate bitmap (§31), so a fused data kernel is plain
   branch-free arithmetic. Validity is computed once for the whole chain.
 
+Status: partly done. Tile-level fusion of radius-0 chains is done: the
+internal `Pipeline` (§52) runs a chain of kernels on each tile while it is
+loaded, and computes validity once for the chain. Its intermediates still
+go through scratch memory, so register-level fusion, which removes them,
+is not started, and neither is a public way to build a chain.
+
+Register-level fusion has been measured before being built.
+`benchmarks/fusion` runs §52's six-factor product as five chained calls,
+as a `Pipeline` and as a hand-written fused kernel, all bit-identical.
+From 4096² up the fused kernel is 0.96–1.11× the `Pipeline` in default
+strips, and both reach the DRAM limit, about 26 GB/s on 12 workers: the
+scratch traffic between stages stays in cache. Chained to `Pipeline` is
+the large step, 1.6–2.6×. At 1024² the fused kernel wins by up to 5.5×,
+but that measures the `Pipeline` allocating its scratch per worker on
+every call (12.6 MB/op on 12 workers), not fusion. So a generator for
+pointwise chains is not worth building on this evidence. Measure again
+for stencil or longer chains, whose intermediates would spill out of
+cache, and at in-cache sizes once scratch is not allocated per call.
+The run is one `-count 3` on an unquiet machine; see
+`benchmarks/fusion/RESULTS.md` for the numbers and their caveats.
+
 ## 30. Streaming Pipelines
 
 Pipeline-style processing — source, several operations, sink, with no
@@ -1066,6 +1157,11 @@ materialised intermediates — is the raster form of what §52 builds: a
 chain of kernels run on each tile while it is loaded. Point-cloud
 pipelines (reader, filter, transform, aggregate, rasterize) follow the
 same idea over batches once §11 exists.
+
+Status: partly done for rasters. The radius-0 `Pipeline` (§52) runs a
+chain of pointwise stages from one source read to one sink write, inside
+the engine only. Stencil stages, a public pipeline API and point-cloud
+streams are not started.
 
 ## 31. NoData and Validity
 
@@ -1195,8 +1291,13 @@ benchmarks/
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
-└── reduce/, transfer/  planned, with Sum (§49) and a vector table kernel (§50)
+├── reduce/             implemented: Min, MinMax, Sum, Stats against read bandwidth, RESULTS.md (§49)
+├── fusion/             implemented: register-level fusion measured before building it, RESULTS.md (§29)
+└── transfer/           planned: lands with a vector Reclass or Lookup (§50)
 ```
+
+`algebra.Mask` has no suite benchmark yet (§42), and `transfer`'s
+numbers in §50 come from the package's own `bench_test.go`.
 
 Benchmark names:
 
@@ -1231,18 +1332,6 @@ parallel scaling and peak memory.
 Raster sizes: 256², 1024², 4096² and 16384².
 
 ## 39. Correctness Testing
-
-**Two kinds of evidence.** The tests in this repository are written by
-the same understanding that wrote the kernels, so they can show that
-backends, tilings and layouts agree with each other but not that the
-shared understanding is right. `acceptance/` is the outside opinion: it
-uses only the public API, writes every input and output to plain files,
-and has a separate program in another language (numpy, written from
-published definitions) and another tool (gdaldem) judge the numbers,
-against tolerances derived rather than tuned. `sabotage.py` checks the
-checker by breaking outputs on purpose. Every new public operation gets a
-reference there as well as tests here; an operation with no outside
-reference is not done.
 
 Every SIMD implementation should be compared against its scalar equivalent,
 bit for bit (§15). Tests run in every build configuration: default,
@@ -1294,9 +1383,10 @@ GOEXPERIMENT=simd go test ./terrain -run '^$' -fuzz '^FuzzTerrain$' -fuzztime 5m
 ```
 
 Every metamorphic target also runs as a property test, under rapid, the
-other dependency: `TestTerrainRelations`, `TestAlgebraRelations` and
-`TestProcessRelations` drive the bodies of the three `Fuzz*Relations`
-targets with rapid's generators in place of a fuzz input. Both drivers go
+other dependency: `TestTerrainRelations`, `TestAlgebraRelations`,
+`TestProcessRelations`, `TestReduceRelations` and `TestTransferRelations`
+drive the bodies of their packages' `Fuzz*Relations` targets with
+rapid's generators in place of a fuzz input. Both drivers go
 through `fuzzdata.Source`, an interface over the values a test builds its
 operands from, and report through `rastertest.TB`, the part of testing.TB
 the relations use and rapid.T also has, so each relation has one
@@ -1399,12 +1489,36 @@ findings carry a `#nosec` comment giving the reason. Neither tool
 detected the overflow in `raster.Validate` found by fuzzing: gosec's
 integer overflow rule covers conversions, not arithmetic.
 
+CI (`.github/workflows/ci.yml`) runs all of this on every push and pull
+request: build, vet and test on Linux, Windows and macOS (macOS runners
+are arm64, so they run the scalar kernels); the same under
+`GOEXPERIMENT=simd`; `go test -race`; and golangci-lint. The race and
+lint jobs run in both builds.
+
+**The outside opinion.** Everything above is written by whoever wrote
+the library, against the same understanding of the problem, so a
+misunderstanding passes it. `acceptance/` is the independent check. It
+is a separate module that uses strata only through its public API and
+writes every input and output to plain files. A numpy program written
+from published definitions (`check.py`, Horn's kernel as gdaldem
+documents it, shaded relief as the cosine between the light and the
+surface normal) then judges them in 237 checks. The checks cover terrain,
+algebra and reduce, in all three forms, on three synthetic DEMs, with
+tolerances derived from the float32 error bound rather than tuned.
+`sabotage.py` injects plausible defects one at a time and requires each to
+turn the result red. `gdalcheck.sh` runs `gdaldem` on a real raster in
+Docker and differences it against strata's `Chunked` output. `transfer`
+is not covered by the harness yet.
+
+Every new public operation gets a reference in `acceptance/` as well as
+tests here; an operation with no outside reference is not done.
+
 Point batches, when they exist, add empty batches, attribute-length
 mismatches, sparse masks and large coordinate ranges to the table above.
 
 ## 40. Package Layout
 
-Current, and planned for v0.1:
+Current:
 
 ```text
 strata/
@@ -1441,11 +1555,16 @@ strata/
 │   ├── engine.go              Options (STRATA-8)
 │   ├── source.go              RasterSource / RasterSink, memory source and sink
 │   ├── raw.go                 raw float32 file source and sink, RawOptions
-│   └── rawfile.go             RawFile: one file, several handles
+│   ├── rawfile.go             RawFile: one file, several handles
+│   └── stats.go               Stats, the traffic counter (§51)
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
 │   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
+│   │                           accum.go, moments.go, result.go, simd_amd64.go
+│   ├── summary/               implemented (§49): the Stats reducer and Runs,
+│   │                           shared by reduce and, later, terrain
 │   ├── curve/                 implemented (§50): curve.go, scalar.go
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
@@ -1459,10 +1578,19 @@ strata/
 │   │   ├── chunked.go         ProcessChunked: per-worker tile buffers, sources and sinks
 │   │   ├── reduce.go          Reducer, Cells, Reduce (STRATA-12, §49)
 │   │   ├── reducechunked.go   ReduceChunked: per-worker tile buffers
+│   │   ├── pipeline.go        Pipeline, Stage, NewPipeline: radius 0 (§52)
 │   │   └── workspace.go       planned
-│   └── overlap/               Data and mask overlap checks
+│   ├── overlap/               Data and mask overlap checks
+│   │
+│   │                          test support (§39):
+│   ├── bcecheck/              bounds checks left in tight loops
+│   ├── faultio/               fault-injecting io.ReaderAt / io.WriterAt
+│   ├── fuzzdata/              fuzz input decoding, the fuzzdata.Source interface
+│   ├── rapidsource/           fuzzdata.Source drawn from rapid
+│   └── rastertest/            grid symmetries and comparison helpers
 │
 ├── benchmarks/                implemented (§38)
+├── acceptance/                black-box checks, a separate module (§39)
 └── docs/adr/
 ```
 
@@ -1566,11 +1694,12 @@ The other categories measure the same kernels on one worker, pinned:
 reports its six operations, which are memory-bandwidth-bound from 4096²
 on (§28). `Mask`, added after those runs, has no benchmark yet.
 
-Status: every item above is implemented and measured, and the §43
-validation target ran. The module path (`github.com/LukasSelin/strata`),
-README and CI are in place. What publishing still needs is a licence —
-until one is chosen, nothing may import strata for reuse — and a tagged
-release for importing modules to pin (§45).
+Status: done. Every item above is implemented and measured, and the §43
+validation target ran. Of what publishing needed beyond this list, the
+fetchable module path (`github.com/LukasSelin/strata`), the README and CI
+are done. A licence has not been chosen yet — until one is, nothing may
+import strata for reuse — and nothing is tagged for importing modules to
+pin (§7, §45).
 
 ## 43. First Validation Target
 
@@ -1628,34 +1757,37 @@ adapter (§34). The demo program itself need not live in the core module.
 
 ## 45. Development Roadmap
 
-**v0.1: Raster compute foundation** (§42, scope complete)
+**v0.1: Raster compute foundation** (§42, scope complete, not tagged)
 
 ```text
-Float32Raster, windows, validity bitmap
-SIMD (amd64) + scalar fallback
-algebra + terrain kernels
-tiled multi-worker engine with halos
-bounded memory over windowed sources (memory, raw float32 file)
-benchmarks
+Float32Raster, windows, validity bitmap                 done
+SIMD (amd64) + scalar fallback                          done
+algebra + terrain kernels                               done
+tiled multi-worker engine with halos                    done
+bounded memory over windowed sources (memory, raw file) done
+benchmarks                                              done
+module path, README, CI                                 done
+licence, first tag                                      open
 ```
 
 **v0.2: Reductions and statistics** (§49)
 
 ```text
-Min, Max, MinMax, Count over valid cells       done (STRATA-12)
-the fold driver, tiled and chunked             done (STRATA-12)
-Sum, Mean, Stats
-order-independent accumulation: the same bits for every tiling,
-  worker count and backend
-algebra.Normalize on top of the reduction pass
-benchmarks against the §28 bandwidth ceiling
+Min, Max, MinMax, Count over valid cells                done (STRATA-12)
+the fold driver, tiled and chunked                      done (STRATA-12)
 transfer: Reclass, Lookup, Rescale, RescaleRange (§50)  done (STRATA-13)
+Sum, Mean, Stats                                        open
+order-independent accumulation: the same bits for       open
+  every tiling, worker count and backend
+algebra.Normalize on top of the reduction pass          done
+benchmarks/reduce, against the §28 bandwidth ceiling    open
 ```
 
 The transfer family is not a reduction, but it lands in v0.2 for the same
 reason reductions do: both are what turn a computed surface into
-something to act on, and `Rescale` is the building block `Normalize`
-writes through.
+something to act on. `Normalize` was to write through `Rescale`, and
+does not: its endpoints need a subtraction and a division, not a
+multiply-add (§18).
 
 **v0.3: Array foundation**
 
@@ -1673,7 +1805,8 @@ broadcast-style operations
 general Source / Sink APIs beyond raw files
 streaming sources for sparse data
 workspace reuse
-pipelines with radius > 0 and several outputs (§52; radius 0 done)
+pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
+                            radius > 0 and several outputs remain
 deciding whether to publish Kernel (§22, §52)
 ```
 
@@ -1684,13 +1817,16 @@ v0.5   Zarr adapter: chunk-native N-D datasets (§34)
 v0.6   GeoTIFF / COG adapters (§34)
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
 v0.8   resampling, alignment, mosaics, interpolation
-v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling (§29)
+v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
+       register-level fusion measured, not built (§29)
 v0.10  voxel grids as 3-D arrays (§33)
 ```
 
 **Not tied to a milestone:** a licence and tagged releases, so domain
 modules can import and pin strata (§7, §42); ARM64 NEON kernels
-(STRATA-11); and revisiting portable `simd` with Go 1.28 (ADR 0001).
+(STRATA-11); and revisiting portable `simd` with Go 1.28 (ADR 0001). The
+traffic counter (§51), the outside benchmark against `gdaldem` (§38) and
+the acceptance harness (§39) landed this way and are done.
 
 **v1.0**
 
@@ -1765,10 +1901,12 @@ a sink.
 
 ```go
 type Summary struct {
-    Count int64   // valid cells
-    Sum   float64
-    Min   float32
-    Max   float32
+    Count  int64   // valid cells
+    Sum    float64
+    Mean   float64
+    StdDev float64 // population
+    Min    float32
+    Max    float32
 }
 
 reduce.Count(src raster.Float32Raster) int64
@@ -1786,14 +1924,26 @@ with `Tiled` and `Chunked` counterparts beside them, as in `algebra` and
 `terrain`:
 
 ```go
+reduce.CountTiled(ctx, src, engine.Options{}) (int64, error)
+reduce.CountChunked(ctx, src engine.RasterSource, engine.Options{}) (int64, error)
 reduce.MinMaxTiled(ctx, src, engine.Options{}) (min, max float32, count int64, err error)
 reduce.MinMaxChunked(ctx, src engine.RasterSource, engine.Options{}) (min, max float32, count int64, err error)
+reduce.SumTiled(ctx, src, engine.Options{}) (sum float64, count int64, err error)
+reduce.SumChunked(ctx, src engine.RasterSource, engine.Options{}) (sum float64, count int64, err error)
 reduce.StatsTiled(ctx, src, engine.Options{}) (Summary, error)
 reduce.StatsChunked(ctx, src engine.RasterSource, engine.Options{}) (Summary, error)
 ```
 
-`Mean` is `Sum/Count` and needs no pass of its own. Standard deviation
-needs a second accumulator (sum of squares, or Welford) and can follow.
+All of these and their `Tiled` and `Chunked` forms exist.
+
+`Mean` and `StdDev` are in `Summary` rather than functions of their own.
+Both come from the same pass: the exact accumulator keeps the sum of
+squares beside the sum (`accum.Moments`), which is cheaper than a second
+pass and, unlike Welford, exact. `Mean` is the exact sum over `Count`,
+correctly rounded, which `Sum/Count` in float64 would not be.
+`Summary` is computed by `internal/summary`, not in `reduce`, so that a
+neighbourhood statistic can fold a kernel's output with the same reducer
+and return the same type: the planned terrain statistics (§20).
 Histograms and quantiles are a later operation: they return a vector
 rather than a scalar, and their bin edges are a policy question of their
 own.
@@ -1874,6 +2024,20 @@ against a pass that is otherwise pure memory bandwidth (§28), is what the
 benchmark has to show. If it is too expensive, the answer is to weaken
 the guarantee to a documented, plan-independent evaluation order and say
 so — not to let the result depend on `Options`.
+
+**Decision: binned, and the guarantee stands.** `internal/accum` keeps one
+`int64` bin per float32 exponent and adds significands to them, so partials
+are integers and combine exactly. `Moments` adds the squares beside them
+for Mean, Variance and StdDev. Its AVX2 backend adds 64-cell blocks in
+registers after shifting them onto a common exponent, and puts the same
+integer into the bins as the scalar loop, so the backends agree by
+construction. On one core that makes the exact sum as fast as a plain
+float64 loop, and sum plus squares as fast as Neumaier. With workers the
+exact sum reaches 85% of read bandwidth. The numbers, and what lost
+(more bin sets did not help: the scalar loop is instruction-bound, not
+waiting on stores), are in `benchmarks/reduce/RESULTS.md`. Sum, Mean and
+Variance are correctly rounded. StdDev is the 256-bit root of the exact
+variance: within one ulp and still a function of the values alone.
 
 ### Engine
 
@@ -1961,12 +2125,16 @@ own to be wrong. `TestNoLeaksOnReduceFailure` and
 `TestReduceChunkedRawFaults` add the leak and IO-fault halves, both
 checking the rule above that no value comes back with an error.
 
-Status: `Count`, `MinMax` and the fold driver done (STRATA-12): the
+Status: partly done. `Count`, `MinMax` and the fold driver done (STRATA-12): the
 `Reducer`/`Cells` shape, `Reduce` and `ReduceChunked`, `vec.ReduceMin`
-and `vec.ReduceMax`, and package `reduce`. `Sum`, `Stats`, `Summary` and
-the accumulator decision are next, then `algebra.Normalize`;
-`benchmarks/reduce` lands with them, since what it has to measure is the
-cost of an exact accumulator and a `Min` fold is pure bandwidth.
+and `vec.ReduceMax`, and package `reduce`. The accumulator decision and
+`internal/accum` done, with `benchmarks/reduce/RESULTS.md`. `Sum`,
+`Stats` and `Summary` done, on `accum` and `internal/summary`, with the
+`benchmarks/reduce` suite; its numbers are in the same RESULTS.md. A
+masked fold packs the valid cells of partly valid mask words into a
+per-worker buffer (`summary.Runs`), so the vector blocks apply to
+scattered NoData too. `MinMax` does not use it yet and still walks
+such words cell by cell. `algebra.Normalize` done, on `MinMax` (§18).
 
 ## 50. Transfer Functions
 
@@ -2475,7 +2643,7 @@ a poisoned tail find an overrun. §49's position-mixing trick applies here
 too — a stage that reads the wrong value, or reads one twice, fails a
 hash it cannot accidentally satisfy.
 
-Status: the radius-0 cut is done. `Pipeline`, `NewPipeline`, the
+Status: partly done. The radius-0 cut is done: `Pipeline`, `NewPipeline`, the
 `ScratchKernel`/`ScratchSize`/`Scratch` contract extension and
 `Span.Scratch`, per-worker scratch in `job.allocScratch` sized by
 `plan.spanSize` and `chunkJob.spanSize`, and

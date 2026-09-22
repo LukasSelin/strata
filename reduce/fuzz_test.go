@@ -78,5 +78,35 @@ func FuzzReduce(f *testing.F) {
 		if err != nil || c != wantN {
 			t.Fatalf("CountChunked %+v = %d, %v, want %d", opts, c, err, wantN)
 		}
+
+		// Sum and Stats: the plain path against the exact reference,
+		// the others against the plain path bit for bit.
+		wantS := refStats(placed)
+		gotS := reduce.Stats(placed)
+		if !matchesRef(gotS, wantS) {
+			t.Fatalf("Stats = %s, want %s", fmtSummary(gotS), fmtSummary(wantS))
+		}
+		checkS := func(path string, s reduce.Summary, err error) {
+			t.Helper()
+			if err != nil || !sameSummary(s, gotS) {
+				t.Fatalf("%s %+v = %s, %v, want %s", path, opts, fmtSummary(s), err, fmtSummary(gotS))
+			}
+		}
+		s, err := reduce.StatsTiled(ctx, placed, opts)
+		checkS("StatsTiled", s, err)
+		s, err = reduce.StatsChunked(ctx, src, opts)
+		checkS("StatsChunked", s, err)
+		checkSum := func(path string, sum float64, n int64, err error) {
+			t.Helper()
+			if err != nil || !sameF64(sum, gotS.Sum) || n != wantN {
+				t.Fatalf("%s %+v = %v %d, %v, want %v %d", path, opts, sum, n, err, gotS.Sum, wantN)
+			}
+		}
+		sum, n := reduce.Sum(placed)
+		checkSum("Sum", sum, n, nil)
+		sum, n, err = reduce.SumTiled(ctx, placed, opts)
+		checkSum("SumTiled", sum, n, err)
+		sum, n, err = reduce.SumChunked(ctx, src, opts)
+		checkSum("SumChunked", sum, n, err)
 	})
 }
