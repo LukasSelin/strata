@@ -9,6 +9,8 @@
 // ranges over. The exported functions have already checked the lengths
 // are equal; the reslice proves it to the compiler, which then drops the
 // bounds check on every element (TestNoBoundsChecksInLoops).
+//
+//strata:kernel
 package vec
 
 import "math"

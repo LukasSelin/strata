@@ -17,6 +17,8 @@
 // multiply-add into FMA (see docs/adr/0001-simd-backend.md).
 //
 // Like internal/vec, exported functions panic on mismatched lengths.
+//
+//strata:kernel
 package stencil
 
 import (
