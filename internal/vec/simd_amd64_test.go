@@ -18,6 +18,7 @@ var simdTestKernels = kernelSet{
 	min: minFloat32AVX2, max: maxFloat32AVX2, clamp: clampFloat32AVX2,
 	abs: absFloat32AVX2, sqrt: sqrtFloat32AVX2,
 	reduceMin: reduceMinFloat32AVX2, reduceMax: reduceMaxFloat32AVX2,
+	chain: chainFloat32AVX2,
 }
 
 func requireSIMD(tb testing.TB) {

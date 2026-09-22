@@ -1153,7 +1153,8 @@ IO-bound operations.
 
 ## 29. Operation Fusion
 
-Operation fusion should be a major future optimization.
+A chain of pointwise operations should run as one kernel, with the values
+between them in registers.
 
 Example:
 
@@ -1175,7 +1176,7 @@ load → scale → store
 load → clamp → store
 ```
 
-the engine should eventually support:
+the engine supports:
 
 ```text
 SIMD load
@@ -1189,15 +1190,272 @@ clamp
 SIMD store
 ```
 
-For many workloads this may be more important than SIMD alone.
+For many workloads this matters more than SIMD alone.
 
-The architecture should not block future fusion. Two earlier decisions
-keep it open:
+Two earlier decisions are what make it writable at all:
 
-- SIMD kernels are Go (ADR 0001), so a fusion generator emits Go, not
-  assembly.
+- SIMD kernels are Go (ADR 0001), so a fused kernel is Go, not assembly.
 - Validity is a separate bitmap (§31), so a fused data kernel is plain
-  branch-free arithmetic. Validity is computed once for the whole chain.
+  branch-free arithmetic. Validity is computed once for the whole chain,
+  which §52 already does.
+
+### What it is on top of
+
+§52's `Pipeline` runs a chain of kernels over one span, so a tile is
+loaded once instead of once per operation. What it does not remove is the
+values between the stages: each one is a span-sized buffer the engine
+lends, written by one stage and read by the next. A span is up to
+`bandCells` = 65536 cells, so each is up to 256 KiB — one Zen 2 core's
+whole L2 — and a five-stage chain has four of them. That traffic is
+exactly what `engine.Stats` does not count (§51), which is why a staged
+pipeline reads 28 B/cell while moving considerably more.
+
+Fusion removes them. The engine's structure does not change at all: a
+`Pipeline` still satisfies `Kernel`, still declares radius 0, and still
+lets the engine derive its validity in one pass. Only `Process` changes,
+from "run each stage over the span" to "run the whole chain over a few
+cells at a time".
+
+### The left-deep cut
+
+The running value is a register only if there is one of it. So this cut
+fuses a **left-deep** chain and nothing else:
+
+```text
+((a · b) · c) · d          fused
+ (a · b) · (c · d)         staged: two live intermediates
+```
+
+Concretely, a `Pipeline` lowers when every stage is a `FusableKernel`
+with one output, stage 0 starts from a pipeline input, every later stage
+takes the stage before it as its *first* operand, every second operand is
+a pipeline input, and the last stage produces the output. A pipeline that
+fails any of those runs staged, which is the reference the fused form is
+tested against; nothing panics, because a diamond is a legal pipeline and
+not a mistake.
+
+That is not a narrow case. A weighted factor product is exactly this
+shape, and so is any chain of arithmetic with a `Clamp` or a `Rescale` on
+the end.
+
+Operands are never swapped, even for an operation that would commute. A
+caller who wants `src - acc` is asking for a different chain and should
+say so, and the rule costs nothing: the shapes the typed entry points
+build are left-deep already.
+
+### The form
+
+`internal/vec` holds the evaluator, because it already has both
+backends, the `kernelSet` swap table, and `min8`/`max8` — the two
+functions that reproduce Go's builtin `min` and `max` over NaN and signed
+zeros, which a fused chain needs as much as `Min` and `Max` do.
+
+```go
+type Op uint8 // Add Sub Mul Div Min Max AddScalar MulScalar Affine Clamp Abs Sqrt
+
+// Step is one operation of a Chain: what to do, which of Run's slices a
+// binary op reads, and the immediates of the ops that take them.
+type Step struct {
+    Op  Op
+    Src int
+    K   [2]float32
+}
+
+type Chain struct{ ... }
+
+func NewChain(inputs, first int, steps []Step) *Chain
+func (c *Chain) Run(dst []float32, srcs [][]float32)
+```
+
+`exec.FusableKernel` is how a kernel names itself as a step:
+
+```go
+type FusableKernel interface {
+    Kernel
+    Fuse() (step vec.Step, ok bool)
+}
+```
+
+The `ok` result is for a kernel whose arity depends on its parameters and
+so is a step for some of them and not others. A kernel that says `true`
+and whose arity contradicts its operation is a programming error and
+panics.
+
+`algebra`'s `binaryOp` had to learn which operation it is. It carried a
+bare `func(dst, a, b []float32)`, which has no identity a fusion pass can
+switch on, so it now carries the `vec.Op` beside the function: the
+function is what `Process` calls and the op is what a `Pipeline` fuses
+on. `Clamp` and `transfer.Rescale` implement `Fuse` too. `Reclass` and
+`Lookup` do not and will not as written: their inner scan over a table is
+per cell, data-dependent and breaks early, which is not a step a lane of
+a vector can take (`internal/curve`).
+
+### One extension to the contract
+
+`Chain.Run` takes its operands as `[][]float32`, which `Process` may not
+allocate per band (§26). So `ScratchSize` and `Scratch` gain `Runs`, for
+the same reason they gained `Views`: slice headers a kernel hands on and
+cannot make for itself. A fused pipeline asks for `Runs` and **no cells
+at all**, which is the claim this section makes, as an assertion.
+
+### The two backends are not the same shape, on purpose
+
+The vector backends are the ones this section is named for. They carry
+the accumulators in registers for the whole chain — four vectors at a
+time, so 32 cells on AVX2 and 16 on NEON, each input loaded once, `dst`
+stored once, nothing else written anywhere. AVX2 follows that file's
+existing rules: the operand array is filled before the first 256-bit
+instruction, immediates are broadcast at the top of the lane function,
+and `ClearAVXUpperBits` comes before the scalar tail (ADR 0001,
+`internal/stencil/simd_amd64.go`). NEON needs none of that, and `min4`
+and `max4` are already Go's builtins where `min8` and `max8` are a
+repair.
+
+The scalar backend carries the value through a block of 2048 cells
+instead. One cell at a time with the operation dispatched per cell would
+put a switch and two bounds checks against one multiply; a block puts
+them against 2048. Each step is then the very kernel the unfused chain
+would have called, over the same cells in the same order, which makes the
+scalar chain the staged chain's bits by construction and leaves
+`internal/vec`'s tight loops as they were. It is not a register, but it
+is 8 KiB rather than 256, and that is where the traffic was.
+
+The two must still agree bit for bit, which is what the tests are for.
+
+### Bit-exactness has three landmines
+
+1. **No FMA contraction.** `OpAffine` keeps `float32(acc*K0) + K1`, the
+   explicit conversion `scalarAffineFloat32` has, and the AVX2 step is
+   `VMULPS` then `VADDPS`. A running value crossing a multiply and an add
+   in a register is exactly where a compiler would contract them, and
+   arm64 would where amd64 would not.
+2. **`min`/`max` are not the hardware's.** `min8`/`max8`, never `.Min`
+   and `.Max`.
+3. **Bounds checks.** The chain evaluators' tightest loop is over the
+   chain's *operations*, not its cells, so the checks it leaves are
+   amortised over a block or a lane rather than paid per element. They
+   are named in `internal/vec/bce_test.go`'s allow list with that reason,
+   and the element loops they call stay checked everywhere else.
+
+### What it is worth
+
+Not a counter figure. `engine.Stats` reads 28 B/cell for a six-input
+product whether the stages are staged or fused — it never counted the
+scratch — so what fusion changes is time, and §51's number simply stops
+being optimistic.
+
+`benchmarks/fusion` is where it is measured, because the spike that asked
+the question was already there. It runs §52's six-factor product four
+ways — five chained `MulTiled` calls, a staged `Pipeline`, that same
+`Pipeline` lowered, and a `Fused` kernel written by hand as a generator
+would have had to emit it — and `TestFormsAgree` holds all four to the
+same bits.
+
+4096², mask off, NEON, Mcells/s, medians of 3, Apple M4 (10 cores):
+
+| workers | tiles | chained | staged | lowered | fused | lowered ÷ staged | lowered ÷ fused |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | strips | 1170 | 1171 | 1562 | 2079 | 1.33× | 0.75 |
+| 1 | 256×256 | 209 | 274 | 354 | 437 | 1.29× | 0.81 |
+| 10 | strips | 1581 | 2928 | 3188 | 3502 | 1.09× | 0.91 |
+| 10 | 256×256 | 925 | 1159 | 1769 | 1961 | 1.53× | 0.90 |
+
+So the lowering is worth 9–53% over the staged pipeline, and it collects
+three quarters to nine tenths of what hand-written code gets. The gap to
+hand-written is the dispatch: the lane loop runs a switch and a slice
+advance per operation, where the hand-written kernel has the chain in its
+instruction stream. That is the argument for a generator, and it is now a
+number rather than a hope — 10 to 25%, on this machine, for this chain.
+
+### Four vectors at a time, which is not a detail
+
+The first version of the lane loop carried one vector, and it was
+*slower* than the staged pipeline it replaced: 840 Mcells/s against 1171
+on one worker. Dispatching an operation costs about as much as performing
+it on four lanes, so a chain that pays that per vector spends more on
+deciding than on arithmetic, and carrying the value in a register buys
+nothing.
+
+Carrying `chainWide` = 4 vectors divides the dispatch by four and took
+the same case to 1562. Four accumulators are four registers of sixteen on
+amd64 and of thirty-two on arm64, so nothing spills, and what is left
+over — fewer than 32 cells of a span — goes to the scalar block
+evaluator rather than to a second copy of the switch.
+
+This is the §51 lesson again: the design said "in a register" and was
+right about the memory, and a cheap measurement caught that the
+instruction it cost was the thing that mattered.
+
+### Where these numbers sit against the spike's
+
+`benchmarks/fusion/RESULTS.md` measured chained, staged and hand-fused on
+a Zen 2 with AVX2 and concluded that out of cache register-level fusion
+was worth about 5%, and that the large in-cache gaps were the
+`Pipeline`'s per-call scratch allocation rather than fusion. Both of its
+caveats have since moved: scratch comes from a pool now, and these
+numbers are a different machine, with far more memory bandwidth per core,
+where the same product is much less memory-bound and so has much more to
+gain from not moving the intermediates. Neither run is wrong; they are
+two machines, and the Zen 2 column of this table is not yet filled in.
+
+What both agree on is the ordering: tile-level fusion (§52) is the larger
+win, and register-level fusion is the smaller one on top.
+
+### Where it lives
+
+`internal/vec/chain.go`, `chain_amd64.go`, `chain_arm64.go` and
+`scalarChainFrom` in `scalar.go`; `FusableKernel` and `Scratch.Runs` in
+`internal/exec`; `Pipeline.lower` and `processFused` in
+`internal/exec/pipeline.go`; `Fuse` methods in `algebra` and `transfer`.
+The `lowered` arm of `benchmarks/fusion` is what measures it.
+
+Nothing is public. A caller still cannot build a `Pipeline` (§52), so
+fusion is reached only through the typed entry points that will be
+written for the shapes that want it. Publishing `Kernel` is the same
+separate decision it was.
+
+### Testing
+
+The staged pipeline is the reference, and it has a reference of its own:
+§52's `unfused`, which runs each stage as its own whole-raster call. So
+every test here is one comparison — build the same pipeline with fusion
+on and with it off, and require the same bits.
+
+- `TestPipelineFusedMatchesStaged` and its chunked twin run the §23
+  matrix — every tile size, worker count, windowed and compact operands,
+  masked and not — on every backend the build has.
+- `TestPipelineFusedEveryOp` runs a chain using every operation a chain
+  can hold, where the unary and immediate steps differ most between the
+  two backends.
+- `TestPipelineFallsBackOffTheCut` names the five shapes that do not
+  lower — diamond, right-deep, an unfusable stage, a kernel too wide to
+  be a step, an output that is not the last stage's — and requires each
+  to run staged and still equal its unfused form.
+- `TestPipelineFusedAsksNoCells` is the claim: `ScratchSize{Runs: n}`.
+- `requireFused` in §52's own tests keeps them covering the fused path
+  rather than quietly falling back to the staged one.
+- In `internal/vec`: `TestChainMatchesStaged` over random programs,
+  random data including every float32 class, and lengths straddling the
+  lane widths, the unrolled group and the scalar block;
+  `TestChainIsNotFused` for the two multiply-add shapes;
+  `TestSIMDChainMatchesScalar` for the lane loop, on whichever backend
+  the build has.
+- In `benchmarks/fusion`, `TestFormsAgree` holds the lowered chain to the
+  same bits as the chained calls, the staged pipeline and the
+  hand-written kernel, on every backend, tile shape and worker count the
+  benchmarks use.
+
+The acceptance harness (§39) is byte-identical to the parent commit,
+which is the check that a refactor reaching into `algebra` and `transfer`
+changed nothing a caller can see.
+
+Status: done, for the left-deep cut, on all three backends. Still to do:
+the Zen 2 AVX2 run, which is the suite's headline machine (§38) and the
+one the spike's own numbers came from; a chain with two live
+intermediates, which needs a register file and is worth what it measures;
+a generator, which this now prices at 10–25% for a chain of multiplies
+and which nothing yet asks for; and the typed entry point that would let
+a caller reach any of this.
 
 Status: partly done. Tile-level fusion of radius-0 chains is done: the
 internal `Pipeline` (§52) runs a chain of kernels on each tile while it is
@@ -1976,7 +2234,8 @@ v0.8   resampling, alignment, mosaics, interpolation
        partly done: same-CRS resampling (§54); reprojection is the
        caller's preprocessing (§36)
 v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
-       register-level fusion measured, not built (§29)
+       register-level fusion is built for the left-deep pointwise cut
+       (§29); a chain with two live intermediates remains
 v0.10  voxel grids as 3-D arrays (§33)
 ```
 
@@ -2774,8 +3033,10 @@ was built to expose.
 Two honest limits. The scratch traffic between stages is not counted —
 the counter sees a pipeline as one kernel with its declared arity — so 28
 B/cell is the DRAM figure only while the intermediates stay in cache.
-That understatement is the argument for §29 on top: register-level fusion
-removes the intermediates rather than relegating them to L2. And a
+That understatement was the argument for §29 on top, which has since
+landed: register-level fusion removes the intermediates rather than
+relegating them to L2, so a pipeline that lowers now moves what it says
+it moves. And a
 pipeline does nothing about the chunked 2.00×, which is the source and
 sink copy. It makes that copy carry more work, which is the most that can
 be done for a file.
@@ -2881,7 +3142,8 @@ pool miss per benchmark run spread over its few dozen calls.
 Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
-is what would let a caller build one of these.
+is what would let a caller build one of these. Register-level fusion on
+top of the radius-0 cut is §29, and is done.
 
 ## 53. Focal Operations
 

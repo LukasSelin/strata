@@ -5,6 +5,7 @@ import (
 
 	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -96,6 +97,16 @@ func (rescaleKernel) Arity() (inputs, outputs int) { return 1, 1 }
 
 func (k rescaleKernel) Process(dst exec.Span, src exec.Window) {
 	process(dst, src, k)
+}
+
+// Fuse lets a Pipeline run Rescale as one step of a fused chain rather
+// than as a pass of its own (DESIGN.md §29). vec.OpAffine is the kernel
+// rescaleKernel.span calls, unfused multiply-add and all, so the bits
+// are the same either way. Reclass and Lookup have no Fuse: their inner
+// scan over a table is per cell and data-dependent, which is not a step
+// a lane of a vector can take (internal/curve).
+func (k rescaleKernel) Fuse() (vec.Step, bool) {
+	return vec.Step{Op: vec.OpAffine, K: [2]float32{k.a, k.b}}, true
 }
 
 // process is the body every Process shares: fill the output view from

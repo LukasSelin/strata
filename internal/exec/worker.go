@@ -22,11 +22,12 @@ type worker struct {
 	// kscratch is the working memory a ScratchKernel asked for, lent to
 	// every Process call this worker makes. Zero for every other kernel.
 	kscratch Scratch
-	// cells, bits and views are the pooled blocks behind kscratch, held
-	// so releaseScratch can return them. nil when kscratch is empty.
+	// cells, bits, views and runs are the pooled blocks behind kscratch,
+	// held so releaseScratch can return them. nil when kscratch is empty.
 	cells *[]float32
 	bits  *[]uint64
 	views *[]raster.Float32Raster
+	runs  *[][]float32
 	// stats counts the bytes this worker's bands moved. It is per worker
 	// and summed once the workers have stopped, so the hot path takes no
 	// atomic and no lock. It is written once per band and padded for the
