@@ -1,10 +1,12 @@
-//go:build !(goexperiment.simd && amd64)
+//go:build !(goexperiment.simd && (amd64 || arm64))
 
 package fusion
 
-// Without GOEXPERIMENT=simd on amd64 there is no AVX2 loop, and NewFused
-// always returns the scalar one.
+// Without GOEXPERIMENT=simd on amd64 or arm64 there is no vector loop, and
+// NewFused always returns the scalar one.
 
-const haveAVX2 = false
+const haveSIMD = false
 
-func mul6AVX2(dst, a, b, c, d, e, f []float32) { mul6Scalar(dst, a, b, c, d, e, f) }
+const simdBackend = ""
+
+func mul6SIMD(dst, a, b, c, d, e, f []float32) { mul6Scalar(dst, a, b, c, d, e, f) }

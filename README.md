@@ -19,7 +19,8 @@ engine, or a file-format compatibility project.
 Pre-release. The v0.1 scope — float32 rasters, windows, validity bitmaps,
 the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
 tiled and bounded-memory execution — is implemented and measured, but the
-API is not stable and nothing is tagged yet. v0.2 is under way: the fold
+API is not stable and nothing is tagged yet. An arm64 NEON backend has
+since joined the AVX2 one. v0.2 is under way: the fold
 side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
 `Stats` follow once their accumulator is benchmarked. The `transfer`
 package has landed alongside them, so a computed surface can now be
@@ -113,10 +114,10 @@ semantics, edge handling, and cancellation behaviour.
 
 ## SIMD
 
-Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` on amd64
-CPUs with AVX2 runs vectorized kernels that agree bit-for-bit with the
-scalar ones; every other build runs scalar. ARM64 NEON kernels are not
-implemented yet.
+Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` runs
+vectorized kernels that agree bit-for-bit with the scalar ones: AVX2 on
+amd64 CPUs that have it, and NEON on every arm64 CPU (Apple Silicon,
+Graviton, Ampere). Every other build runs scalar.
 
 ```bash
 GOEXPERIMENT=simd go build ./...

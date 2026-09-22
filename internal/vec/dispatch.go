@@ -52,8 +52,12 @@ var scalarKernels = kernelSet{
 	reduceMax: scalarReduceMaxFloat32,
 }
 
-// simdKernels is the SIMD set, or nil when this build or CPU has none.
-var simdKernels *kernelSet
+// simdKernels is the SIMD set, or nil when this build or CPU has none,
+// and simdName is what Backend reports for it.
+var (
+	simdKernels *kernelSet
+	simdName    string
+)
 
 func (k *kernelSet) install() {
 	addFloat32, subFloat32, mulFloat32, divFloat32 = k.add, k.sub, k.mul, k.div
@@ -64,10 +68,10 @@ func (k *kernelSet) install() {
 	reduceMinFloat32, reduceMaxFloat32 = k.reduceMin, k.reduceMax
 }
 
-// Backend names the kernels currently in use: "avx2" or "scalar".
+// Backend names the kernels currently in use: "avx2", "neon" or "scalar".
 func Backend() string {
 	if simdKernels != nil && !usingScalar {
-		return "avx2"
+		return simdName
 	}
 	return "scalar"
 }

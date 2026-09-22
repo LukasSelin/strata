@@ -31,7 +31,7 @@ the detailed record; this table only points at it.
 |---|---|---|
 | `Float32Raster`, windows, validity bitmap | §9, §21, §31 | done |
 | Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
-| arm64 NEON backend (STRATA-11) | §14, §17 | not started; arm64 runs scalar |
+| arm64 NEON backend (`GOEXPERIMENT=simd`, STRATA-11) | §14, §17 | done: `vec`, `stencil`, `accum` |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
 | `terrain`: Gradient, Slope, Aspect, Hillshade | §20 | done; curvature, ruggedness open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
@@ -339,7 +339,7 @@ internal/vec           internal/curve   internal/stencil
    │                                       │
    └──────────────────┬────────────────────┘
           ├── simd/archsimd, amd64 AVX2    (GOEXPERIMENT=simd)
-          ├── simd/archsimd, arm64 NEON    (planned, STRATA-11)
+          ├── simd/archsimd, arm64 NEON    (GOEXPERIMENT=simd, STRATA-11)
           └── scalar                       (canonical, every build)
 ```
 
@@ -453,23 +453,29 @@ Current layout:
 internal/vec/                      internal/stencil/
 ├── scalar.go                      ├── horn.go        (scalar + dispatch)
 ├── dispatch.go                    ├── aspect.go
-└── simd_amd64.go                  ├── mask.go
-                                   └── simd_amd64.go
+├── simd_amd64.go                  ├── mask.go
+└── simd_arm64.go                  ├── simd_amd64.go
+                                   └── simd_arm64.go
 ```
 
-- `simd_arm64.go` follows with STRATA-11. There is no `simd.go` (portable
-  SIMD), per §14.
+- `internal/accum` has the same pair, with the block loop they share in
+  `blocks.go`. There is no `simd.go` (portable SIMD), per §14.
 - **Dispatch.** Kernels are package-level function variables. They start
   scalar, and `init` swaps them for SIMD versions when the build has
-  `GOEXPERIMENT=simd` and the CPU has AVX2. This is gated on AVX2, not
-  just AVX.
+  `GOEXPERIMENT=simd` and, on amd64, the CPU has AVX2. This is gated on
+  AVX2, not just AVX. On arm64 NEON is baseline, so there is no check.
+- **Equivalence tests** are written once, in each package's
+  `simd_test.go`, and run against whichever backend the architecture has;
+  a small per-architecture test file names that backend's kernels.
 - **Backend switching.** Each kernel package exports `Backend() string`
-  and `UseScalar(bool)`, so benchmarks and tests can run both backends in
-  one binary.
+  (`"avx2"`, `"neon"` or `"scalar"`) and `UseScalar(bool)`, so benchmarks
+  and tests can run both backends in one binary.
 - There is no per-call interface dispatch.
 - The kernel-writing rules (bounds-check-free loops, `ClearAVXUpperBits`
   before scalar tails, splitting kernels into `*Lanes` functions, explicit
-  NaN handling) are in ADR 0001 and benchmarks/nodata/RESULTS.md.
+  NaN handling) are in ADR 0001 and benchmarks/nodata/RESULTS.md. The
+  NEON files keep the same loop shapes and the `*Lanes` split, minus the
+  AVX-specific parts, so each reads side by side with its amd64 twin.
 
 ## 18. Raster Algebra
 
@@ -1343,8 +1349,8 @@ Raster sizes: 256², 1024², 4096² and 16384².
 ## 39. Correctness Testing
 
 Every SIMD implementation should be compared against its scalar equivalent,
-bit for bit (§15). Tests run in every build configuration: default,
-`GOEXPERIMENT=simd`, and arm64 once STRATA-11 lands.
+bit for bit (§15). Tests run in every build configuration: default, and
+`GOEXPERIMENT=simd` on both amd64 (AVX2) and arm64 (NEON).
 
 Test:
 
@@ -1499,10 +1505,10 @@ detected the overflow in `raster.Validate` found by fuzzing: gosec's
 integer overflow rule covers conversions, not arithmetic.
 
 CI (`.github/workflows/ci.yml`) runs all of this on every push and pull
-request: build, vet and test on Linux, Windows and macOS (macOS runners
-are arm64, so they run the scalar kernels); the same under
-`GOEXPERIMENT=simd`; `go test -race`; and golangci-lint. The race and
-lint jobs run in both builds.
+request: build, vet and test on Linux, Windows and macOS; the same under
+`GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS (arm64, NEON);
+`go test -race`; and golangci-lint. The race and lint jobs run in both
+builds, and in the SIMD build for arm64 too (lint cross-compiled).
 
 **The outside opinion.** Everything above is written by whoever wrote
 the library, against the same understanding of the problem, so a
@@ -1664,7 +1670,8 @@ memory and raw float32 file source/sink     done (§24)
 benchmark suite                             done: algebra (STRATA-10), engine (STRATA-9), chunked, terrain
 ```
 
-Arm64 builds run the scalar kernels in v0.1.
+Arm64 builds run the scalar kernels in v0.1. The NEON backend came after
+it (STRATA-11).
 
 Example:
 
@@ -1832,8 +1839,8 @@ v0.10  voxel grids as 3-D arrays (§33)
 ```
 
 **Not tied to a milestone:** a licence and tagged releases, so domain
-modules can import and pin strata (§7, §42); ARM64 NEON kernels
-(STRATA-11); and revisiting portable `simd` with Go 1.28 (ADR 0001). The
+modules can import and pin strata (§7, §42); and revisiting portable
+`simd` with Go 1.28 (ADR 0001). The ARM64 NEON kernels (STRATA-11), the
 traffic counter (§51), the outside benchmark against `gdaldem` (§38) and
 the acceptance harness (§39) landed this way and are done.
 
@@ -2037,10 +2044,10 @@ so — not to let the result depend on `Options`.
 **Decision: binned, and the guarantee stands.** `internal/accum` keeps one
 `int64` bin per float32 exponent and adds significands to them, so partials
 are integers and combine exactly. `Moments` adds the squares beside them
-for Mean, Variance and StdDev. Its AVX2 backend adds 64-cell blocks in
-registers after shifting them onto a common exponent, and puts the same
-integer into the bins as the scalar loop, so the backends agree by
-construction. On one core that makes the exact sum as fast as a plain
+for Mean, Variance and StdDev. Its AVX2 and NEON backends add 64-cell
+blocks in registers after shifting them onto a common exponent, and put
+the same integer into the bins as the scalar loop, so the backends agree
+by construction. On one core that makes the exact sum as fast as a plain
 float64 loop, and sum plus squares as fast as Neumaier. With workers the
 exact sum reaches 85% of read bandwidth. The numbers, and what lost
 (more bin sets did not help: the scalar loop is instruction-bound, not
@@ -2257,7 +2264,8 @@ explicit `float32(...)` conversions in scalar references for that reason
 (§15). Two expressions here are exposed: `Rescale`'s `a·v + b`, and
 `Lookup`'s segment value. `RescaleRange`'s offset is a third, in float64,
 once per call. The AVX2 `Affine` is correspondingly `VMULPS` then
-`VADDPS`, never `VFMADD`.
+`VADDPS`, never `VFMADD`, and the NEON one `VFMUL` then `VFADD`, never
+`VFMLA`: the compiler does not fuse archsimd's `Mul` and `Add`.
 
 `Reclass` does no arithmetic at all — comparisons and a table index — so
 it is identical across architectures by construction. It is the only
@@ -2270,6 +2278,12 @@ on arm64:
 
 ```bash
 GOOS=linux GOARCH=arm64 go build -gcflags=-S ./internal/vec ./internal/curve ./transfer | grep -E 'FMADD|FMSUB'
+```
+
+and for the NEON kernels, which must print nothing:
+
+```bash
+GOEXPERIMENT=simd GOOS=linux GOARCH=arm64 go build -gcflags=-S ./internal/vec ./internal/stencil 2>&1 | grep -E 'VFMLA|VFMLS'
 ```
 
 ### Where the kernels live
