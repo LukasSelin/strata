@@ -90,6 +90,7 @@ func BenchmarkRowWidth(b *testing.B) {
 	dst, dst2 := make([]float32, maxN), make([]float32, maxN)
 	kx, ky := HornScales(10, 10, 1)
 	deg := float32(180 / math.Pi)
+	kp, kq, kr, kt, ks := ZTScales(10, 10, 1)
 	ops := []struct {
 		name string
 		row  func(n int)
@@ -99,6 +100,9 @@ func BenchmarkRowWidth(b *testing.B) {
 		{"aspect", func(n int) { HornAspectRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, -1, false) }},
 		{"hillshade", func(n int) { HornHillshadeRow(dst[:n], rows[0], rows[1], rows[2], kx, ky, 180, -127, 127) }},
 		{"gradient", func(n int) { HornGradientRow(dst[:n], dst2[:n], rows[0], rows[1], rows[2], kx, ky) }},
+		{"curvature-profile", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvProfile) }},
+		{"curvature-plan", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvPlan) }},
+		{"curvature-mean", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvMean) }},
 	}
 	b.Logf("backend: %s", Backend())
 	for _, op := range ops {

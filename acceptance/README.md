@@ -35,13 +35,13 @@ failures.
 rectangular cells, and a noisy surface with two NoData regions — and runs
 every terrain, algebra and reduce operation on each, in all three forms
 (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked` through
-raw float32 files on 4 workers). 261 checks come out of that:
+raw float32 files on 4 workers). 351 checks come out of that:
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient recomputed in float64 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up |
 | 2 | The one-cell border carries no data | Horn needs all eight neighbours; a border cell that holds a number is reading outside the raster |
-| 3 | The plane against its analytic slope and aspect | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
+| 3 | The plane against its analytic slope, aspect and zero curvature | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
 | 5 | Validity after a 3×3 erosion of the input mask | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
@@ -51,8 +51,11 @@ raw float32 files on 4 workers). 261 checks come out of that:
 
 The reference implementations are derived in `check.py`'s docstring from
 Horn's kernel as gdaldem documents it, and from the definition of
-shaded relief as the cosine between the light and the surface normal —
-not from strata's code.
+shaded relief as the cosine between the light and the surface normal,
+and for curvature from Zevenbergen and Thorne's (1987) quadratic and
+Florinsky's (2016) normal-section formulas — not from strata's code.
+`gdaldem` has no curvature mode, so for curvature this numpy reference
+is the only outside opinion.
 
 ## Tolerances
 
@@ -69,6 +72,16 @@ Aspect gets a per-cell tolerance, because the direction of a nearly flat
 cell is genuinely undefined: a float32 rounding in the gradient can swing
 the bearing by degrees. Cells whose tolerance exceeds 5° are counted and
 reported rather than judged.
+
+Curvature gets per-cell tolerances too. Its own differences have their
+own rounding bounds (p: one rounding of 2·zmax; r and t: two of 4·zmax;
+s: three of 4·zmax), which are carried to first order through each
+formula with its partial derivatives, plus about one float32 epsilon per
+operation on the magnitude of the formula's terms. Profile and plan
+curvature divide by the gradient, so like aspect they have cells too
+flat to judge: where the error of p and q exceeds 1% of the gradient's
+length, first order no longer holds, and those cells are counted rather
+than judged (none, on the three DEMs here). Flat cells must hold 0.
 
 ## Checking the checker
 
@@ -89,6 +102,9 @@ count one too many                yes      1
 max slightly wrong                yes      1
 normalize by a reciprocal         yes      9
 normalize range from NoData       yes      3
+curvature sign flipped            yes      18
+profile and plan swapped          yes      18
+mean curvature 0.05% too large    yes      3
 ```
 
 A 0.05% slope error — far smaller than any plausible real bug — is
@@ -200,7 +216,8 @@ have hidden.
 
   On an AVX2 machine (checked on a Ryzen 9 3900X) all 101 files are
   byte-identical, which is the SIMD claim in the top-level README tested
-  from outside the library. On a CPU without AVX2 the vector build falls
+  from outside the library. That run predates curvature, whose files
+  have not been diffed on AVX2 hardware yet. On a CPU without AVX2 the vector build falls
   back to scalar and the comparison proves nothing.
 * **Anything outside these operations.** Extending it means adding a
   case to `main.go` and a reference to `expected()` in `check.py`.

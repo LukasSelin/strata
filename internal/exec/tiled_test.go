@@ -103,6 +103,15 @@ var adapters = []adapter{
 		},
 	},
 	{
+		name: "curvature-plan", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Curvature(dst[0], src[0], terrain.CurvatureOptions{CellSize: 5, CellSizeY: 4, Type: terrain.CurvaturePlan})
+		},
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.CurvatureTiled(ctx, dst[0], src[0], terrain.CurvatureOptions{CellSize: 5, CellSizeY: 4, Type: terrain.CurvaturePlan}, o)
+		},
+	},
+	{
 		name: "gradient", inputs: 1, outputs: 2,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Gradient(dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7})

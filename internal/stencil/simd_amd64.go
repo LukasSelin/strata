@@ -46,6 +46,7 @@ func init() {
 	simdSlope = hornSlopeRowAVX2
 	simdAspect = hornAspectRowAVX2
 	simdHillshade = hornHillshadeRowAVX2
+	simdCurvature = ztCurvatureRowAVX2
 	UseScalar(false)
 }
 
@@ -262,6 +263,95 @@ func hornHillshadeLanes(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) in
 		v = k.zero.IfElse(v.Less(k.zero), v)
 		v = k.hi.IfElse(v.Greater(k.hi), v)
 		store8(v, dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func ztCurvatureRowAVX2(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind) {
+	var i int
+	switch kind {
+	case CurvProfile:
+		i = ztProfileLanes(dst, r0, r1, r2, kp, kq, kr, kt, ks)
+	case CurvPlan:
+		i = ztPlanLanes(dst, r0, r1, r2, kp, kq, kr, kt, ks)
+	default:
+		i = ztMeanLanes(dst, r0, r1, r2, kp, kq, kr, kt, ks)
+	}
+	n := len(dst)
+	scalarZTCurvatureRow(dst[i:], r0[i:n+2], r1[i:n+2], r2[i:n+2], kp, kq, kr, kt, ks, kind)
+}
+
+// ztDerivs8 is ztDerivs for eight adjacent cells. The rows must have at
+// least lane+2 cells.
+func ztDerivs8(r0, r1, r2 []float32, kp, kq, kr, kt, ks archsimd.Float32x8) (p, q, r, s, t archsimd.Float32x8) {
+	z1, z2, z3 := load8(r0), load8(r0[1:]), load8(r0[2:])
+	z4, z5, z6 := load8(r1), load8(r1[1:]), load8(r1[2:])
+	z7, z8, z9 := load8(r2), load8(r2[1:]), load8(r2[2:])
+	p = z6.Sub(z4).Mul(kp)
+	q = z8.Sub(z2).Mul(kq)
+	c := z5.Add(z5)
+	r = z4.Add(z6).Sub(c).Mul(kr)
+	t = z2.Add(z8).Sub(c).Mul(kt)
+	s = z1.Add(z9).Sub(z3.Add(z7)).Mul(ks)
+	return p, q, r, s, t
+}
+
+func ztProfileLanes(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32) int {
+	b := archsimd.BroadcastFloat32x8
+	vkp, vkq, vkr, vkt, vks := b(kp), b(kq), b(kr), b(kt), b(ks)
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		p, q, r, s, t := ztDerivs8(r0, r1, r2, vkp, vkq, vkr, vkt, vks)
+		p2, q2, pq := p.Mul(p), q.Mul(q), p.Mul(q)
+		g := p2.Add(q2)
+		w := c.one.Add(g)
+		num := p2.Mul(r).Add(pq.Add(pq).Mul(s)).Add(q2.Mul(t))
+		v := c.zero.Sub(num.Div(g).Div(w.Mul(w.Sqrt())))
+		v = num.Add(c.zero).IfElse(g.Equal(c.zero), v)
+		store8(v, dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func ztPlanLanes(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32) int {
+	b := archsimd.BroadcastFloat32x8
+	vkp, vkq, vkr, vkt, vks := b(kp), b(kq), b(kr), b(kt), b(ks)
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		p, q, r, s, t := ztDerivs8(r0, r1, r2, vkp, vkq, vkr, vkt, vks)
+		p2, q2, pq := p.Mul(p), q.Mul(q), p.Mul(q)
+		g := p2.Add(q2)
+		num := q2.Mul(r).Sub(pq.Add(pq).Mul(s)).Add(p2.Mul(t))
+		v := c.zero.Sub(num.Div(g).Div(g.Sqrt()))
+		v = num.Add(c.zero).IfElse(g.Equal(c.zero), v)
+		store8(v, dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func ztMeanLanes(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32) int {
+	b := archsimd.BroadcastFloat32x8
+	vkp, vkq, vkr, vkt, vks := b(kp), b(kq), b(kr), b(kt), b(ks)
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		p, q, r, s, t := ztDerivs8(r0, r1, r2, vkp, vkq, vkr, vkt, vks)
+		p2, q2, pq := p.Mul(p), q.Mul(q), p.Mul(q)
+		w := c.one.Add(p2.Add(q2))
+		num := c.one.Add(q2).Mul(r).Sub(pq.Add(pq).Mul(s)).Add(c.one.Add(p2).Mul(t))
+		d := w.Mul(w.Sqrt())
+		store8(c.zero.Sub(num.Div(d.Add(d))), dst)
 		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
 	}
 	archsimd.ClearAVXUpperBits()

@@ -1,7 +1,8 @@
 // Package terrain is the terrain category of the project benchmark suite
 // (DESIGN.md §38, §42). It holds no code of its own: bench_test.go times
 // the four v0.1 operations of strata/terrain (Gradient, Slope, Aspect,
-// Hillshade) through their public API, over the
+// Hillshade), and Curvature (profile, the kind with the most work per
+// cell), through their public API, over the
 // benchmarks/internal/suite matrix:
 //
 //	Benchmark<Op>/size=<256|1024|4096|16384>/mask=<off|on>/backend=<scalar|simd>/workers=1
@@ -9,7 +10,7 @@
 // These are the plain functions: one goroutine, the whole raster at once,
 // the internal/stencil kernels. The engine category (benchmarks/engine)
 // measures what tiles and workers do to Slope and Hillshade; this one
-// measures the kernels every path runs, for all four operations, at every
+// measures the kernels every path runs, for every operation, at every
 // §38 size.
 //
 // The DEM is the engine category's (suite.FillDEM): a smooth surface of

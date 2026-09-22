@@ -55,6 +55,9 @@ var chunked = map[string]chunkedFunc{
 	"aspect": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
 		return terrain.AspectChunked(ctx, dst[0], src[0], terrain.AspectOptions{CellSize: 5, Trigonometric: true}, o)
 	},
+	"curvature-plan": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
+		return terrain.CurvatureChunked(ctx, dst[0], src[0], terrain.CurvatureOptions{CellSize: 5, CellSizeY: 4, Type: terrain.CurvaturePlan}, o)
+	},
 	"gradient": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
 		return terrain.GradientChunked(ctx, dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7}, o)
 	},
@@ -160,7 +163,7 @@ func TestChunkedTilesAndWorkers(t *testing.T) {
 	if testing.Short() {
 		dims = []int{1, 7, 0}
 	}
-	names := []string{"box-r2", "clamp", "add", "slope-degrees", "aspect", "hillshade", "gradient"}
+	names := []string{"box-r2", "clamp", "add", "slope-degrees", "aspect", "hillshade", "curvature-plan", "gradient"}
 	masks := []struct{ in, out bool }{{false, false}, {true, true}, {false, true}}
 
 	for _, name := range names {
