@@ -37,7 +37,7 @@ the detailed record; this table only points at it.
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
-| Register-level operation fusion | §29 | not started |
+| Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
@@ -1547,6 +1547,21 @@ loaded, and computes validity once for the chain. Its intermediates still
 go through scratch memory, so register-level fusion, which removes them,
 is not started, and neither is a public way to build a chain.
 
+Register-level fusion has been measured before being built.
+`benchmarks/fusion` runs §52's six-factor product as five chained calls,
+as a `Pipeline` and as a hand-written fused kernel, all bit-identical.
+From 4096² up the fused kernel is 0.96–1.11× the `Pipeline` in default
+strips, and both reach the DRAM limit, about 26 GB/s on 12 workers: the
+scratch traffic between stages stays in cache. Chained to `Pipeline` is
+the large step, 1.6–2.6×. At 1024² the fused kernel wins by up to 5.5×,
+but that measures the `Pipeline` allocating its scratch per worker on
+every call (12.6 MB/op on 12 workers), not fusion. So a generator for
+pointwise chains is not worth building on this evidence. Measure again
+for stencil or longer chains, whose intermediates would spill out of
+cache, and at in-cache sizes once scratch is not allocated per call.
+The run is one `-count 3` on an unquiet machine; see
+`benchmarks/fusion/RESULTS.md` for the numbers and their caveats.
+
 ## 30. Streaming Pipelines
 
 The project should eventually support pipeline-style processing.
@@ -2483,7 +2498,8 @@ interpolation
 **v0.9: Pipeline optimization**
 
 ```text
-operation fusion            partly done: tile-level, radius 0 (§29, §52)
+operation fusion            partly done: tile-level, radius 0 (§29, §52);
+                            register-level measured, not built
 lazy planning
 kernel scheduling
 ```
