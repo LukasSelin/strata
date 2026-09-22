@@ -1,4 +1,4 @@
-package resamp
+package resamprow
 
 import (
 	"math"

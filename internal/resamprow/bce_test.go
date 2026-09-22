@@ -1,4 +1,4 @@
-package resamp_test
+package resamprow_test
 
 import (
 	"testing"
@@ -12,17 +12,14 @@ import (
 // checks cannot go:
 //
 //   - table.go: the tables are built once per call;
-//   - band.go: its per-cell loops run over masked footprints, gdalwarp's
-//     Cubic fallback cells and Nearest's gather, whose indices come from
-//     the tables and cannot be proved in bounds;
 //   - Direct2D: the reference, which reads every tap through the tables;
 //   - columnAt: an output column's first tap and weights, looked up in the
 //     tables, once per column for every four or eight rows, not per tap;
 //   - hRowsNEON and hRowsAVX2: the offsets of each block of four or eight
 //     rows, once per block.
 func TestNoBoundsChecksInLoops(t *testing.T) {
-	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/resamp",
-		"table.go", "band.go", "Direct2D", "columnAt", "hRowsNEON", "hRowsAVX2")
+	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/resamprow",
+		"table.go", "Direct2D", "columnAt", "hRowsNEON", "hRowsAVX2")
 	if err != nil {
 		t.Fatal(err)
 	}

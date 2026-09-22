@@ -1,6 +1,6 @@
 //go:build goexperiment.simd && (amd64 || arm64)
 
-package resamp
+package resamprow
 
 // span returns the source range [lo, hi) the taps of output columns
 // [c0, c1) of a cover.

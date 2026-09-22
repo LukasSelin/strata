@@ -1,37 +1,15 @@
-// Package resamp holds the tables and row kernels behind package
-// resample (DESIGN.md §54): per-axis tap tables that map each output
-// column or row to a run of source cells and their weights, and the two
-// passes of the separable filter that consume them, a horizontal pass
-// that resamples source rows into an intermediate and a vertical pass
-// that blends intermediate rows. The kernels are scalar-canonical with
-// AVX2 and NEON versions that agree bit for bit (§15, §17).
+// Package resamprow holds the tap tables and row kernels behind package
+// resample (DESIGN.md §54): per-axis tables that map each output column
+// or row to a run of source cells and their weights, and the two passes
+// of the separable filter that consume them, a horizontal pass over the
+// source rows of a footprint and a vertical pass down its columns.
 //
-// # Geometry
+// It is a kernel package (§12, §14): it takes spans and scalars, and
+// knows nothing of rasters, masks or workers. Package resamp drives it
+// over a raster band.
 //
-// A grid axis is n cells of signed resolution res from an outer-corner
-// origin. Output cell c has its centre at world coordinate
-// o + (c+0.5)·res; its source pixel coordinate is
-//
-//	u = inv0 + X·inv1,  inv1 = 1/srcRes, inv0 = -srcOrigin·inv1
-//
-// the inverse geotransform GDAL applies, so that ties, such as the
-// output centres that land exactly on source cell edges when
-// downsampling by 2, fall the way gdalwarp's do. Source cell i covers
-// [i, i+1) in u and has its centre at i+0.5.
-//
-// # Weights
-//
-// An interpolating method weighs source cell i by K((i+0.5-u)/s), where
-// K is the method's kernel and s is 1 or, when the axis downsamples by
-// more than gdalwarp's threshold, the number of source cells per output
-// cell, which widens the kernel so that it averages instead of aliasing.
-// Average weighs each source cell by its overlap with the output cell.
-// Weights are computed in float64 over the source cells inside the
-// source, normalised to sum to 1 there, and rounded to float32; cells
-// outside the source and cells of weight exactly zero are not taps. A
-// cell centred exactly on a source centre therefore has one tap of
-// weight 1, and an identity grid copies the source bit for bit.
-package resamp
+//strata:kernel
+package resamprow
 
 import (
 	"fmt"
@@ -137,6 +115,35 @@ const maxAxisCells = math.MaxInt32
 func NewAxis(m Method, sp Spec) Axis {
 	return newAxis(m, sp, false)
 }
+
+// Axes is the two axes of a resampling. The row kernels take one axis
+// at a time; the direct reference and the footprint take the pair, and
+// package resamp's Plan is this plus the method's rules.
+type Axes struct {
+	X, Y Axis
+}
+
+// NewAxes builds both axes of a resampling.
+func NewAxes(m Method, x, y Spec) Axes {
+	return Axes{X: NewAxis(m, x), Y: NewAxis(m, y)}
+}
+
+// Footprint returns the source window [fx0, fx1) x [fy0, fy1) that output
+// cells [x0, x1) x [y0, y1) read, empty if none of them is covered. With
+// win it also covers the cells the half-valid rule counts.
+func (a *Axes) Footprint(x0, y0, x1, y1 int, win bool) (fx0, fy0, fx1, fy1 int) {
+	fx0, fx1 = a.X.Footprint(x0, x1, win)
+	fy0, fy1 = a.Y.Footprint(y0, y1, win)
+	if fx0 >= fx1 || fy0 >= fy1 {
+		return 0, 0, 0, 0
+	}
+	return fx0, fy0, fx1, fy1
+}
+
+// NewBilinear4 is the bilinear table gdalwarp's four-sample cubic falls
+// back to: never widened, whatever the scale. Package resamp builds it
+// alongside a cubic plan's own axes.
+func NewBilinear4(sp Spec) Axis { return newAxis(Bilinear, sp, true) }
 
 func newAxis(m Method, sp Spec, noWiden bool) Axis {
 	checkSpec(sp)
@@ -436,54 +443,6 @@ func lanczos3(x float64) float64 {
 	return mul(3*math.Sin(px), math.Sin(px/3)) / mul(px, px)
 }
 
-// Plan is a whole resampling: both axes and the method's rules.
-type Plan struct {
-	Method Method
-	X, Y   Axis
-	// Cubic4 is gdalwarp's four-sample cubic, used when neither axis
-	// widens: an output cell whose 4×4 taps lose one to the source edge
-	// (Clipped) or, with a mask, include an invalid cell takes bilinear
-	// instead, renormalised over its valid cells. BX and BY are the
-	// bilinear tables for those cells.
-	Cubic4 bool
-	BX, BY Axis
-	// ClippedX lists the output columns X.Clipped marks, so a band visits
-	// only them.
-	ClippedX []int32
-	// HalfValid is gdalwarp's rule for Lanczos over a masked source: a
-	// cell also needs at least half of the WinN[x]×WinN[y] source cells
-	// its kernel reaches to be valid, unless its centre lies exactly on a
-	// source centre on both axes (Exact), where the kernel copies that
-	// cell. Cells outside the source do not count (measured, DESIGN.md
-	// §54).
-	HalfValid bool
-}
-
-// NewPlan builds the plan of a resampling from its two axes.
-func NewPlan(m Method, x, y Spec) *Plan {
-	if m > Average {
-		panic(fmt.Sprintf("resamp: unknown %v", m))
-	}
-	p := &Plan{Method: m, X: NewAxis(m, x), Y: NewAxis(m, y)}
-	if m == Cubic && !p.X.Widened && !p.Y.Widened {
-		p.Cubic4 = true
-		p.BX = newAxis(Bilinear, x, true)
-		p.BY = newAxis(Bilinear, y, true)
-		for c, v := range p.X.Clipped {
-			if v {
-				p.ClippedX = append(p.ClippedX, int32(c))
-			}
-		}
-	}
-	p.HalfValid = m == Lanczos
-	return p
-}
-
-// Covered reports whether output cell (c, r) is covered on both axes.
-func (p *Plan) Covered(c, r int) bool {
-	return c >= p.X.Lo && c < p.X.Hi && r >= p.Y.Lo && r < p.Y.Hi
-}
-
 // Footprint returns the source range [first, end) that output indices
 // [lo, hi) of a read, or (0, 0) if none of them is covered. With win, it
 // also covers the cells the half-valid rule counts.
@@ -504,15 +463,4 @@ func (a *Axis) Footprint(lo, hi int, win bool) (first, end int) {
 		}
 	}
 	return first, end
-}
-
-// Footprint returns the source window [fx0, fx1) × [fy0, fy1) that output
-// cells [x0, x1) × [y0, y1) read, empty if none of them is covered.
-func (p *Plan) Footprint(x0, y0, x1, y1 int) (fx0, fy0, fx1, fy1 int) {
-	fx0, fx1 = p.X.Footprint(x0, x1, p.HalfValid)
-	fy0, fy1 = p.Y.Footprint(y0, y1, p.HalfValid)
-	if fx0 >= fx1 || fy0 >= fy1 {
-		return 0, 0, 0, 0
-	}
-	return fx0, fy0, fx1, fy1
 }

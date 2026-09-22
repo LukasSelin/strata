@@ -1,4 +1,4 @@
-package resamp
+package resamprow
 
 // Backend function variables (DESIGN.md §17): scalar by default, swapped
 // for SIMD kernels by a simd_<arch>.go init when the build and CPU have

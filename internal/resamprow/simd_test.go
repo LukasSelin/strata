@@ -1,6 +1,6 @@
 //go:build goexperiment.simd && (amd64 || arm64)
 
-package resamp
+package resamprow
 
 import (
 	"math/rand/v2"
@@ -29,7 +29,7 @@ func TestSIMDMatchesScalar(t *testing.T) {
 	rng := rand.New(rand.NewPCG(21, 22))
 	for iter := range 400 {
 		m := []Method{Bilinear, Cubic, Lanczos, Average}[iter%4]
-		p, sw, sh := randomPlan(rng, m)
+		p, sw, sh := randomAxes(rng, m)
 		if p.X.Lo >= p.X.Hi {
 			continue
 		}

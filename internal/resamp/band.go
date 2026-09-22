@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"sync"
 
+	"github.com/LukasSelin/strata/internal/resamprow"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -151,15 +152,15 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 	sdata := src.R.Data[(fy0-src.Y0)*stride+fx0-src.X0:]
 	masked := src.R.Valid != nil && !allValid(src, fx0, fy0, fpW, fpH)
 
-	ws.hs = grow(ws.hs, HScratch(fpW))
+	ws.hs = grow(ws.hs, resamprow.HScratch(fpW))
 	ws.t = grow(ws.t, fpH*cw)
-	HRows(ws.t, cw, sdata, stride, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+	resamprow.HRows(ws.t, cw, sdata, stride, fpH, &p.X, cx0, cx1, fx0, ws.hs)
 	if masked {
 		p.planes(ws, src, fx0, fy0, fpW, fpH, cx0, cx1)
 		ws.tm = grow(ws.tm, fpH*cw)
 		ws.tf = grow(ws.tf, fpH*cw)
-		HRows(ws.tm, cw, ws.xm, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
-		HRows(ws.tf, cw, ws.xf, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+		resamprow.HRows(ws.tm, cw, ws.xm, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+		resamprow.HRows(ws.tf, cw, ws.xf, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
 		ws.nm = grow(ws.nm, cw)
 		ws.d = grow(ws.d, cw)
 		ws.csum = grow(ws.csum, cw)
@@ -178,7 +179,7 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 		ty := int(p.Y.First[y]) - fy0
 		ny := int(p.Y.Taps[y])
 		wy := p.Y.W[p.Y.Off[y] : int(p.Y.Off[y])+ny]
-		VRow(out, ws.t[ty*cw:], cw, wy)
+		resamprow.VRow(out, ws.t[ty*cw:], cw, wy)
 		if !masked {
 			switch {
 			case p.Cubic4 && p.Y.Clipped[y]:
@@ -198,15 +199,15 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 			continue
 		}
 
-		VRow(ws.nm, ws.tm[ty*cw:], cw, wy)
-		VRow(ws.d, ws.tf[ty*cw:], cw, wy)
+		resamprow.VRow(ws.nm, ws.tm[ty*cw:], cw, wy)
+		resamprow.VRow(ws.d, ws.tf[ty*cw:], cw, wy)
 		// The valid taps of each cell: counts are small integers, exact in
 		// float32, so the vertical pass with unit weights sums them.
 		csum := ws.csum[:cw]
-		VRow(csum, ws.cnt[ty*cw:], cw, ws.ones[:ny])
+		resamprow.VRow(csum, ws.cnt[ty*cw:], cw, ws.ones[:ny])
 		if p.HalfValid {
 			// The valid cells of each window, summed like the tap counts.
-			VRow(ws.wsum[:cw], ws.wcnt[(int(p.Y.WinFirst[y])-fy0)*cw:], cw, ws.ones[:p.Y.WinN[y]])
+			resamprow.VRow(ws.wsum[:cw], ws.wcnt[(int(p.Y.WinFirst[y])-fy0)*cw:], cw, ws.ones[:p.Y.WinN[y]])
 		}
 		cy := int(p.Y.Centre[y])
 		for c := cx0; c < cx1; c++ {

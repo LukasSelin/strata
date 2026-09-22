@@ -1,4 +1,4 @@
-package resamp
+package resamprow
 
 // The canonical kernels (DESIGN.md §15). Every product is rounded to
 // float32 by an explicit conversion before it is added, so no compiler
@@ -57,7 +57,7 @@ func scalarVRow(dst, t []float32, tStride int, w []float32) {
 	}
 }
 
-// Direct2D evaluates the plan's filter cell by cell, recomputing each
+// Direct2D evaluates the axes' filter cell by cell, recomputing each
 // tap row's horizontal sum rather than reusing an intermediate. It
 // performs exactly the separable passes' operations for every cell, so
 // it gives the same bits; it is the reference the tests hold the passes
@@ -65,8 +65,8 @@ func scalarVRow(dst, t []float32, tStride int, w []float32) {
 // (DESIGN.md §54). It writes dst[(r-y0)*dStride + c-x0] for the covered
 // cells of [x0, x1) × [y0, y1), reading src with its row y and column x
 // at src[(y-sy0)*sStride + x-sx0]; it ignores validity.
-func Direct2D(dst []float32, dStride int, src []float32, sStride, sx0, sy0 int, p *Plan, x0, x1, y0, y1 int) {
-	ax, ay := &p.X, &p.Y
+func Direct2D(dst []float32, dStride int, src []float32, sStride, sx0, sy0 int, a *Axes, x0, x1, y0, y1 int) {
+	ax, ay := &a.X, &a.Y
 	for r := max(y0, ay.Lo); r < min(y1, ay.Hi); r++ {
 		fy := int(ay.First[r]) - sy0
 		wy := ay.W[ay.Off[r] : ay.Off[r]+ay.Taps[r]]

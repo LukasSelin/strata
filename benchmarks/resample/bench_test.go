@@ -6,6 +6,7 @@ import (
 
 	"github.com/LukasSelin/strata/benchmarks/internal/suite"
 	"github.com/LukasSelin/strata/internal/resamp"
+	"github.com/LukasSelin/strata/internal/resamprow"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/resample"
 )
@@ -97,7 +98,7 @@ func (o op) workload(f *fixture, c suite.Case) suite.Workload {
 		run = func() {
 			// A plan per call, as Resample builds one.
 			p := resamp.NewPlan(resamp.Method(o.m), x, y)
-			resamp.Direct2D(dst.Raster.Data, f.size, src.Raster.Data, f.sg.Width, 0, 0, p, 0, f.size, 0, f.size)
+			resamprow.Direct2D(dst.Raster.Data, f.size, src.Raster.Data, f.sg.Width, 0, 0, &p.Axes, 0, f.size, 0, f.size)
 		}
 	}
 	return suite.Workload{Run: run, BytesPerCell: bytes}
