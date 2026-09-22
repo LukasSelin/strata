@@ -258,8 +258,8 @@ func assertKernels(t *testing.T, name string, got, want kernelSet) {
 func TestUseScalar(t *testing.T) {
 	defer UseScalar(false)
 	initial := Backend()
-	if initial != "scalar" && initial != "avx2" {
-		t.Fatalf("Backend() = %q, want scalar or avx2", initial)
+	if initial != "scalar" && initial != "avx2" && initial != "neon" {
+		t.Fatalf("Backend() = %q, want scalar, avx2 or neon", initial)
 	}
 	UseScalar(true)
 	if Backend() != "scalar" {
