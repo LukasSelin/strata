@@ -18,6 +18,7 @@ var (
 	sqrtFloat32      = scalarSqrtFloat32
 	reduceMinFloat32 = scalarReduceMinFloat32
 	reduceMaxFloat32 = scalarReduceMaxFloat32
+	chainFloat32     = scalarChainFloat32
 )
 
 // kernelSet is one backend's kernels, one field per function variable.
@@ -30,6 +31,7 @@ type kernelSet struct {
 	clamp                func(dst, src []float32, lo, hi float32)
 	abs, sqrt            func(dst, src []float32)
 	reduceMin, reduceMax func(acc float32, src []float32) float32
+	chain                func(c *Chain, dst []float32, srcs [][]float32)
 }
 
 var scalarKernels = kernelSet{
@@ -47,6 +49,7 @@ var scalarKernels = kernelSet{
 	sqrt:      scalarSqrtFloat32,
 	reduceMin: scalarReduceMinFloat32,
 	reduceMax: scalarReduceMaxFloat32,
+	chain:     scalarChainFloat32,
 }
 
 // simdKernels is the SIMD set, or nil when this build or CPU has none.
@@ -59,6 +62,7 @@ func (k *kernelSet) install() {
 	minFloat32, maxFloat32, clampFloat32 = k.min, k.max, k.clamp
 	absFloat32, sqrtFloat32 = k.abs, k.sqrt
 	reduceMinFloat32, reduceMaxFloat32 = k.reduceMin, k.reduceMax
+	chainFloat32 = k.chain
 }
 
 // Backend names the kernels currently in use: "avx2" or "scalar".

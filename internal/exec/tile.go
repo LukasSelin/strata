@@ -211,13 +211,14 @@ func (e *job) allocScratch(w, h int) {
 		return
 	}
 	need := sk.Scratch(w, h)
-	if need.Cells < 0 || need.Words < 0 || need.Views < 0 {
+	if need.Cells < 0 || need.Words < 0 || need.Views < 0 || need.Runs < 0 {
 		panic(fmt.Sprintf("engine: kernel asked for negative scratch %+v", need))
 	}
 	n := len(e.workers)
 	var cells []float32
 	var bits []uint64
 	var views []raster.Float32Raster
+	var runs [][]float32
 	if need.Cells > 0 {
 		cells = make([]float32, n*need.Cells)
 	}
@@ -226,6 +227,9 @@ func (e *job) allocScratch(w, h int) {
 	}
 	if need.Views > 0 {
 		views = make([]raster.Float32Raster, n*need.Views)
+	}
+	if need.Runs > 0 {
+		runs = make([][]float32, n*need.Runs)
 	}
 	for i := range e.workers {
 		s := &e.workers[i].kscratch
@@ -237,6 +241,9 @@ func (e *job) allocScratch(w, h int) {
 		}
 		if need.Views > 0 {
 			s.Views = views[i*need.Views : (i+1)*need.Views : (i+1)*need.Views]
+		}
+		if need.Runs > 0 {
+			s.Runs = runs[i*need.Runs : (i+1)*need.Runs : (i+1)*need.Runs]
 		}
 	}
 }

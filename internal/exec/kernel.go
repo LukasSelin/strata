@@ -1,6 +1,9 @@
 package exec
 
-import "github.com/LukasSelin/strata/raster"
+import (
+	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
+)
 
 // Kernel is a raster operation the engine can run over any part of a
 // raster: a pointwise operation (radius 0) or a neighbourhood operation
@@ -47,10 +50,11 @@ type ScratchKernel interface {
 
 // ScratchSize is how much working memory a ScratchKernel asks for.
 type ScratchSize struct {
-	// Cells is float32 cells, Words validity words, and Views
-	// raster.Float32Raster values — the last for kernels that hand
-	// operand slices to other kernels and cannot allocate them per call.
-	Cells, Words, Views int
+	// Cells is float32 cells, Words validity words, Views
+	// raster.Float32Raster values and Runs []float32 headers — the last
+	// two for kernels that hand operands to other kernels, or to a
+	// vector kernel, and cannot allocate the slices per call.
+	Cells, Words, Views, Runs int
 }
 
 // Scratch is the working memory the engine lends a ScratchKernel. Its
@@ -60,6 +64,26 @@ type Scratch struct {
 	Cells []float32
 	Bits  []uint64
 	Views []raster.Float32Raster
+	Runs  [][]float32
+}
+
+// FusableKernel is a radius-0 Kernel that can name itself as one step of
+// a vec.Chain, so that a Pipeline of such kernels runs as a single pass
+// with the value between two of them in a register rather than in a
+// buffer (DESIGN.md §29).
+//
+// Implementing it is a promise about bits, not only about arithmetic:
+// the step must compute what the kernel's own Process computes, cell for
+// cell, or the fused chain will not equal the unfused one.
+type FusableKernel interface {
+	Kernel
+	// Fuse is the operation this kernel performs and the immediates it
+	// performs it with, and whether this kernel can be a chain step at
+	// all: a kernel whose arity depends on its parameters may be fusable
+	// for some of them and not others, and says so here rather than by
+	// being a second type. Step.Src is ignored — a Pipeline fills it in
+	// from the stage's own inputs — so an implementation leaves it zero.
+	Fuse() (step vec.Step, ok bool)
 }
 
 // EdgeKernel is a Kernel with radius > 0 that chooses the Data value

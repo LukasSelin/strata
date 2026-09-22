@@ -221,6 +221,7 @@ func kernelsInUse() kernelSet {
 		min: minFloat32, max: maxFloat32, clamp: clampFloat32,
 		abs: absFloat32, sqrt: sqrtFloat32,
 		reduceMin: reduceMinFloat32, reduceMax: reduceMaxFloat32,
+		chain: chainFloat32,
 	}
 }
 

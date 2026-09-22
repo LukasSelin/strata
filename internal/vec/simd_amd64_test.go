@@ -3,6 +3,7 @@
 package vec
 
 import (
+	"fmt"
 	"math"
 	"simd/archsimd"
 	"testing"
@@ -336,4 +337,60 @@ func rotated(src []float32, by int) []float32 {
 		out[i] = src[(i+by)%len(src)]
 	}
 	return out
+}
+
+// TestAVX2ChainMatchesScalar is the register-level fusion counterpart of
+// TestAVX2MatchesScalar: the fused lane loop, which carries the running
+// value in a YMM register for the whole chain, must write the bits
+// scalarChainFloat32 writes carrying it through a block of memory
+// (DESIGN.md §29). The lengths straddle the lane width, so the chain's
+// scalar tail is exercised too.
+func TestAVX2ChainMatchesScalar(t *testing.T) {
+	requireAVX2(t)
+	if simdKernels == nil {
+		t.Skip("no SIMD kernel set installed")
+	}
+
+	programs := []struct {
+		name   string
+		inputs int
+		first  int
+		steps  []Step
+	}{
+		{"six-input product", 6, 0, []Step{
+			{Op: OpMul, Src: 1}, {Op: OpMul, Src: 2}, {Op: OpMul, Src: 3},
+			{Op: OpMul, Src: 4}, {Op: OpMul, Src: 5},
+		}},
+		{"every binary op", 3, 2, []Step{
+			{Op: OpAdd, Src: 0}, {Op: OpSub, Src: 1}, {Op: OpMul, Src: 2},
+			{Op: OpDiv, Src: 0}, {Op: OpMin, Src: 1}, {Op: OpMax, Src: 2},
+		}},
+		{"immediates and unary", 2, 0, []Step{
+			{Op: OpMul, Src: 1},
+			{Op: OpMulScalar, Src: -1, K: [2]float32{-3}},
+			{Op: OpAddScalar, Src: -1, K: [2]float32{0.5}},
+			{Op: OpAffine, Src: -1, K: [2]float32{2, -1}},
+			{Op: OpAbs, Src: -1},
+			{Op: OpSqrt, Src: -1},
+			{Op: OpClamp, Src: -1, K: [2]float32{-10, 10}},
+		}},
+		{"one step", 1, 0, []Step{{Op: OpAbs, Src: -1}}},
+	}
+
+	for _, p := range programs {
+		t.Run(p.name, func(t *testing.T) {
+			c := NewChain(p.inputs, p.first, p.steps)
+			for _, n := range simdCases() {
+				srcs := make([][]float32, p.inputs)
+				for i := range srcs {
+					srcs[i] = edgeFloat32s(n + i)[:n]
+				}
+				want := make([]float32, n)
+				scalarChainFloat32(c, want, srcs)
+				got := make([]float32, n)
+				chainFloat32AVX2(c, got, srcs)
+				assertSameBits(t, fmt.Sprintf("chain n=%d", n), got, want)
+			}
+		})
+	}
 }

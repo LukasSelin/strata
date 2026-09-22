@@ -41,6 +41,7 @@ func init() {
 		sqrt:      sqrtFloat32AVX2,
 		reduceMin: reduceMinFloat32AVX2,
 		reduceMax: reduceMaxFloat32AVX2,
+		chain:     chainFloat32AVX2,
 	}
 	UseScalar(false)
 }
