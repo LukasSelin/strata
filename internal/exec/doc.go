@@ -29,9 +29,9 @@
 // Process calls a kernel once per rectangle, not once per row. A
 // rectangle is the natural unit at every level of DESIGN.md §6's
 // raster → tile → row → span → vector path: Process hands a kernel a
-// band of one tile — whole rows of it for a pointwise kernel, a
-// sub-rectangle of it for one with a radius — and the kernel walks its
-// rows and hands row slices to vector code. Row kernels (internal/stencil) wrap in a
+// band of one tile — whole rows of it, or a sub-rectangle when the
+// caller shapes bands with ComputeWidth — and the kernel walks its rows
+// and hands row slices to vector code. Row kernels (internal/stencil) wrap in a
 // three-line loop, and pointwise kernels keep algebra's fast path of one
 // vector call over all cells when the views are compact (Stride ==
 // Width), which a per-row interface could not offer. Bands, the unit of
@@ -182,9 +182,8 @@
 // stopped, if any band was not written, and nil otherwise. So after a
 // cancelled call every output cell either holds its final Data and
 // validity or is untouched, and the finished bands are a prefix of the
-// plan, with any number of workers: with one tile, a prefix of its rows
-// for a pointwise kernel and of its sub-rectangles, row-major, for one
-// with a radius. With
+// plan, with any number of workers: with one tile, a prefix of its rows,
+// or of its sub-rectangles in row-major order when bands are shaped. With
 // W workers, at most W-1 kernel calls start after ctx is done (the bands
 // other workers took just before). A context that is done before the
 // call writes nothing. Only cancellation is reported as an error;

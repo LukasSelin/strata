@@ -23,10 +23,7 @@ func Max(dst, a, b raster.Float32Raster) { binary("algebra.Max", dst, a, b, vec.
 
 // Clamp computes dst = min(max(src, lo), hi) cell by cell.
 func Clamp(dst, src raster.Float32Raster, lo, hi float32) {
-	const op = "algebra.Clamp"
-	pointwise.Check(op, "dst", dst, dst)
-	pointwise.Check(op, "src", dst, src)
-	pointwise.CheckMasks(op, dst, src)
+	checkUnary("algebra.Clamp", dst, src)
 	clamp(dst, src, lo, hi, compact(dst) && compact(src))
 }
 

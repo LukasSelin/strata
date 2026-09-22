@@ -23,14 +23,20 @@ import (
 //   - splitting a raster into two halves and combining their reductions
 //     gives the reduction of the whole;
 //   - adding an all-invalid border changes nothing;
-//   - Count is the popcount of the mask, whatever the tiling.
+//   - Count is the popcount of the mask, whatever the tiling;
+//   - doubling every cell doubles Sum, Mean and StdDev exactly, since a
+//     power-of-two scale commutes with exact arithmetic and with
+//     rounding, and doubles Min and Max.
+//
+// Each relation checks Stats and Sum beside MinMax and Count, except the
+// split, whose halves' rounded sums cannot be combined exactly.
 //
 // Unlike a comparison against a reference these say what a reduction
 // means rather than how it is computed, so they fail for an engine that
 // visits a cell twice, skips one, reads the wrong one, or lets the answer
 // depend on the tiling — the thing DESIGN.md §49 promises it does not.
 func FuzzReduceRelations(f *testing.F) {
-	for rel := range 5 {
+	for rel := range 6 {
 		f.Add([]byte{byte(rel), 1, 1, 20, 6})
 		f.Add([]byte{byte(rel), 3, 2, 66, 9, 1})
 		f.Add([]byte{byte(rel), 0, 3, 9, 3, 0, 2})
@@ -41,20 +47,26 @@ func FuzzReduceRelations(f *testing.F) {
 }
 
 // result is what a reduction of one raster gives: the extremes and the
-// count, as one comparable value.
+// count, and the Summary, as one comparable value.
 type result struct {
 	mn, mx float32
 	count  int64
+	s      reduce.Summary
 }
 
 func (r result) String() string {
-	return fmt.Sprintf("min %v (%#08x) max %v (%#08x) count %d",
-		r.mn, math.Float32bits(r.mn), r.mx, math.Float32bits(r.mx), r.count)
+	return fmt.Sprintf("min %v (%#08x) max %v (%#08x) count %d stats %s",
+		r.mn, math.Float32bits(r.mn), r.mx, math.Float32bits(r.mx), r.count, fmtSummary(r.s))
 }
 
 // equal is bit equality, with two NaNs equal because both are the
 // canonical NaN by then (TestNaNIsCanonical pins that separately).
 func (r result) equal(o result) bool {
+	return r.extremesEqual(o) && sameSummary(r.s, o.s)
+}
+
+// extremesEqual compares only what combine can rebuild from two halves.
+func (r result) extremesEqual(o result) bool {
 	return same(r.mn, o.mn) && same(r.mx, o.mx) && r.count == o.count
 }
 
@@ -62,7 +74,7 @@ func (r result) equal(o result) bool {
 // FuzzReduceRelations drives it with a fuzz input, TestReduceRelations
 // with rapid.
 func reduceRelations(t rastertest.TB, d fuzzdata.Source) {
-	rel := d.IntN(5)
+	rel := d.IntN(6)
 	w, h := d.Range(1, 70), d.Range(1, 9)
 	masked := rel == 1 || rel == 4 || d.Bool()
 
@@ -91,19 +103,38 @@ func reduceRelations(t rastertest.TB, d fuzzdata.Source) {
 		var (
 			mn, mx float32
 			n      int64
+			s      reduce.Summary
+			sum    float64
+			sn     int64
 			err    error
+			errS   error
+			errSum error
 		)
+		ctx := context.Background()
 		switch d.IntN(3) {
 		case 0:
 			mn, mx, n = reduce.MinMax(placed)
+			s = reduce.Stats(placed)
+			sum, sn = reduce.Sum(placed)
 		case 1:
-			mn, mx, n, err = reduce.MinMaxTiled(context.Background(), placed, opts)
+			mn, mx, n, err = reduce.MinMaxTiled(ctx, placed, opts)
+			s, errS = reduce.StatsTiled(ctx, placed, opts)
+			sum, sn, errSum = reduce.SumTiled(ctx, placed, opts)
 		default:
-			mn, mx, n, err = reduce.MinMaxChunked(context.Background(),
-				engine.NewMemorySource(placed), opts)
+			src := engine.NewMemorySource(placed)
+			mn, mx, n, err = reduce.MinMaxChunked(ctx, src, opts)
+			s, errS = reduce.StatsChunked(ctx, src, opts)
+			sum, sn, errSum = reduce.SumChunked(ctx, src, opts)
 		}
-		if err != nil {
-			t.Fatal(err)
+		for _, e := range []error{err, errS, errSum} {
+			if e != nil {
+				t.Fatal(e)
+			}
+		}
+		// Stats and Sum run reductions of their own and must agree with
+		// MinMax about the extremes and with each other about the sum.
+		if !same(s.Min, mn) || !same(s.Max, mx) || s.Count != n || !sameF64(sum, s.Sum) || sn != n {
+			t.Fatalf("Stats %s and Sum %v %d disagree with MinMax %v %v %d", fmtSummary(s), sum, sn, mn, mx, n)
 		}
 		// Count runs its own reduction and must agree about how many
 		// cells took part.
@@ -114,7 +145,7 @@ func reduceRelations(t rastertest.TB, d fuzzdata.Source) {
 		if c != n {
 			t.Fatalf("Count = %d but MinMax counted %d", c, n)
 		}
-		return result{mn, mx, n}
+		return result{mn, mx, n, s}
 	}
 
 	id := fmt.Sprintf("relation %d %d×%d masked %v", rel, w, h, masked)
@@ -151,11 +182,11 @@ func reduceRelations(t rastertest.TB, d fuzzdata.Source) {
 		top := run(rastertest.Compact(in.Window(0, 0, w, cut)))
 		bottom := run(rastertest.Compact(in.Window(0, cut, w, h-cut)))
 		got := combine(top, bottom)
-		if !got.equal(want) {
+		if !got.extremesEqual(want) {
 			t.Fatalf("%s: cut at row %d gives %v, want %v", id, cut, got, want)
 		}
 		// and the other way round, since Combine is commutative
-		if other := combine(bottom, top); !other.equal(want) {
+		if other := combine(bottom, top); !other.extremesEqual(want) {
 			t.Fatalf("%s: cut at row %d combined in reverse gives %v, want %v", id, cut, other, want)
 		}
 	case 3:
@@ -184,6 +215,30 @@ func reduceRelations(t rastertest.TB, d fuzzdata.Source) {
 		if got.count != want {
 			t.Fatalf("%s: counted %d valid cells, want %d", id, got.count, want)
 		}
+	case 5:
+		// Doubling every cell is exact in float32 unless a finite cell
+		// overflows, and scales the exact sum, mean and variance by
+		// powers of two, which rounding commutes with.
+		doubled := rastertest.Compact(in)
+		for y := range h {
+			for x := range w {
+				v := doubled.Data[doubled.Index(x, y)]
+				if in.IsValid(x, y) && !math.IsInf(float64(v), 0) && math.Abs(float64(v)) > math.MaxFloat32/2 {
+					return
+				}
+				doubled.Data[doubled.Index(x, y)] = 2 * v
+			}
+		}
+		want := run(rastertest.Compact(in))
+		got := run(doubled)
+		w2 := want.s
+		scaled := reduce.Summary{
+			Count: w2.Count, Sum: 2 * w2.Sum, Mean: 2 * w2.Mean, StdDev: 2 * w2.StdDev,
+			Min: 2 * w2.Min, Max: 2 * w2.Max,
+		}
+		if !sameSummary(got.s, scaled) {
+			t.Fatalf("%s: doubling gives %s, want %s", id, fmtSummary(got.s), fmtSummary(scaled))
+		}
 	}
 }
 
@@ -195,7 +250,7 @@ func combine(a, b result) result {
 	case b.count == 0:
 		return a
 	}
-	return result{min(a.mn, b.mn), max(a.mx, b.mx), a.count + b.count}
+	return result{mn: min(a.mn, b.mn), mx: max(a.mx, b.mx), count: a.count + b.count}
 }
 
 // withInvalidBorder returns r in the middle of a raster one cell larger

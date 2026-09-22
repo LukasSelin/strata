@@ -1,0 +1,243 @@
+# gdal: GDAL 3.14.0dev-17759e56cbe7d693a39c3d5ccf339364de844ee7, released 2026/08/18
+# nproc: 24
+# work: tmpfs            14G     0   14G   0% /work
+# Size is 11264, 11264
+# Pixel Size = (12.500000000000000,-12.500000000000000)
+#   NoData Value=65535
+# cell: 12.5  nodata: 65535  tile: 256  repeats: 5
+tool=startup op=none fmt=none workers=1 run=1 real=0.022 user=0.016 sys=0.005
+tool=startup op=none fmt=none workers=1 run=2 real=0.024 user=0.012 sys=0.011
+tool=startup op=none fmt=none workers=1 run=3 real=0.025 user=0.014 sys=0.011
+tool=startup op=none fmt=none workers=1 run=4 real=0.023 user=0.007 sys=0.014
+tool=startup op=none fmt=none workers=1 run=5 real=0.023 user=0.012 sys=0.011
+tool=startup op=none fmt=go workers=1 run=1 real=0.003 user=0.001 sys=0.003
+tool=startup op=none fmt=go workers=1 run=2 real=0.004 user=0.001 sys=0.004
+tool=startup op=none fmt=go workers=1 run=3 real=0.003 user=0.001 sys=0.003
+tool=startup op=none fmt=go workers=1 run=4 real=0.003 user=0.000 sys=0.003
+tool=startup op=none fmt=go workers=1 run=5 real=0.003 user=0.000 sys=0.003
+tool=copy op=none fmt=envi workers=1 run=1 real=1.178 user=0.200 sys=0.977
+tool=copy op=none fmt=envi workers=1 run=2 real=1.111 user=0.232 sys=0.876
+tool=copy op=none fmt=envi workers=1 run=3 real=1.133 user=0.260 sys=0.865
+tool=copy op=none fmt=envi workers=1 run=4 real=1.114 user=0.212 sys=0.901
+tool=copy op=none fmt=envi workers=1 run=5 real=1.158 user=0.212 sys=0.942
+tool=copy op=none fmt=tif workers=1 run=1 real=0.872 user=0.136 sys=0.729
+tool=copy op=none fmt=tif workers=1 run=2 real=0.840 user=0.128 sys=0.710
+tool=copy op=none fmt=tif workers=1 run=3 real=0.898 user=0.168 sys=0.726
+tool=copy op=none fmt=tif workers=1 run=4 real=0.785 user=0.128 sys=0.654
+tool=copy op=none fmt=tif workers=1 run=5 real=0.807 user=0.136 sys=0.670
+tool=gdaldem op=slope fmt=envi workers=1 run=1 real=4.038 user=3.080 sys=0.946
+tool=gdaldem op=slope fmt=envi workers=1 run=2 real=4.091 user=3.133 sys=0.951
+tool=gdaldem op=slope fmt=envi workers=1 run=3 real=4.003 user=3.018 sys=0.983
+tool=gdaldem op=slope fmt=envi workers=1 run=4 real=4.012 user=3.069 sys=0.939
+tool=gdaldem op=slope fmt=envi workers=1 run=5 real=4.056 user=3.084 sys=0.972
+tool=gdaldem op=slope fmt=tif workers=1 run=1 real=3.748 user=2.947 sys=0.795
+tool=gdaldem op=slope fmt=tif workers=1 run=2 real=3.791 user=3.011 sys=0.776
+tool=gdaldem op=slope fmt=tif workers=1 run=3 real=3.707 user=2.997 sys=0.699
+tool=gdaldem op=slope fmt=tif workers=1 run=4 real=3.728 user=2.977 sys=0.740
+tool=gdaldem op=slope fmt=tif workers=1 run=5 real=3.757 user=3.074 sys=0.675
+tool=gdaldemcache op=slope fmt=tif workers=1 run=1 real=3.790 user=2.965 sys=0.819
+tool=gdaldemcache op=slope fmt=tif workers=1 run=2 real=3.722 user=2.983 sys=0.727
+tool=gdaldemcache op=slope fmt=tif workers=1 run=3 real=3.709 user=2.995 sys=0.694
+tool=gdaldemcache op=slope fmt=tif workers=1 run=4 real=3.769 user=2.996 sys=0.767
+tool=gdaldemcache op=slope fmt=tif workers=1 run=5 real=3.684 user=2.998 sys=0.678
+tool=strata op=slope fmt=envi workers=1 run=1 real=0.863 user=0.459 sys=0.471
+tool=strata op=slope fmt=envi workers=1 run=2 real=0.870 user=0.454 sys=0.487
+tool=strata op=slope fmt=envi workers=1 run=3 real=0.858 user=0.454 sys=0.479
+tool=strata op=slope fmt=envi workers=1 run=4 real=0.880 user=0.485 sys=0.468
+tool=strata op=slope fmt=envi workers=1 run=5 real=0.857 user=0.458 sys=0.462
+tool=strata op=slope fmt=envi workers=12 run=1 real=0.440 user=0.578 sys=2.968
+tool=strata op=slope fmt=envi workers=12 run=2 real=0.442 user=0.586 sys=3.106
+tool=strata op=slope fmt=envi workers=12 run=3 real=0.448 user=0.615 sys=3.140
+tool=strata op=slope fmt=envi workers=12 run=4 real=0.454 user=0.578 sys=3.070
+tool=strata op=slope fmt=envi workers=12 run=5 real=0.451 user=0.664 sys=3.143
+tool=strata op=slope fmt=envi workers=24 run=1 real=0.512 user=0.875 sys=5.708
+tool=strata op=slope fmt=envi workers=24 run=2 real=0.505 user=0.756 sys=5.803
+tool=strata op=slope fmt=envi workers=24 run=3 real=0.508 user=0.751 sys=5.328
+tool=strata op=slope fmt=envi workers=24 run=4 real=0.496 user=0.748 sys=5.676
+tool=strata op=slope fmt=envi workers=24 run=5 real=0.517 user=0.787 sys=5.858
+tool=stratascalar op=slope fmt=envi workers=1 run=1 real=1.811 user=1.388 sys=0.457
+tool=stratascalar op=slope fmt=envi workers=1 run=2 real=1.811 user=1.389 sys=0.452
+tool=stratascalar op=slope fmt=envi workers=1 run=3 real=1.815 user=1.438 sys=0.404
+tool=stratascalar op=slope fmt=envi workers=1 run=4 real=1.827 user=1.423 sys=0.425
+tool=stratascalar op=slope fmt=envi workers=1 run=5 real=1.787 user=1.378 sys=0.446
+tool=stratamem op=slope fmt=none workers=1 run=1 real=1.043 user=0.406 sys=0.690
+tool=stratamem op=slope fmt=none workers=1 run=2 real=1.082 user=0.467 sys=0.672
+tool=stratamem op=slope fmt=none workers=1 run=3 real=1.032 user=0.474 sys=0.621
+tool=stratamem op=slope fmt=none workers=1 run=4 real=1.046 user=0.466 sys=0.634
+tool=stratamem op=slope fmt=none workers=1 run=5 real=1.061 user=0.355 sys=0.760
+tool=gdaldem op=aspect fmt=envi workers=1 run=1 real=4.565 user=3.502 sys=1.059
+tool=gdaldem op=aspect fmt=envi workers=1 run=2 real=4.495 user=3.422 sys=1.068
+tool=gdaldem op=aspect fmt=envi workers=1 run=3 real=4.462 user=3.510 sys=0.949
+tool=gdaldem op=aspect fmt=envi workers=1 run=4 real=4.439 user=3.423 sys=1.006
+tool=gdaldem op=aspect fmt=envi workers=1 run=5 real=4.536 user=3.539 sys=0.988
+tool=gdaldem op=aspect fmt=tif workers=1 run=1 real=4.035 user=3.314 sys=0.719
+tool=gdaldem op=aspect fmt=tif workers=1 run=2 real=4.095 user=3.441 sys=0.644
+tool=gdaldem op=aspect fmt=tif workers=1 run=3 real=4.086 user=3.290 sys=0.791
+tool=gdaldem op=aspect fmt=tif workers=1 run=4 real=4.079 user=3.460 sys=0.612
+tool=gdaldem op=aspect fmt=tif workers=1 run=5 real=4.053 user=3.358 sys=0.687
+tool=gdaldemcache op=aspect fmt=tif workers=1 run=1 real=4.150 user=3.403 sys=0.739
+tool=gdaldemcache op=aspect fmt=tif workers=1 run=2 real=4.106 user=3.396 sys=0.691
+tool=gdaldemcache op=aspect fmt=tif workers=1 run=3 real=4.060 user=3.341 sys=0.711
+tool=gdaldemcache op=aspect fmt=tif workers=1 run=4 real=4.210 user=3.407 sys=0.799
+tool=gdaldemcache op=aspect fmt=tif workers=1 run=5 real=4.071 user=3.427 sys=0.632
+tool=strata op=aspect fmt=envi workers=1 run=1 real=0.912 user=0.514 sys=0.452
+tool=strata op=aspect fmt=envi workers=1 run=2 real=0.922 user=0.533 sys=0.436
+tool=strata op=aspect fmt=envi workers=1 run=3 real=0.931 user=0.538 sys=0.442
+tool=strata op=aspect fmt=envi workers=1 run=4 real=0.913 user=0.499 sys=0.455
+tool=strata op=aspect fmt=envi workers=1 run=5 real=0.928 user=0.533 sys=0.449
+tool=strata op=aspect fmt=envi workers=12 run=1 real=0.440 user=0.703 sys=2.961
+tool=strata op=aspect fmt=envi workers=12 run=2 real=0.439 user=0.678 sys=2.992
+tool=strata op=aspect fmt=envi workers=12 run=3 real=0.443 user=0.691 sys=3.028
+tool=strata op=aspect fmt=envi workers=12 run=4 real=0.446 user=0.623 sys=3.084
+tool=strata op=aspect fmt=envi workers=12 run=5 real=0.447 user=0.640 sys=3.004
+tool=strata op=aspect fmt=envi workers=24 run=1 real=0.509 user=0.822 sys=5.588
+tool=strata op=aspect fmt=envi workers=24 run=2 real=0.520 user=0.761 sys=6.109
+tool=strata op=aspect fmt=envi workers=24 run=3 real=0.526 user=0.760 sys=5.719
+tool=strata op=aspect fmt=envi workers=24 run=4 real=0.531 user=0.890 sys=6.109
+tool=strata op=aspect fmt=envi workers=24 run=5 real=0.516 user=0.960 sys=6.209
+tool=stratascalar op=aspect fmt=envi workers=1 run=1 real=3.644 user=3.264 sys=0.397
+tool=stratascalar op=aspect fmt=envi workers=1 run=2 real=3.698 user=3.284 sys=0.437
+tool=stratascalar op=aspect fmt=envi workers=1 run=3 real=3.667 user=3.293 sys=0.408
+tool=stratascalar op=aspect fmt=envi workers=1 run=4 real=3.643 user=3.228 sys=0.440
+tool=stratascalar op=aspect fmt=envi workers=1 run=5 real=3.679 user=3.262 sys=0.444
+tool=stratamem op=aspect fmt=none workers=1 run=1 real=1.088 user=0.479 sys=0.657
+tool=stratamem op=aspect fmt=none workers=1 run=2 real=1.078 user=0.448 sys=0.673
+tool=stratamem op=aspect fmt=none workers=1 run=3 real=1.092 user=0.511 sys=0.634
+tool=stratamem op=aspect fmt=none workers=1 run=4 real=1.087 user=0.502 sys=0.636
+tool=stratamem op=aspect fmt=none workers=1 run=5 real=1.102 user=0.514 sys=0.636
+tool=gdaldem op=hillshade fmt=envi workers=1 run=1 real=1.698 user=1.159 sys=0.539
+tool=gdaldem op=hillshade fmt=envi workers=1 run=2 real=1.691 user=1.199 sys=0.491
+tool=gdaldem op=hillshade fmt=envi workers=1 run=3 real=1.636 user=1.206 sys=0.427
+tool=gdaldem op=hillshade fmt=envi workers=1 run=4 real=1.668 user=1.198 sys=0.463
+tool=gdaldem op=hillshade fmt=envi workers=1 run=5 real=1.709 user=1.180 sys=0.524
+tool=gdaldem op=hillshade fmt=tif workers=1 run=1 real=1.640 user=1.164 sys=0.476
+tool=gdaldem op=hillshade fmt=tif workers=1 run=2 real=1.611 user=1.073 sys=0.531
+tool=gdaldem op=hillshade fmt=tif workers=1 run=3 real=1.630 user=1.050 sys=0.575
+tool=gdaldem op=hillshade fmt=tif workers=1 run=4 real=1.550 user=1.126 sys=0.423
+tool=gdaldem op=hillshade fmt=tif workers=1 run=5 real=1.574 user=1.123 sys=0.451
+tool=gdaldemcache op=hillshade fmt=tif workers=1 run=1 real=1.549 user=1.078 sys=0.467
+tool=gdaldemcache op=hillshade fmt=tif workers=1 run=2 real=1.607 user=1.089 sys=0.514
+tool=gdaldemcache op=hillshade fmt=tif workers=1 run=3 real=1.556 user=1.209 sys=0.343
+tool=gdaldemcache op=hillshade fmt=tif workers=1 run=4 real=1.590 user=1.119 sys=0.467
+tool=gdaldemcache op=hillshade fmt=tif workers=1 run=5 real=1.618 user=1.134 sys=0.480
+tool=strata op=hillshade fmt=envi workers=1 run=1 real=0.795 user=0.376 sys=0.484
+tool=strata op=hillshade fmt=envi workers=1 run=2 real=0.795 user=0.428 sys=0.440
+tool=strata op=hillshade fmt=envi workers=1 run=3 real=0.780 user=0.375 sys=0.485
+tool=strata op=hillshade fmt=envi workers=1 run=4 real=0.786 user=0.409 sys=0.449
+tool=strata op=hillshade fmt=envi workers=1 run=5 real=0.789 user=0.385 sys=0.469
+tool=strata op=hillshade fmt=envi workers=12 run=1 real=0.431 user=0.510 sys=2.932
+tool=strata op=hillshade fmt=envi workers=12 run=2 real=0.445 user=0.622 sys=3.143
+tool=strata op=hillshade fmt=envi workers=12 run=3 real=0.422 user=0.548 sys=2.931
+tool=strata op=hillshade fmt=envi workers=12 run=4 real=0.439 user=0.589 sys=3.081
+tool=strata op=hillshade fmt=envi workers=12 run=5 real=0.435 user=0.555 sys=3.015
+tool=strata op=hillshade fmt=envi workers=24 run=1 real=0.502 user=0.653 sys=5.154
+tool=strata op=hillshade fmt=envi workers=24 run=2 real=0.507 user=0.754 sys=5.893
+tool=strata op=hillshade fmt=envi workers=24 run=3 real=0.494 user=0.669 sys=5.827
+tool=strata op=hillshade fmt=envi workers=24 run=4 real=0.505 user=0.741 sys=5.845
+tool=strata op=hillshade fmt=envi workers=24 run=5 real=0.509 user=0.728 sys=5.636
+tool=stratascalar op=hillshade fmt=envi workers=1 run=1 real=1.670 user=1.301 sys=0.420
+tool=stratascalar op=hillshade fmt=envi workers=1 run=2 real=1.665 user=1.254 sys=0.462
+tool=stratascalar op=hillshade fmt=envi workers=1 run=3 real=1.661 user=1.244 sys=0.468
+tool=stratascalar op=hillshade fmt=envi workers=1 run=4 real=1.659 user=1.276 sys=0.421
+tool=stratascalar op=hillshade fmt=envi workers=1 run=5 real=1.671 user=1.280 sys=0.438
+tool=stratamem op=hillshade fmt=none workers=1 run=1 real=0.967 user=0.375 sys=0.643
+tool=stratamem op=hillshade fmt=none workers=1 run=2 real=0.920 user=0.362 sys=0.608
+tool=stratamem op=hillshade fmt=none workers=1 run=3 real=0.967 user=0.391 sys=0.622
+tool=stratamem op=hillshade fmt=none workers=1 run=4 real=1.037 user=0.347 sys=0.738
+tool=stratamem op=hillshade fmt=none workers=1 run=5 real=0.907 user=0.388 sys=0.570
+# strata in-process, slope, chunked, 1 worker(s):
+#   backend=avx2 workers=1 tile=256 mode=chunked op=slope gomaxprocs=1
+#   run=0 op=slope ms=768.6 Mcells_s=165.1
+#   run=1 op=slope ms=766.6 Mcells_s=165.5
+#   run=2 op=slope ms=763.1 Mcells_s=166.3
+#   process ms=2557.5
+# strata in-process, slope, chunked, 12 worker(s):
+#   backend=avx2 workers=12 tile=256 mode=chunked op=slope gomaxprocs=12
+#   run=0 op=slope ms=318.6 Mcells_s=398.3
+#   run=1 op=slope ms=364.1 Mcells_s=348.5
+#   run=2 op=slope ms=338.3 Mcells_s=375.1
+#   process ms=1273.9
+# strata in-process, slope, chunked, 24 worker(s):
+#   backend=avx2 workers=24 tile=256 mode=chunked op=slope gomaxprocs=24
+#   run=0 op=slope ms=366.2 Mcells_s=346.5
+#   run=1 op=slope ms=392.5 Mcells_s=323.3
+#   run=2 op=slope ms=397.3 Mcells_s=319.3
+#   process ms=1409.1
+# strata in-process, slope, kernel only, 1 worker, simd:
+#   backend=avx2 workers=1 tile=256 mode=memory op=slope gomaxprocs=1
+#   read ms=492.7
+#   run=0 op=slope ms=475.9 Mcells_s=266.6
+#   run=1 op=slope ms=191.6 Mcells_s=662.3
+#   run=2 op=slope ms=188.8 Mcells_s=672.0
+#   process ms=1367.0
+# strata in-process, slope, kernel only, 1 worker, scalar:
+#   backend=scalar workers=1 tile=256 mode=memory op=slope gomaxprocs=1
+#   read ms=488.5
+#   run=0 op=slope ms=1396.4 Mcells_s=90.9
+#   run=1 op=slope ms=1146.1 Mcells_s=110.7
+#   run=2 op=slope ms=1146.8 Mcells_s=110.6
+#   process ms=4195.0
+# strata in-process, aspect, chunked, 1 worker(s):
+#   backend=avx2 workers=1 tile=256 mode=chunked op=aspect gomaxprocs=1
+#   run=0 op=aspect ms=828.5 Mcells_s=153.1
+#   run=1 op=aspect ms=841.1 Mcells_s=150.9
+#   run=2 op=aspect ms=846.2 Mcells_s=149.9
+#   process ms=2773.0
+# strata in-process, aspect, chunked, 12 worker(s):
+#   backend=avx2 workers=12 tile=256 mode=chunked op=aspect gomaxprocs=12
+#   run=0 op=aspect ms=318.3 Mcells_s=398.6
+#   run=1 op=aspect ms=330.0 Mcells_s=384.4
+#   run=2 op=aspect ms=354.7 Mcells_s=357.7
+#   process ms=1254.2
+# strata in-process, aspect, chunked, 24 worker(s):
+#   backend=avx2 workers=24 tile=256 mode=chunked op=aspect gomaxprocs=24
+#   run=0 op=aspect ms=369.8 Mcells_s=343.1
+#   run=1 op=aspect ms=381.9 Mcells_s=332.2
+#   run=2 op=aspect ms=410.2 Mcells_s=309.3
+#   process ms=1413.2
+# strata in-process, aspect, kernel only, 1 worker, simd:
+#   backend=avx2 workers=1 tile=256 mode=memory op=aspect gomaxprocs=1
+#   read ms=500.0
+#   run=0 op=aspect ms=457.6 Mcells_s=277.3
+#   run=1 op=aspect ms=246.9 Mcells_s=513.9
+#   run=2 op=aspect ms=246.1 Mcells_s=515.5
+#   process ms=1468.6
+# strata in-process, aspect, kernel only, 1 worker, scalar:
+#   backend=scalar workers=1 tile=256 mode=memory op=aspect gomaxprocs=1
+#   read ms=508.2
+#   run=0 op=aspect ms=3268.7 Mcells_s=38.8
+#   run=1 op=aspect ms=2998.7 Mcells_s=42.3
+#   run=2 op=aspect ms=2994.0 Mcells_s=42.4
+#   process ms=9788.0
+# strata in-process, hillshade, chunked, 1 worker(s):
+#   backend=avx2 workers=1 tile=256 mode=chunked op=hillshade gomaxprocs=1
+#   run=0 op=hillshade ms=720.8 Mcells_s=176.0
+#   run=1 op=hillshade ms=699.6 Mcells_s=181.4
+#   run=2 op=hillshade ms=703.4 Mcells_s=180.4
+#   process ms=2374.5
+# strata in-process, hillshade, chunked, 12 worker(s):
+#   backend=avx2 workers=12 tile=256 mode=chunked op=hillshade gomaxprocs=12
+#   run=0 op=hillshade ms=330.2 Mcells_s=384.3
+#   run=1 op=hillshade ms=334.2 Mcells_s=379.7
+#   run=2 op=hillshade ms=342.6 Mcells_s=370.3
+#   process ms=1268.9
+# strata in-process, hillshade, chunked, 24 worker(s):
+#   backend=avx2 workers=24 tile=256 mode=chunked op=hillshade gomaxprocs=24
+#   run=0 op=hillshade ms=358.3 Mcells_s=354.1
+#   run=1 op=hillshade ms=385.4 Mcells_s=329.2
+#   run=2 op=hillshade ms=421.5 Mcells_s=301.0
+#   process ms=1422.9
+# strata in-process, hillshade, kernel only, 1 worker, simd:
+#   backend=avx2 workers=1 tile=256 mode=memory op=hillshade gomaxprocs=1
+#   read ms=500.0
+#   run=0 op=hillshade ms=344.2 Mcells_s=368.7
+#   run=1 op=hillshade ms=113.7 Mcells_s=1115.5
+#   run=2 op=hillshade ms=114.4 Mcells_s=1109.1
+#   process ms=1090.1
+# strata in-process, hillshade, kernel only, 1 worker, scalar:
+#   backend=scalar workers=1 tile=256 mode=memory op=hillshade gomaxprocs=1
+#   read ms=493.9
+#   run=0 op=hillshade ms=1261.9 Mcells_s=100.5
+#   run=1 op=hillshade ms=997.3 Mcells_s=127.2
+#   run=2 op=hillshade ms=993.9 Mcells_s=127.7
+#   process ms=3765.6
