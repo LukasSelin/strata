@@ -1,6 +1,6 @@
 // Package stencil holds row kernels for radius-1 (3×3) neighbourhood
-// operations such as terrain gradients, slope, aspect and hillshade, and
-// the word-level validity erosion that goes with them.
+// operations such as terrain gradients, slope, aspect, hillshade and
+// curvature, and the word-level validity erosion that goes with them.
 //
 // A row kernel fills dst[0:n] from three input rows r0, r1, r2 (rows y-1,
 // y and y+1). Each input row starts one column left of dst[0] and has at
@@ -30,15 +30,18 @@ var (
 	hornSlopeRow     = scalarHornSlopeRow
 	hornAspectRow    = scalarHornAspectRow
 	hornHillshadeRow = scalarHornHillshadeRow
+	ztCurvatureRow   = scalarZTCurvatureRow
 )
 
-// simdGradient, simdSlope, simdAspect and simdHillshade are the SIMD set,
-// or nil when this build or CPU has none. SIMD builds set all or none.
+// simdGradient, simdSlope, simdAspect, simdHillshade and simdCurvature
+// are the SIMD set, or nil when this build or CPU has none. SIMD builds
+// set all or none.
 var (
 	simdGradient  func(dx, dy, r0, r1, r2 []float32, kx, ky float32)
 	simdSlope     func(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 	simdAspect    func(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 	simdHillshade func(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
+	simdCurvature func(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
 )
 
 // Backend names the kernels currently in use: "avx2" or "scalar".
@@ -59,10 +62,12 @@ func UseScalar(scalar bool) {
 	if scalar || simdSlope == nil {
 		hornGradientRow, hornSlopeRow = scalarHornGradientRow, scalarHornSlopeRow
 		hornAspectRow, hornHillshadeRow = scalarHornAspectRow, scalarHornHillshadeRow
+		ztCurvatureRow = scalarZTCurvatureRow
 		return
 	}
 	hornGradientRow, hornSlopeRow = simdGradient, simdSlope
 	hornAspectRow, hornHillshadeRow = simdAspect, simdHillshade
+	ztCurvatureRow = simdCurvature
 }
 
 func requireRows(n int, r0, r1, r2 []float32) {

@@ -52,6 +52,12 @@ func TestRowLengthPanics(t *testing.T) {
 	mustPanic(t, "short hillshade row", func() {
 		HornHillshadeRow(make([]float32, 4), make([]float32, 5), make([]float32, 6), make([]float32, 6), 1, 1, 1, 1, 1)
 	})
+	mustPanic(t, "short curvature row", func() {
+		ZTCurvatureRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 5), 1, 1, 1, 1, 1, CurvPlan)
+	})
+	mustPanic(t, "unknown curvature kind", func() {
+		ZTCurvatureRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 6), 1, 1, 1, 1, 1, CurvMean+1)
+	})
 	mustPanic(t, "dx/dy length", func() {
 		HornGradientRow(make([]float32, 4), make([]float32, 3), make([]float32, 6), make([]float32, 6), make([]float32, 6), 1, 1)
 	})

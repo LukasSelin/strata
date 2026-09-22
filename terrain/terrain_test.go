@@ -175,6 +175,7 @@ var singleOutputOps = map[string]func(dst, dem raster.Float32Raster){
 	"slope":     func(dst, dem raster.Float32Raster) { Slope(dst, dem, SlopeOptions{CellSize: 1}) },
 	"aspect":    func(dst, dem raster.Float32Raster) { Aspect(dst, dem, AspectOptions{CellSize: 1}) },
 	"hillshade": func(dst, dem raster.Float32Raster) { Hillshade(dst, dem, HillshadeOptions{CellSize: 1}) },
+	"curvature": func(dst, dem raster.Float32Raster) { Curvature(dst, dem, CurvatureOptions{CellSize: 1}) },
 }
 
 func TestSmallRastersAreAllBorder(t *testing.T) {
@@ -286,6 +287,13 @@ func TestSIMDMatchesScalar(t *testing.T) {
 		"hillshade-low-east": func(f fixture) {
 			Hillshade(f.out1, f.dem, HillshadeOptions{CellSize: 5, CellSizeY: 8, ZFactor: 3, Azimuth: 95, Altitude: 12})
 		},
+		"curvature-profile": func(f fixture) { Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 10}) },
+		"curvature-plan": func(f fixture) {
+			Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 4, CellSizeY: 6, ZFactor: -1.5, Type: CurvaturePlan})
+		},
+		"curvature-mean": func(f fixture) {
+			Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 30, CellSizeY: 20, Type: CurvatureMean})
+		},
 	}
 	for name, op := range ops {
 		for _, w := range []int{3, 4, 9, 10, 17, 63, 64, 65, 100} {
@@ -333,7 +341,7 @@ func TestValidityMatchesNaive(t *testing.T) {
 	for _, w := range []int{3, 62, 63, 64, 65, 66, 129} {
 		for _, extra := range []int{0, 1, 61} {
 			rng := rand.New(rand.NewPCG(uint64(w), uint64(extra)))
-			for op := range 3 {
+			for op := range 4 {
 				f := newFixture(rng, w, 6, extra, true, 0)
 				before := append([]uint64(nil), f.parentOut.Valid...)
 				outs := []raster.Float32Raster{f.out1}
@@ -345,6 +353,8 @@ func TestValidityMatchesNaive(t *testing.T) {
 					Aspect(f.out1, f.dem, AspectOptions{CellSize: 1})
 				case 2:
 					Hillshade(f.out1, f.dem, HillshadeOptions{CellSize: 1})
+				case 3:
+					Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 1, Type: CurvaturePlan})
 				}
 
 				inWindow := make(map[int]bool)
@@ -475,7 +485,17 @@ func TestPanics(t *testing.T) {
 	} {
 		mustPanic(t, fmt.Sprintf("hillshade options %+v", o), func() { Hillshade(raster.NewFloat32Like(dem), dem, o) })
 	}
+	for _, o := range []CurvatureOptions{
+		{}, {CellSize: -1}, {CellSize: 1, CellSizeY: math.NaN()}, {CellSize: 1, ZFactor: math.Inf(1)},
+		{CellSize: 1, Type: 3}, {CellSize: 1, Type: -1},
+		// ZFactor/CellSize² over- or underflows where Horn's
+		// ZFactor/(8·CellSize) would not.
+		{CellSize: 1e-20}, {CellSize: 1e25}, {CellSize: 1, CellSizeY: 1e-20}, {CellSize: 1e-10, ZFactor: 1e20},
+	} {
+		mustPanic(t, fmt.Sprintf("curvature options %+v", o), func() { Curvature(raster.NewFloat32Like(dem), dem, o) })
+	}
 	// Tiny but representable scale factors are fine.
+	Curvature(raster.NewFloat32Like(dem), dem, CurvatureOptions{CellSize: 1e10, ZFactor: 1e-10})
 	Slope(raster.NewFloat32Like(dem), dem, SlopeOptions{CellSize: 1e30, ZFactor: 1e-5})
 	// Azimuths outside [0, 360] are directions like any other.
 	Hillshade(raster.NewFloat32Like(dem), dem, HillshadeOptions{CellSize: 1, Azimuth: -45, Altitude: 90})

@@ -1,5 +1,7 @@
-// Package terrain computes terrain derivatives of elevation rasters from
-// Horn's 3×3 gradient: Gradient, Slope, Aspect and Hillshade.
+// Package terrain computes terrain derivatives of elevation rasters:
+// Gradient, Slope, Aspect and Hillshade from Horn's 3×3 gradient, and
+// profile, plan and mean Curvature from the Zevenbergen–Thorne quadratic
+// fitted to the same 3×3 window.
 //
 // # Conventions
 //
@@ -24,8 +26,8 @@
 //
 // # Edges
 //
-// Horn's method needs all eight neighbours, which the one-cell border of
-// the raster does not have. Border cells of every output get NaN in Data
+// Every operation needs all eight neighbours, which the one-cell border
+// of the raster does not have. Border cells of every output get NaN in Data
 // and, if the output has a validity mask, a cleared validity bit. A
 // raster narrower or shorter than three cells is all border.
 //
@@ -34,16 +36,16 @@
 //
 // # Tiled execution
 //
-// SlopeTiled, AspectTiled, HillshadeTiled and GradientTiled run the same
-// operations in tiles on engine.Options.Workers goroutines (by default
+// SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled and
+// CurvatureTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
 // from the DEM, so the result is bit-for-bit the plain function's for
 // every tiling and worker count. The plain functions run the same kernels
 // as one tile with one worker, on the calling goroutine.
 //
-// SlopeChunked, AspectChunked, HillshadeChunked and GradientChunked read
-// the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked and
+// CurvatureChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
 // files, run in Workers × tile buffers (DESIGN.md §27). They give the
 // same bits as the plain functions on the same data, for every tiling and
@@ -56,7 +58,8 @@
 // flows through IEEE arithmetic. Values that are defined but degenerate,
 // such as the aspect of a flat cell, are ordinary valid values too. If the DEM has a mask, an output cell is
 // valid iff it is interior and all nine cells of its 3×3 neighbourhood are
-// valid (the centre too, although Horn gives it zero weight). Data under
+// valid (the centre too, which Curvature reads although Horn gives it
+// zero weight). Data under
 // an invalid output cell is unspecified. The output masks are computed
 // with word-level operations, separately from the arithmetic.
 //
@@ -74,7 +77,9 @@
 // another raster's Data (the stencil reads neighbours of cells it has not
 // written yet), overlapping mask bits, and invalid options, including
 // cell sizes and z-factors so far apart that ZFactor/(8·CellSize) or
-// ZFactor/(8·CellSizeY) overflows or underflows float32. The operand
+// ZFactor/(8·CellSizeY) overflows or underflows float32 (for Curvature,
+// ZFactor/(2·CellSize), ZFactor/CellSize², ZFactor/(4·CellSize·CellSizeY)
+// and their CellSizeY counterparts). The operand
 // checks are shared with the Tiled functions, and their panic messages
 // start with "engine:". The Tiled functions return an error only for
 // cancellation, and the Chunked functions also for errors of their

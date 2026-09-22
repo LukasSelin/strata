@@ -88,7 +88,7 @@ func newAspectKernel(opts AspectOptions) aspectKernel {
 	if opts.ZeroForFlat {
 		flat = 0
 	}
-	return aspectKernel{horn{kx, ky}, flat, opts.Trigonometric}
+	return aspectKernel{horn{kx: kx, ky: ky}, flat, opts.Trigonometric}
 }
 
 type aspectKernel struct {

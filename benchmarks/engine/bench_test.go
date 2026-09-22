@@ -92,6 +92,7 @@ type op struct {
 var (
 	slopeOpts     = terrain.SlopeOptions{CellSize: 10}
 	hillshadeOpts = terrain.HillshadeOptions{CellSize: 10}
+	curvatureOpts = terrain.CurvatureOptions{CellSize: 10}
 
 	opSlope = op{
 		plain: func(dst, dem raster.Float32Raster) { terrain.Slope(dst, dem, slopeOpts) },
@@ -103,6 +104,12 @@ var (
 		plain: func(dst, dem raster.Float32Raster) { terrain.Hillshade(dst, dem, hillshadeOpts) },
 		tiled: func(ctx context.Context, dst, dem raster.Float32Raster, o engine.Options) error {
 			return terrain.HillshadeTiled(ctx, dst, dem, hillshadeOpts, o)
+		},
+	}
+	opCurvature = op{
+		plain: func(dst, dem raster.Float32Raster) { terrain.Curvature(dst, dem, curvatureOpts) },
+		tiled: func(ctx context.Context, dst, dem raster.Float32Raster, o engine.Options) error {
+			return terrain.CurvatureTiled(ctx, dst, dem, curvatureOpts, o)
 		},
 	}
 	opClamp = op{
@@ -152,6 +159,7 @@ func (o op) bench(b *testing.B) {
 
 func BenchmarkSlope(b *testing.B)     { opSlope.bench(b) }
 func BenchmarkHillshade(b *testing.B) { opHillshade.bench(b) }
+func BenchmarkCurvature(b *testing.B) { opCurvature.bench(b) }
 func BenchmarkClamp(b *testing.B)     { opClamp.bench(b) }
 
 // TestAllocs checks the allocations of every case on a small raster: none
@@ -162,7 +170,7 @@ func BenchmarkClamp(b *testing.B)     { opClamp.bench(b) }
 func TestAllocs(t *testing.T) {
 	defer kernels.UseScalar(false)
 	f := newFixture(300)
-	ops := map[string]op{"Slope": opSlope, "Hillshade": opHillshade, "Clamp": opClamp}
+	ops := map[string]op{"Slope": opSlope, "Hillshade": opHillshade, "Curvature": opCurvature, "Clamp": opClamp}
 	direct := map[string]bool{"Clamp": true} // plain function without the engine
 	for name, o := range ops {
 		for _, masked := range []bool{false, true} {

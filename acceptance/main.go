@@ -222,6 +222,20 @@ func (d dem) ops() []op {
 		}
 	}
 
+	curvature := func(ct terrain.CurvatureType, name string) op {
+		o := terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: ct}
+		return op{
+			name:  "curvature_" + name,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Curvature(dst, dm, o) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.CurvatureTiled(ctx, dst, dm, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.CurvatureChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+
 	return []op{
 		slope(terrain.SlopeDegrees),
 		slope(terrain.SlopeRadians),
@@ -264,6 +278,9 @@ func (d dem) ops() []op {
 				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
 			},
 		},
+		curvature(terrain.CurvatureProfile, "profile"),
+		curvature(terrain.CurvaturePlan, "plan"),
+		curvature(terrain.CurvatureMean, "mean"),
 	}
 }
 

@@ -33,7 +33,7 @@ the detailed record; this table only points at it.
 | Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
 | arm64 NEON backend (STRATA-11) | §14, §17 | not started; arm64 runs scalar |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
-| `terrain`: Gradient, Slope, Aspect, Hillshade | §20 | done; curvature, ruggedness open |
+| `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature | §20 | done; ruggedness open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -417,6 +417,7 @@ func HornGradientRow(dx, dy, r0, r1, r2 []float32, kx, ky float32)
 func HornSlopeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 func HornAspectRow(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 func HornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
+func ZTCurvatureRow(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
 
 func Erode3x3(...) // validity of radius-1 outputs, word-level
 func ClearBorder(...)
@@ -582,16 +583,23 @@ terrain/
 ├── slope.go       Slope(dst, dem, SlopeOptions)       degrees | radians | percent
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
+├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
 └── stencil.go     shared row driver, edge and validity policy
 ```
 
-Later: `ruggedness.go`, `curvature.go`. `terrain` stays limited to local
+Later: `ruggedness.go`. `terrain` stays limited to local
 derivatives of a DEM; flow routing and everything built on it are a
 separate module's (§7).
 
-- **Method.** All four operations use Horn's 3×3 gradient, computed a
-  whole row at a time. Each SIMD lane loads the three neighbouring rows
-  at offsets and evaluates the stencil for 8 cells at once.
+- **Method.** Gradient, Slope, Aspect and Hillshade use Horn's 3×3
+  gradient, computed a whole row at a time. Each SIMD lane loads the
+  three neighbouring rows at offsets and evaluates the stencil for 8
+  cells at once. Curvature has the same shape but its own derivatives:
+  the Zevenbergen–Thorne quadratic (p, q, r, s, t, reading the centre
+  cell too) and Florinsky's normal-section profile, plan and mean
+  curvature, positive where convex. It is the terrain kernel with the
+  most arithmetic per cell and no arctangent: two divisions and a
+  square root.
 - **Conventions.** Conventions are gdaldem-compatible: compass bearings,
   gdaldem-style `ZFactor`, and positive cell sizes.
 - **Edges.** The one-cell border of the rasters passed in gets NaN and
@@ -863,13 +871,13 @@ err := terrain.SlopeTiled(ctx, dst, dem, terrain.SlopeOptions{CellSize: 30},
 
 STRATA-8 added `AddTiled`, `SubTiled`, `MulTiled`, `MinTiled`, `MaxTiled`,
 `ClampTiled`, `GradientTiled`, `SlopeTiled`, `AspectTiled` and
-`HillshadeTiled` over in-memory rasters, and `MaskTiled` followed with
+`HillshadeTiled` over in-memory rasters (`CurvatureTiled` came later), and `MaskTiled` followed with
 `Mask` (§18). They give the same bits as the plain functions for every
 `Options`. The terrain functions run the same kernels as one tile; the
 algebra functions stay direct to keep their zero allocations.
 
 The Chunked functions (`SlopeChunked`, `AspectChunked`,
-`HillshadeChunked`, `GradientChunked`, `AddChunked`, `SubChunked`,
+`HillshadeChunked`, `GradientChunked`, `CurvatureChunked`, `AddChunked`, `SubChunked`,
 `MulChunked`, `MinChunked`, `MaxChunked`, `MaskChunked`, `ClampChunked`)
 take sources and sinks instead of rasters and run with bounded memory
 (§27), through `exec.ProcessChunked`. Their sinks receive the bits the
@@ -1558,6 +1566,7 @@ strata/
 │   ├── slope.go
 │   ├── aspect.go
 │   ├── hillshade.go
+│   ├── curvature.go
 │   └── stencil.go
 │
 ├── engine/                    public engine configuration
@@ -1569,7 +1578,8 @@ strata/
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
-│   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, mask.go,
+│   │                           simd_amd64.go
 │   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
 │   │                           accum.go, moments.go, result.go, simd_amd64.go
 │   ├── summary/               implemented (§49): the Stats reducer and Runs,

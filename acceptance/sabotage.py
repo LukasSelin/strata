@@ -132,6 +132,30 @@ def normalize_over_nodata(d):
     write(d, "noisy-normalize-chunked.f32", (z - lo) / (hi - lo))
 
 
+def flip_curvature(d):
+    """Curvature with the opposite sign convention (concave positive)."""
+    for f in os.listdir(d):
+        if "curvature_" in f and f.endswith(".f32"):
+            write(d, f, -read(d, f))
+
+
+def swap_profile_plan(d):
+    """Profile and plan curvature swapped - the two quadratic forms mixed up."""
+    for stem in ("hill", "plane", "noisy"):
+        for form in ("plain", "tiled", "chunked"):
+            pr = read(d, f"{stem}-curvature_profile-{form}.f32")
+            pl = read(d, f"{stem}-curvature_plan-{form}.f32")
+            write(d, f"{stem}-curvature_profile-{form}.f32", pl)
+            write(d, f"{stem}-curvature_plan-{form}.f32", pr)
+
+
+def curvature_drift(d):
+    """Mean curvature 0.05% too large - a constant-factor slip."""
+    for f in os.listdir(d):
+        if "curvature_mean" in f and f.endswith(".f32"):
+            write(d, f, read(d, f) * 1.0005)
+
+
 MUTATIONS = [
     ("slope 0.05% too large", drift),
     ("dx and dy swapped", transpose_kernel),
@@ -143,6 +167,9 @@ MUTATIONS = [
     ("max slightly wrong", wrong_extreme),
     ("normalize by a reciprocal", reciprocal_normalize),
     ("normalize range from NoData", normalize_over_nodata),
+    ("curvature sign flipped", flip_curvature),
+    ("profile and plan swapped", swap_profile_plan),
+    ("mean curvature 0.05% too large", curvature_drift),
 ]
 
 

@@ -138,6 +138,64 @@ func TestAVX2AspectHillshadeRowsMatchScalar(t *testing.T) {
 	}
 }
 
+func TestAVX2CurvatureRowsMatchScalar(t *testing.T) {
+	requireAVX2(t)
+	rng := rand.New(rand.NewPCG(25, 26))
+	type params struct{ kp, kq, kr, kt, ks float32 }
+	scales := func(cx, cy, z float64) params {
+		kp, kq, kr, kt, ks := ZTScales(cx, cy, z)
+		return params{kp, kq, kr, kt, ks}
+	}
+	nan := float32(math.NaN())
+	ps := []params{
+		scales(10, 10, 1),
+		scales(30, 20, 1),
+		scales(1, 1, 1),
+		scales(0.5, 2e-3, -3),
+		{1e20, 1e-20, 1e30, -1e-30, 1e10},
+		{nan, 1, 1, 1, 1},
+		{1, 1, 1, nan, 1},
+	}
+	for n := 0; n <= 150; n++ {
+		for _, special := range []float64{0, 0.1, 0.5} {
+			// mode 0 is terrain, 1 has runs of equal values (zero
+			// gradients, some with one component zero), 2 has runs of
+			// planes (zero second derivatives).
+			for mode := range 3 {
+				r := make([][]float32, 3)
+				for k := range r {
+					r[k] = make([]float32, n+2+rng.IntN(3))
+					rowValues(rng, r[k], special)
+					for i := range r[k] {
+						if i%16 >= 11 {
+							continue
+						}
+						switch mode {
+						case 1:
+							r[k][i] = 500
+						case 2:
+							r[k][i] = float32(3*i + 5*k)
+						}
+					}
+				}
+				for _, p := range ps {
+					for kind := CurvProfile; kind <= CurvMean; kind++ {
+						want, got := make([]float32, n), make([]float32, n)
+						scalarZTCurvatureRow(want, r[0], r[1], r[2], p.kp, p.kq, p.kr, p.kt, p.ks, kind)
+						ztCurvatureRowAVX2(got, r[0], r[1], r[2], p.kp, p.kq, p.kr, p.kt, p.ks, kind)
+						for i := range want {
+							if !sameBits(got[i], want[i]) {
+								t.Fatalf("curvature kind=%d n=%d mode=%d %+v cell %d: got %g (%#x), want %g (%#x)",
+									kind, n, mode, p, i, got[i], math.Float32bits(got[i]), want[i], math.Float32bits(want[i]))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestAtan2x8MatchesAtan2F32 checks the vector two-argument arctangent
 // lane by lane over every pair of special values and a random sample.
 func TestAtan2x8MatchesAtan2F32(t *testing.T) {

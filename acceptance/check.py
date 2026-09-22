@@ -17,6 +17,18 @@ float64 numpy:
                 (cos(alt)sin(az), cos(alt)cos(az), sin(alt)) in
                 (east, north, up), and the surface normal is
                 (-dx, dy, 1) / sqrt(1 + dx^2 + dy^2).
+  * curvature, from the Zevenbergen & Thorne (1987) quadratic through the
+    centre and its four edge neighbours:
+        p = (f - d) / (2 cx)          q = (h - b) / (2 cy)
+        r = (d - 2e + f) / cx^2       t = (b - 2e + h) / cy^2
+        s = (a - c - g + i) / (4 cx cy)
+    and Florinsky's (2016) normal-section curvatures, positive where the
+    surface is convex, with g = p^2 + q^2:
+        profile = -(p^2 r + 2pqs + q^2 t) / (g (1 + g)^1.5)
+        plan    = -(q^2 r - 2pqs + p^2 t) / g^1.5
+        mean    = -((1 + q^2) r - 2pqs + (1 + p^2) t) / (2 (1 + g)^1.5)
+    Profile and plan are undefined on flat cells (p = q = 0); strata
+    documents 0 there.
 
 Min-max normalisation is the one float32 exception: it is checked for
 exact equality against the textbook (z - z.min()) / (z.max() - z.min())
@@ -52,6 +64,17 @@ import numpy as np
 # A real defect - a transposed kernel, a sign flip, degrees for radians,
 # a cell size used in the wrong axis - is wrong by a fraction of the
 # signal, which is thousands of times larger than these bounds.
+#
+# Curvature is built on its own differences. Each is a sum of at most
+# four elevations: p's one rounding of magnitude 2*zmax, r's and t's two
+# (4*zmax), s's three (4*zmax), then a rounded scale factor and product
+# (2 * EPS * |result|). That gives per-derivative bounds, which are
+# carried to first order through each formula with its partial
+# derivatives, plus about one EPS per operation of the formula on the
+# magnitude of its terms. First order is only valid while the gradient
+# is known well: cells where the error of p and q exceeds 1% of the
+# gradient's length are too flat for a direction of curvature, and are
+# reported rather than judged, as aspect's are.
 EPS = 2.0**-24  # float32 half-ulp, 5.96e-8
 DEG = 180.0 / np.pi
 
@@ -101,6 +124,72 @@ def horn(z, cx, cy):
     return dx, dy
 
 
+def zt(z, cx, cy):
+    """Zevenbergen-Thorne p, q, r, s, t of z, NaN on the border."""
+    out = [np.full(z.shape, np.nan) for _ in range(5)]
+    a, b, c = z[0:-2, 0:-2], z[0:-2, 1:-1], z[0:-2, 2:]
+    d, e, f = z[1:-1, 0:-2], z[1:-1, 1:-1], z[1:-1, 2:]
+    g, h, i = z[2:, 0:-2], z[2:, 1:-1], z[2:, 2:]
+    out[0][1:-1, 1:-1] = (f - d) / (2 * cx)
+    out[1][1:-1, 1:-1] = (h - b) / (2 * cy)
+    out[2][1:-1, 1:-1] = (d - 2 * e + f) / (cx * cx)
+    out[3][1:-1, 1:-1] = (a - c - g + i) / (4 * cx * cy)
+    out[4][1:-1, 1:-1] = (b - 2 * e + h) / (cy * cy)
+    return out
+
+
+CURVATURES = ("curvature_profile", "curvature_plan", "curvature_mean")
+
+
+def curvature(op, z, cx, cy):
+    """A curvature, its tolerance, and which cells are flat and which too
+    flat to judge (see TOLERANCES)."""
+    p, q, r, s, t = zt(z, cx, cy)
+    zmax = np.nanmax(np.abs(z))
+    ep = EPS * zmax / cx + 2 * EPS * np.abs(p)
+    eq = EPS * zmax / cy + 2 * EPS * np.abs(q)
+    er = 6 * EPS * zmax / (cx * cx) + 2 * EPS * np.abs(r)
+    et = 6 * EPS * zmax / (cy * cy) + 2 * EPS * np.abs(t)
+    es = 12 * EPS * zmax / (4 * cx * cy) + 2 * EPS * np.abs(s)
+    g = p * p + q * q
+    w = 1 + g
+    flat = g == 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if op == "curvature_profile":
+            num = p * p * r + 2 * p * q * s + q * q * t
+            terms = np.abs(p * p * r) + np.abs(2 * p * q * s) + np.abs(q * q * t)
+            den = g * w**1.5
+            dn = (2 * p * r + 2 * q * s, 2 * p * s + 2 * q * t, p * p, 2 * p * q, q * q)
+            dd = (2 * p * np.sqrt(w) * (w + 1.5 * g), 2 * q * np.sqrt(w) * (w + 1.5 * g))
+        elif op == "curvature_plan":
+            num = q * q * r - 2 * p * q * s + p * p * t
+            terms = np.abs(q * q * r) + np.abs(2 * p * q * s) + np.abs(p * p * t)
+            den = g**1.5
+            dn = (2 * p * t - 2 * q * s, 2 * q * r - 2 * p * s, q * q, -2 * p * q, p * p)
+            dd = (3 * p * np.sqrt(g), 3 * q * np.sqrt(g))
+        else:
+            num = (1 + q * q) * r - 2 * p * q * s + (1 + p * p) * t
+            terms = np.abs((1 + q * q) * r) + np.abs(2 * p * q * s) + np.abs((1 + p * p) * t)
+            den = 2 * w**1.5
+            dn = (2 * p * t - 2 * q * s, 2 * q * r - 2 * p * s, 1 + q * q, -2 * p * q, 1 + p * p)
+            dd = (6 * p * np.sqrt(w), 6 * q * np.sqrt(w))
+            flat = np.zeros_like(flat)
+        ref = -num / den
+        # f = -N/D, so |df| <= (|dN| + |f| |dD|) / |D| for each variable.
+        errs = (ep, eq, er, es, et)
+        tol = sum(np.abs(dn[k]) * errs[k] for k in range(5))
+        tol = tol + np.abs(ref) * (np.abs(dd[0]) * ep + np.abs(dd[1]) * eq)
+        tol = tol / np.abs(den) + 8 * EPS * (terms / np.abs(den) + np.abs(ref))
+        # The second-order remainder is under 5% of the first-order term
+        # while p and q are known to 1%.
+        tol = 1.05 * tol
+        vague = ~flat & ((ep + eq) > 0.01 * np.sqrt(g))
+        if op == "curvature_mean":
+            vague = np.zeros_like(vague)
+    ref = np.where(flat, 0.0, ref)
+    return ref, tol, flat, vague
+
+
 def expected(op, z, case):
     """The reference result and its tolerance, or (None, None)."""
     cx = case["cell_size"]
@@ -133,6 +222,9 @@ def expected(op, z, case):
         # gtol/m radians, which blows up as the cell flattens.
         with np.errstate(divide="ignore", invalid="ignore"):
             return asp, DEG * gtol / m + EPS * 360.0
+    if op in CURVATURES:
+        ref, tol, _, _ = curvature(op, z, cx, cy)
+        return ref, tol
     if op == "hillshade":
         az = np.radians(case["azimuth"])
         alt = np.radians(case["altitude"])
@@ -198,6 +290,22 @@ for case in MAN["rasters"]:
         )
         continue
 
+    if op in CURVATURES:
+        cx = case["cell_size"]
+        _, _, flat, vague = curvature(op, z, cx, case["cell_size_y"] or cx)
+        judge = keep & ~flat & ~vague
+        err = np.abs(got - ref)
+        worst = (err[judge] / tol[judge]).max() if judge.any() else 0.0
+        flat_ok = bool(np.all(got[keep & flat] == 0.0))
+        record(
+            f"{case['name']} vs Zevenbergen-Thorne reference",
+            worst <= 1.0 and flat_ok,
+            f"{worst:.2f}x tolerance over {int(judge.sum())} cells, "
+            f"{int((keep & vague).sum())} too flat to judge, {int((keep & flat).sum())} flat"
+            + ("" if flat_ok else ", FLAT CELLS NOT 0"),
+        )
+        continue
+
     err = np.abs(got - ref)
     tol = np.broadcast_to(np.asarray(tol, float), err.shape)
     worst = (err[keep] / tol[keep]).max() if keep.any() else 0.0
@@ -242,13 +350,22 @@ for case in MAN["rasters"]:
 PLANE_A, PLANE_B = 0.3, -0.7  # rise per column, rise per row (see main.go)
 
 for case in MAN["rasters"]:
-    if case["surface"] != "plane" or case["op"] not in ("slope_deg", "aspect"):
+    if case["surface"] != "plane" or case["op"] not in ("slope_deg", "aspect") + CURVATURES:
         continue
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
     tdx, tdy = PLANE_A / cx, PLANE_B / cy
     got, _ = load(case["out"])
     keep = defined(None)
+    if case["op"] in CURVATURES:
+        # A plane has no curvature: whatever strata reports is the
+        # rounding of the float32 elevations, which the derived tolerance
+        # of the reference covers when the reference itself is taken as 0.
+        z, _ = load(case["dem"])
+        _, tol, _, _ = curvature(case["op"], z, cx, cy)
+        worst = (np.abs(got[keep]) / tol[keep]).max()
+        record(f"{case['name']} = analytic 0", worst <= 1.0, f"max {np.abs(got[keep]).max():.2e} ({worst:.2f}x)")
+        continue
     if case["op"] == "slope_deg":
         want = DEG * np.arctan(np.hypot(tdx, tdy))
         err = np.abs(got[keep] - want).max()
@@ -437,6 +554,9 @@ if WANT_PNG:
         ("noisy-slope_deg-plain.f32", "magma", 0, 90),
         ("hill-aspect-plain.f32", "hsv", 0, 360),
         ("noisy-aspect-plain.f32", "hsv", 0, 360),
+        ("hill-curvature_profile-plain.f32", "RdBu", None, None),
+        ("hill-curvature_plan-plain.f32", "RdBu", None, None),
+        ("hill-curvature_mean-plain.f32", "RdBu", None, None),
     ]:
         a, _ = load(name)
         a = np.where(a == FILL, np.nan, a)

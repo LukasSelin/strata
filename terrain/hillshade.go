@@ -100,7 +100,7 @@ func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 	c := float32(255 * math.Sin(alt))
 	bx := float32(-255 * math.Cos(alt) * math.Sin(az))
 	by := float32(255 * math.Cos(alt) * math.Cos(az))
-	return hillshadeKernel{horn{kx, ky}, c, bx, by}
+	return hillshadeKernel{horn{kx: kx, ky: ky}, c, bx, by}
 }
 
 type hillshadeKernel struct {
