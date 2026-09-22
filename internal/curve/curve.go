@@ -8,12 +8,16 @@
 // kernelSet is a backend-swap table: two permanently scalar fields in it
 // would make vec.Backend's answer false for two of its members.
 //
-// There is no SIMD backend and therefore no backend machinery. Whether a
-// vector Reclass or Lookup is worth its complexity is a question for
-// bench_test.go and benchmarks/transfer/RESULTS.md, not an assumption
-// (DESIGN.md §50). The kernels are named scalar* so that adding one later
-// only adds files, as internal/vec and internal/stencil do, and renames
-// nothing.
+// # Backends
+//
+// scalar.go is the reference and the fallback; simd_amd64.go is an AVX2
+// backend in GOEXPERIMENT=simd builds, installed at init when the CPU has
+// AVX2, with the same backend machinery as internal/vec (dispatch.go:
+// UseScalar, Backend). The vector kernels agree with the scalar ones bit
+// for bit and hand a table longer than their measured crossover to the
+// scalar scan. Whether they were worth their complexity was a question
+// for bench_test.go and benchmarks/transfer/RESULTS.md, not an assumption
+// (DESIGN.md §50).
 //
 // # Tables
 //
@@ -46,7 +50,7 @@ func Reclass(dst, src, breaks, values []float32) {
 	if len(values) != len(breaks)+1 {
 		panic("curve: values must hold one more element than breaks")
 	}
-	scalarReclassFloat32(dst, src, breaks, values)
+	reclassFloat32(dst, src, breaks, values)
 }
 
 // Lookup computes dst[i] by linear interpolation between the knots
@@ -62,7 +66,7 @@ func Lookup(dst, src, xs, ys []float32) {
 	if len(xs) == 0 {
 		panic("curve: the table needs at least one knot")
 	}
-	scalarLookupFloat32(dst, src, xs, ys)
+	lookupFloat32(dst, src, xs, ys)
 }
 
 func requireEqualLen(dst, src []float32) {

@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"github.com/LukasSelin/strata/internal/curve"
 	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/transfer"
@@ -14,11 +15,11 @@ import (
 // without a validity mask, compact and strided, and for the two
 // table-driven ones over the table sizes a model actually uses.
 //
-// The split that matters here is Rescale against the rest: it runs
-// internal/vec.Affine, which has an AVX2 backend, while Reclass and
-// Lookup are a per-cell search in every build. These numbers are what a
-// decision to vectorize the search would have to beat
-// (internal/curve/bench_test.go compares the search forms themselves).
+// Rescale runs internal/vec.Affine and Reclass and Lookup run
+// internal/curve; both have an AVX2 backend, and curve's hands tables
+// longer than its measured crossover to the scalar scan. The suite
+// numbers are benchmarks/transfer's; internal/curve/bench_test.go
+// compares the search forms themselves.
 //
 //	go test ./transfer -run '^$' -bench . -count 5
 //	GOEXPERIMENT=simd go test ./transfer -run '^$' -bench . -count 5
@@ -70,7 +71,7 @@ func reportCells(b *testing.B, size int) {
 func BenchmarkOps(b *testing.B) {
 	rng := rand.New(rand.NewPCG(31, 32))
 	xs, ys, breaks, values := benchTable(5)
-	b.Logf("backend: %s", vec.Backend())
+	b.Logf("backend: vec %s, curve %s", vec.Backend(), curve.Backend())
 	for _, size := range benchSizes {
 		for _, strided := range []bool{false, true} {
 			for _, masked := range []bool{false, true} {

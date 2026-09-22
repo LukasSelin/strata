@@ -2,6 +2,7 @@ package curve
 
 import (
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -195,8 +196,14 @@ func TestLookupIsNotFused(t *testing.T) {
 	xs := []float32{0, 1}
 	v := math.Float32frombits(math.Float32bits(float32(1)) - 1)
 	y0, y1 := float32(-1), float32(math.Ldexp(1, -23))
-	dst := make([]float32, 1)
-	Lookup(dst, []float32{v}, xs, []float32{y0, y1})
+	// Enough copies of the cell for a vector backend's lanes and its
+	// scalar tail both to compute it.
+	src := make([]float32, 19)
+	for i := range src {
+		src[i] = v
+	}
+	dst := make([]float32, len(src))
+	Lookup(dst, src, xs, []float32{y0, y1})
 
 	t32 := v
 	want := y0 + float32(t32*(y1-y0))
@@ -204,9 +211,11 @@ func TestLookupIsNotFused(t *testing.T) {
 	if want == fused {
 		t.Fatal("the fixture no longer distinguishes a rounded product from a fused one")
 	}
-	if !same(dst[0], want) {
-		t.Errorf("Lookup = %v (%#08x), want %v (%#08x); the multiply-add was fused",
-			dst[0], math.Float32bits(dst[0]), want, math.Float32bits(want))
+	for i, got := range dst {
+		if !same(got, want) {
+			t.Errorf("Lookup cell %d = %v (%#08x), want %v (%#08x); the multiply-add was fused",
+				i, got, math.Float32bits(got), want, math.Float32bits(want))
+		}
 	}
 }
 
@@ -251,8 +260,8 @@ func TestPanics(t *testing.T) {
 }
 
 // TestEmptyAndOddLengths runs the kernels over the lengths a vector
-// backend would split differently, so the tail of a future SIMD loop is
-// already covered by the value tests above.
+// backend splits differently, so the SIMD loop's tail is covered by the
+// value tests above as well as its lanes.
 func TestEmptyAndOddLengths(t *testing.T) {
 	breaks, values := []float32{0, 1}, []float32{10, 20, 30}
 	xs, ys := []float32{0, 1}, []float32{0, 1}
@@ -282,5 +291,41 @@ func TestEmptyAndOddLengths(t *testing.T) {
 				t.Fatalf("Lookup n=%d index %d (%v): got %v, want %v", n, i, v, dst[i], want)
 			}
 		}
+	}
+}
+
+func kernelsInUse() kernelSet {
+	return kernelSet{reclass: reclassFloat32, lookup: lookupFloat32}
+}
+
+// assertKernels fails unless every function variable in got is the same
+// function as in want. Functions are compared by code pointer.
+func assertKernels(t *testing.T, name string, got, want kernelSet) {
+	t.Helper()
+	g, w := reflect.ValueOf(got), reflect.ValueOf(want)
+	for i := range g.NumField() {
+		if g.Field(i).Pointer() != w.Field(i).Pointer() {
+			t.Errorf("%s: %s kernel is not the expected function", name, g.Type().Field(i).Name)
+		}
+	}
+}
+
+func TestUseScalar(t *testing.T) {
+	defer UseScalar(false)
+	initial := Backend()
+	if initial != "scalar" && initial != "avx2" {
+		t.Fatalf("Backend() = %q, want scalar or avx2", initial)
+	}
+	UseScalar(true)
+	if Backend() != "scalar" {
+		t.Fatalf("after UseScalar(true), Backend() = %q", Backend())
+	}
+	assertKernels(t, "UseScalar(true)", kernelsInUse(), scalarKernels)
+	UseScalar(false)
+	if Backend() != initial {
+		t.Fatalf("after UseScalar(false), Backend() = %q, want %q", Backend(), initial)
+	}
+	if simdKernels == nil {
+		assertKernels(t, "UseScalar(false) without SIMD", kernelsInUse(), scalarKernels)
 	}
 }
