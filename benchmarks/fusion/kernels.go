@@ -56,11 +56,12 @@ type Fused struct {
 }
 
 // NewFused returns the fused kernel for the internal/vec backend in use
-// when it is called: AVX2 if vec.Backend reports it, scalar otherwise, so
-// the suite's backend switch applies to it as to the other two forms.
+// when it is called: the AVX2 or NEON loop if vec.Backend reports that
+// backend, scalar otherwise, so the suite's backend switch applies to it
+// as to the other two forms.
 func NewFused() Fused {
-	if vec.Backend() == "avx2" && haveAVX2 {
-		return Fused{mul6: mul6AVX2}
+	if haveSIMD && vec.Backend() == simdBackend {
+		return Fused{mul6: mul6SIMD}
 	}
 	return Fused{mul6: mul6Scalar}
 }

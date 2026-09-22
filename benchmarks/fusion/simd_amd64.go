@@ -10,8 +10,11 @@ import "simd/archsimd"
 // bounds checks, and VZEROUPPER before the scalar tail. It exists only in
 // GOEXPERIMENT=simd builds; other builds get simd_other.go.
 
-// haveAVX2 reports whether mul6AVX2 can run on this machine.
-var haveAVX2 = archsimd.X86.AVX2()
+// haveSIMD reports whether mul6SIMD can run on this machine, and
+// simdBackend is the vec.Backend name it goes with.
+var haveSIMD = archsimd.X86.AVX2()
+
+const simdBackend = "avx2"
 
 const lane = 8
 
@@ -19,10 +22,10 @@ func load8(s []float32) archsimd.Float32x8 {
 	return archsimd.LoadFloat32x8Array((*[lane]float32)(s))
 }
 
-// mul6AVX2 is mul6Scalar eight cells at a time. VMULPS rounds each
+// mul6SIMD is mul6Scalar eight cells at a time. VMULPS rounds each
 // product, so the lanes multiply in the chain's order and agree with it
 // bit for bit.
-func mul6AVX2(dst, a, b, c, d, e, f []float32) {
+func mul6SIMD(dst, a, b, c, d, e, f []float32) {
 	a, b, c = a[:len(dst)], b[:len(dst)], c[:len(dst)]
 	d, e, f = d[:len(dst)], e[:len(dst)], f[:len(dst)]
 	for len(dst) >= lane && len(a) >= lane && len(b) >= lane && len(c) >= lane &&
