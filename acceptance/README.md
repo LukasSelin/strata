@@ -28,7 +28,9 @@ python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ```
 
-`check.py` needs numpy; `--png` also needs matplotlib. It prints one line
+`check.py` needs numpy; with scipy installed it also cross-checks its
+focal reference against `scipy.ndimage` (check 10), and `--png` needs
+matplotlib. It prints one line
 per check, exits non-zero if any failed, and on a failure prints only the
 failures.
 
@@ -36,21 +38,26 @@ failures.
 
 `main.go` builds three small DEMs — a tilted plane, a smooth hill on
 rectangular cells, and a noisy surface with two NoData regions — and runs
-every terrain, algebra and reduce operation on each, in all three forms
-(plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked` through
-raw float32 files on 4 workers). 351 checks come out of that:
+every terrain, focal, algebra and reduce operation on each, in all three
+forms (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked`
+through raw float32 files on 4 workers). The focal cases are Correlate
+and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
+with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
+2, and Min and Max at radii 1 and 3. 600 checks come out of that
+(594 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up |
-| 2 | The one-cell border carries no data | Horn needs all eight neighbours; a border cell that holds a number is reading outside the raster |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; focal results against their definition as shifted sums, Min and Max exactly | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid |
+| 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
 | 3 | The plane against its analytic slope, aspect and zero curvature | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
-| 5 | Validity after a 3×3 erosion of the input mask | NoData leaking into a result, or valid cells wrongly discarded |
+| 5 | Validity after a (2r+1)×(2r+1) erosion of the input mask, 3×3 for terrain | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
 | 7 | `Count` and `MinMax` against numpy over the valid cells | A reduction that misses a tile or double-counts one |
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
 | 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
+| 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
 
 Resampling is judged separately, by `check_resample.py`: a float64
 reference in plain Python (80×60 sources, so no numpy is needed) written
@@ -65,12 +72,13 @@ validity and values within twice that tolerance, excluding only the
 departures §54 records.
 
 The reference implementations are derived in `check.py`'s docstring from
-Horn's kernel as gdaldem documents it, and from the definition of
-shaded relief as the cosine between the light and the surface normal,
-and for curvature from Zevenbergen and Thorne's (1987) quadratic and
-Florinsky's (2016) normal-section formulas — not from strata's code.
-`gdaldem` has no curvature mode, so for curvature this numpy reference
-is the only outside opinion.
+Horn's kernel as gdaldem documents it, from the definition of shaded
+relief as the cosine between the light and the surface normal, for
+curvature from Zevenbergen and Thorne's (1987) quadratic and
+Florinsky's (2016) normal-section formulas, and from the textbook
+definitions of correlation and convolution (the latter
+scipy.ndimage's) — not from strata's code. `gdaldem` has no curvature
+mode, so for curvature this numpy reference is the only outside opinion.
 
 ## Tolerances
 
@@ -79,9 +87,12 @@ by float32 rounding alone. Each tolerance is **derived, not tuned**:
 Horn's numerator is six weighted elevations accumulated in at most six
 roundings of a partial sum of magnitude ≤ 4·zmax, so the gradient is off
 by at most `3 · 2⁻²⁴ · zmax / cellsize`, and every other tolerance
-follows from how the operation propagates that. Each line reports the
-observed error, the bound, and their ratio — currently 0.04× to 0.25×,
-so the results sit comfortably inside a bound that is itself tight.
+follows from how the operation propagates that. A focal weighted sum of
+m = (2r+1)² products is bounded by the classic dot-product bound,
+`(m + 1) · 2⁻²⁴ · Σ|w||z|` plus a rounding of the result. Each line
+reports the observed error, the bound, and their ratio — currently 0.04×
+to 0.25×, so the results sit comfortably inside a bound that is itself
+tight. Focal Min and Max do no arithmetic and must match exactly.
 
 Aspect gets a per-cell tolerance, because the direction of a nearly flat
 cell is genuinely undefined: a float32 rounding in the gradient can swing
@@ -120,7 +131,20 @@ normalize range from NoData       yes      3
 curvature sign flipped            yes      18
 profile and plan swapped          yes      18
 mean curvature 0.05% too large    yes      3
+correlate with convolve's flip    yes      9
+separable passes swapped          yes      9
+focal radius one short            yes      15
+mean divides by 24, not 25        yes      9
+radius-2 validity eroded 3x3      yes      7
+focal NoData leaking in           yes      3
+focal tile seam                   yes      2
 ```
+
+One plausible focal defect is out of reach: a Mean that multiplies by a
+rounded 1/(2r+1)² instead of dividing is off by about an ulp, well
+inside the float64 reference's derived bound, where `Normalize`'s is
+caught because it has an exact float32 reference. The unit tests in
+`focal/` pin Mean's division bit for bit instead.
 
 A 0.05% slope error — far smaller than any plausible real bug — is
 caught 34× over its tolerance.
