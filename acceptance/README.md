@@ -35,7 +35,7 @@ failures.
 rectangular cells, and a noisy surface with two NoData regions — and runs
 every terrain, algebra and reduce operation on each, in all three forms
 (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked` through
-raw float32 files on 4 workers). 237 checks come out of that:
+raw float32 files on 4 workers). 261 checks come out of that:
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
@@ -47,6 +47,7 @@ raw float32 files on 4 workers). 237 checks come out of that:
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
 | 7 | `Count` and `MinMax` against numpy over the valid cells | A reduction that misses a tile or double-counts one |
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
+| 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
 
 The reference implementations are derived in `check.py`'s docstring from
 Horn's kernel as gdaldem documents it, and from the definition of
@@ -86,6 +87,8 @@ chunked result off by one row     yes      3
 one NoData cell leaking in        yes      3
 count one too many                yes      1
 max slightly wrong                yes      1
+normalize by a reciprocal         yes      9
+normalize range from NoData       yes      3
 ```
 
 A 0.05% slope error — far smaller than any plausible real bug — is
