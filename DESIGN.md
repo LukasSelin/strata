@@ -23,6 +23,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
+- [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
 Where things stand, as of 2026-09-21. Each section's own **Status** line is
 the detailed record; this table only points at it.
@@ -1536,6 +1537,12 @@ is not covered by the harness yet.
 Every new public operation gets a reference in `acceptance/` as well as
 tests here; an operation with no outside reference is not done.
 
+`tools/herbie/` runs [Herbie](https://herbie.uwplse.org/) on the kernel
+formulas, restricted to operations a SIMD kernel can mirror without FMA,
+to find rewrites that are more accurate or cheaper. It is a search, not a
+check, and runs by hand; [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md)
+triages the latest run.
+
 Point batches, when they exist, add empty batches, attribute-length
 mismatches, sparse masks and large coordinate ranges to the table above.
 
@@ -1616,6 +1623,7 @@ strata/
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)
+├── tools/herbie/              Herbie search for float rewrites (§39)
 └── docs/adr/
 ```
 

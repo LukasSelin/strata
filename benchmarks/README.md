@@ -17,6 +17,9 @@ spikes that informed the design.
 | `reduce/` | suite: `strata/reduce` Count, MinMax, Sum and Stats at every size, mask, backend and worker count, after the §49 accumulator decision (exact binned sums against float64 and Neumaier, benchmarked in `internal/accum`). Both in [`reduce/RESULTS.md`](reduce/RESULTS.md) |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
+Floating-point rewrites of the kernel formulas, for accuracy or cost, are
+searched with Herbie in [`tools/herbie/`](../tools/herbie/README.md).
+
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole
 raster vs. per row vs. strided), `internal/stencil/bench_test.go` and
 `internal/vec/bench_test.go` (per-call cost by row width) and
