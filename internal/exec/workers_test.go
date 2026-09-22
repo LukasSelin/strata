@@ -42,7 +42,8 @@ func TestTilesAndWorkers(t *testing.T) {
 	workers := []int{1, 2, 3, runtime.GOMAXPROCS(0)}
 
 	ops := []adapter{box2Adapter}
-	for _, name := range []string{"clamp", "add", "slope-degrees", "aspect", "hillshade", "gradient"} {
+	for _, name := range []string{"clamp", "add", "slope-degrees", "aspect", "hillshade", "gradient",
+		"focal-correlate-r3", "focal-separable-r2", "focal-max-r4"} {
 		ops = append(ops, adapterNamed(t, name))
 	}
 	masks := []struct{ in, out bool }{{false, false}, {true, true}, {false, true}}

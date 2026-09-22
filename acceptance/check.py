@@ -30,6 +30,21 @@ float64 numpy:
     Profile and plan are undefined on flat cells (p = q = 0); strata
     documents 0 there.
 
+The focal operations are checked against their definitions as shifted
+sums of the float32 input, in float64:
+
+  * correlate: out(x, y) = sum_j sum_c w[j][c] * z(x + c - r, y + j - r),
+    with the (2r+1)x(2r+1) weights row-major, row 0 above the cell;
+  * convolve:  the same with the weights rotated by 180 degrees, which is
+    scipy.ndimage.convolve's definition;
+  * separable: correlate with the weights col[j] * row[c];
+  * mean:      the box sum divided by (2r+1)^2;
+  * min, max:  of the float32 neighbourhood, exactly.
+
+If scipy is installed, the reference itself is cross-checked against
+scipy.ndimage.correlate and convolve, an implementation with nothing in
+common with either side.
+
 Min-max normalisation is the one float32 exception: it is checked for
 exact equality against the textbook (z - z.min()) / (z.max() - z.min())
 evaluated in float32 numpy over the valid cells, the way the pointwise
@@ -75,6 +90,20 @@ import numpy as np
 # is known well: cells where the error of p and q exceeds 1% of the
 # gradient's length are too flat for a direction of curvature, and are
 # reported rather than judged, as aspect's are.
+
+# The focal weighted sums are dot products of m = (2r+1)^2 terms (a
+# separable sum is two of 2r+1 terms each), accumulated in float32 one
+# rounding per product and per sum. The classic bound for a recursively
+# summed dot product is gamma_m * sum |w_i z_i|, gamma_m = m*u/(1 - m*u)
+# with u = 2^-24; for two nested passes it is gamma_{2k} over the outer
+# product's |weights|. The mean adds one rounding for its division. So
+#
+#       ftol = (m + 1) * 2^-24 * sum |w_i| |z_i|  +  2^-24 * |result|
+#
+# which for the smooth test surfaces is a few thousandths of an ulp of
+# the signal per term; a flipped kernel or a shifted window is wrong by a
+# large fraction of the signal. Min and max involve no arithmetic, so
+# they must be exact.
 EPS = 2.0**-24  # float32 half-ulp, 5.96e-8
 DEG = 180.0 / np.pi
 
@@ -91,6 +120,9 @@ W, H = MAN["width"], MAN["height"]
 FILL = MAN["fill"]
 
 results = []
+
+# Operations that are not a stencil: no border, no eroded validity.
+POINTWISE = ("normalize",)
 
 
 def record(name, ok, detail=""):
@@ -190,8 +222,79 @@ def curvature(op, z, cx, cy):
     return ref, tol, flat, vague
 
 
+def radius(case):
+    """The neighbourhood radius of a case's operation: 0 for pointwise."""
+    if case["op"] in POINTWISE or case["op"].startswith("algebra_"):
+        return 0
+    return case.get("radius") or 1
+
+
+def focal_weights(case):
+    """The (2r+1)x(2r+1) weights a weighted focal case applies, as
+    correlation weights, in float64 holding the exact float32 values."""
+    r = case["radius"]
+    k = 2 * r + 1
+    op = case["op"]
+    if op.startswith("focal_correlate") or op.startswith("focal_convolve"):
+        w = np.array(case["weights"], np.float32).astype(np.float64).reshape(k, k)
+        return w[::-1, ::-1] if op.startswith("focal_convolve") else w
+    if op.startswith("focal_separable") or op.startswith("focal_gaussian"):
+        row = np.array(case["row"], np.float32).astype(np.float64)
+        col = np.array(case["col"], np.float32).astype(np.float64)
+        return np.outer(col, row)
+    if op.startswith("focal_mean"):
+        return np.ones((k, k))
+    return None
+
+
+def shifted(z, r):
+    """Yield (j, c, view) for every offset of a radius-r neighbourhood:
+    view[y, x] = z[y + j, x + c], over the interior."""
+    h, w = z.shape
+    k = 2 * r + 1
+    for j in range(k):
+        for c in range(k):
+            yield j, c, z[j : j + h - 2 * r, c : c + w - 2 * r]
+
+
+def focal_expected(z, case):
+    """A focal operation from its definition, full size, NaN on the
+    border, with its tolerance."""
+    r = case["radius"]
+    op = case["op"]
+    ref = np.full(z.shape, np.nan)
+    tol = np.full(z.shape, np.nan)
+    inner = (slice(r, z.shape[0] - r), slice(r, z.shape[1] - r))
+    if op.startswith("focal_min") or op.startswith("focal_max"):
+        # In float32, where min and max are exact: NaN (NoData) wins, as
+        # it must, and every such cell is invalid anyway.
+        pick = np.fmin if op.startswith("focal_min") else np.fmax
+        acc = None
+        for _, _, v in shifted(z.astype(np.float32), r):
+            acc = v.copy() if acc is None else np.where(np.isnan(acc) | np.isnan(v), np.nan, pick(acc, v))
+        ref[inner] = acc
+        tol[inner] = 0.0
+        return ref, tol
+    w = focal_weights(case)
+    k = 2 * r + 1
+    total = np.zeros_like(z[inner])
+    scale = np.zeros_like(z[inner])
+    for j, c, v in shifted(z, r):
+        total += w[j, c] * v
+        scale += abs(w[j, c]) * np.abs(v)
+    m = k * k
+    if op.startswith("focal_mean"):
+        total /= m
+        scale /= m
+    ref[inner] = total
+    tol[inner] = (m + 1) * EPS * scale + EPS * np.abs(total)
+    return ref, tol
+
+
 def expected(op, z, case):
     """The reference result and its tolerance, or (None, None)."""
+    if op.startswith("focal_"):
+        return focal_expected(z, case)
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
     dx, dy = horn(z, cx, cy)
@@ -237,10 +340,11 @@ def expected(op, z, case):
     return None, None
 
 
-def defined(out_mask):
-    """Cells that must hold a defined value: interior, and valid."""
+def defined(out_mask, r=1):
+    """Cells that must hold a defined value: at least r from the edge,
+    and valid."""
     keep = np.zeros((H, W), bool)
-    keep[1:-1, 1:-1] = True
+    keep[r : H - r, r : W - r] = True
     if out_mask is not None:
         keep &= out_mask
     return keep
@@ -269,7 +373,7 @@ for case in MAN["rasters"]:
     if ref is None:
         continue
 
-    keep = defined(out_mask) & np.isfinite(ref)
+    keep = defined(out_mask, radius(case)) & np.isfinite(ref)
 
     if op == "aspect":
         dx, dy = horn(z, case["cell_size"], case["cell_size_y"] or case["cell_size"])
@@ -308,9 +412,16 @@ for case in MAN["rasters"]:
 
     err = np.abs(got - ref)
     tol = np.broadcast_to(np.asarray(tol, float), err.shape)
-    worst = (err[keep] / tol[keep]).max() if keep.any() else 0.0
+    if op.startswith("focal_min") or op.startswith("focal_max"):
+        bad = int((got[keep] != ref[keep]).sum())
+        record(f"{case['name']} == float32 {op[6:9]} of the neighbourhood", bad == 0,
+               f"{bad} differing cells over {int(keep.sum())}")
+        continue
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(err == 0, 0.0, err / tol)
+    worst = ratio[keep].max() if keep.any() else 0.0
     record(
-        f"{case['name']} vs Horn reference",
+        f"{case['name']} vs {'definition' if op.startswith('focal_') else 'Horn reference'}",
         worst <= 1.0,
         f"max error {err[keep].max():.3e}, tolerance {tol[keep].max():.3e} "
         f"({worst:.2f}x) over {int(keep.sum())} cells",
@@ -318,20 +429,19 @@ for case in MAN["rasters"]:
 
 
 # --------------------------------------------------------------------
-# 2. The border carries no data: Horn needs all eight neighbours, so a
-#    border cell is NaN, or - in a file with a NoData value - the fill,
-#    with its validity bit cleared.
+# 2. The border carries no data: Horn needs all eight neighbours, and a
+#    radius-r focal operation the whole (2r+1)x(2r+1) square, so a cell
+#    within r of the edge is NaN, or - in a file with a NoData value -
+#    the fill, with its validity bit cleared.
 # --------------------------------------------------------------------
 
-# Operations that are not a 3x3 stencil: no border, no eroded validity.
-POINTWISE = ("normalize",)
-
 for case in MAN["rasters"]:
-    if case["op"].startswith("algebra_") or case["op"] in POINTWISE:
+    r = radius(case)
+    if r == 0:
         continue
     got, _ = load(case["out"])
     border = np.ones((H, W), bool)
-    border[1:-1, 1:-1] = False
+    border[r : H - r, r : W - r] = False
     out_mask = load_mask(case.get("out_mask"))
     if out_mask is None:
         bad = int((~np.isnan(got[border])).sum())
@@ -411,20 +521,21 @@ for forms in groups.values():
 
 
 # --------------------------------------------------------------------
-# 5. Validity: an output cell is valid iff it is interior and all nine
-#    cells of its neighbourhood are valid.
+# 5. Validity: an output cell is valid iff it is at least r from the
+#    edge and all (2r+1)^2 cells of its neighbourhood are valid (nine for
+#    the terrain operations).
 # --------------------------------------------------------------------
 
 for case in MAN["rasters"]:
-    if not case.get("out_mask") or case["op"] in POINTWISE:
+    r = radius(case)
+    if not case.get("out_mask") or r == 0:
         continue
     src = load_mask(case["dem_mask"])
     want = np.zeros((H, W), bool)
-    eroded = np.ones((H - 2, W - 2), bool)
-    for dy in (0, 1, 2):
-        for dx in (0, 1, 2):
-            eroded &= src[dy : dy + H - 2, dx : dx + W - 2]
-    want[1:-1, 1:-1] = eroded
+    eroded = np.ones((H - 2 * r, W - 2 * r), bool)
+    for _, _, v in shifted(src, r):
+        eroded &= v
+    want[r : H - r, r : W - r] = eroded
     got = load_mask(case["out_mask"])
     bad = int((got != want).sum())
     record(f"{case['name']} validity", bad == 0, f"{bad} cells with the wrong validity")
@@ -529,6 +640,39 @@ for case in MAN["rasters"]:
         ends,
         f"min {g.min():.9g}, max {g.max():.9g} over {int(valid.sum())} cells",
     )
+
+
+# --------------------------------------------------------------------
+# 10. The focal reference itself, against scipy.ndimage where it is
+#     installed: correlate and convolve by an implementation that shares
+#     nothing with check.py's shifted sums (or with strata), on the same
+#     float64 data. mode="constant" is irrelevant: only interior cells,
+#     whose neighbourhood is inside the raster, are compared.
+# --------------------------------------------------------------------
+
+try:
+    from scipy import ndimage
+except ImportError:
+    ndimage = None
+
+if ndimage is not None:
+    for case in MAN["rasters"]:
+        op = case["op"]
+        if case["form"] != "plain" or not (op.startswith("focal_correlate") or op.startswith("focal_convolve")):
+            continue
+        z, _ = load(case["dem"])
+        r = case["radius"]
+        k = 2 * r + 1
+        w = np.array(case["weights"], np.float32).astype(np.float64).reshape(k, k)
+        fn = ndimage.convolve if op.startswith("focal_convolve") else ndimage.correlate
+        sp = fn(z, w, mode="constant", cval=0.0)
+        ref, tol = focal_expected(z, case)
+        inner = (slice(r, H - r), slice(r, W - r))
+        # Both are float64 sums of the same terms in different orders.
+        err = np.abs(sp[inner] - ref[inner]).max()
+        scale = np.abs(ref[inner]).max()
+        record(f"{case['name']} definition == scipy.ndimage.{fn.__name__}", err <= 1e-12 * max(scale, 1),
+               f"max {err:.2e}")
 
 
 # --------------------------------------------------------------------

@@ -239,17 +239,21 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 // bands — and the largest span is not always the full tile's. There are
 // only ever two widths and two heights, so all four are checked rather
 // than bounded.
+//
+// The result bounds each side separately, the widest span's width and
+// the tallest span's height, not the pair with the largest area:
+// ScratchKernel.Scratch may size its memory from w alone (a row, as
+// focal's separable kernels do), and the widest span, from the full
+// tile, can have less area than a clipped tile's taller band
+// (DESIGN.md §53).
 func (c *chunkJob) spanSize() (w, h int) {
 	lastW := c.w - (c.tilesX-1)*c.tileW
 	lastH := c.h - (ceilDiv(c.h, c.tileH)-1)*c.tileH
-	best := 0
 	for _, tw := range [2]int{c.tileW, lastW} {
 		for _, th := range [2]int{c.tileH, lastH} {
 			p := newPlan(tw, th, 0, 0)
 			sw, sh := p.spanSize()
-			if sw*sh > best {
-				best, w, h = sw*sh, sw, sh
-			}
+			w, h = max(w, sw), max(h, sh)
 		}
 	}
 	return w, h

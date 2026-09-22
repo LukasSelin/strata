@@ -9,6 +9,7 @@ import (
 
 	"github.com/LukasSelin/strata/algebra"
 	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/focal"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/terrain"
 )
@@ -23,7 +24,46 @@ type adapter struct {
 	tiled   func(ctx context.Context, dst, src []raster.Float32Raster, opts engine.Options) error
 }
 
+// focalWeights are asymmetric 7×7 weights for focal.Correlate at radius
+// 3, so that a kernel reading its window mirrored or transposed fails.
+var focalWeights = func() []float32 {
+	w := make([]float32, 49)
+	for i := range w {
+		w[i] = float32(i*7%11-5) / 4
+	}
+	return w
+}()
+
+// focalSeparable are asymmetric taps for focal.CorrelateSeparable at
+// radius 2, a ScratchKernel: under the poisoned scratch of TestMain, a
+// kernel reading scratch it has not written fails.
+var focalSeparable = focal.SeparableOptions{Radius: 2, Row: []float32{1, -2, 0.5, 3, 0.25}, Col: []float32{-1, 0.5, 2, 0.75, 1.5}}
+
 var adapters = []adapter{
+	{
+		name: "focal-correlate-r3", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			focal.Correlate(dst[0], src[0], focal.WeightsOptions{Radius: 3, Weights: focalWeights})
+		},
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return focal.CorrelateTiled(ctx, dst[0], src[0], focal.WeightsOptions{Radius: 3, Weights: focalWeights}, o)
+		},
+	},
+	{
+		name: "focal-separable-r2", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) { focal.CorrelateSeparable(dst[0], src[0], focalSeparable) },
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return focal.CorrelateSeparableTiled(ctx, dst[0], src[0], focalSeparable, o)
+		},
+	},
+	{
+		// On the 300×9 wide window, radius 4 leaves one interior row.
+		name: "focal-max-r4", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) { focal.Max(dst[0], src[0], focal.BoxOptions{Radius: 4}) },
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return focal.MaxTiled(ctx, dst[0], src[0], focal.BoxOptions{Radius: 4}, o)
+		},
+	},
 	{
 		name: "clamp", inputs: 1, outputs: 1, inPlace: true,
 		direct: func(dst, src []raster.Float32Raster) { algebra.Clamp(dst[0], src[0], 950, 1050) },
