@@ -243,7 +243,7 @@ func TestSIMDReduceSplitsAnywhere(t *testing.T) {
 
 // TestSIMDMinMaxEdgePairs runs every ordered pair of special values
 // through the kernels built on lanewise min and max. AVX2 has to repair
-// VMINPS/VMAXPS for a NaN first operand and for signed zeros; NEON's
+// VMINPS/VMAXPS for NaN operands and for signed zeros; NEON's
 // FMIN/FMAX are meant to match Go's builtins as they are. Either way the
 // bits must be the scalar ones, in every lane position.
 func TestSIMDMinMaxEdgePairs(t *testing.T) {
