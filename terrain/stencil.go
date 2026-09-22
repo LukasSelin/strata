@@ -11,8 +11,9 @@ import (
 	"github.com/LukasSelin/strata/raster"
 )
 
-// cellSizes resolves and checks the shared cell-size and z-factor options.
-func cellSizes(cellSize, cellSizeY, zFactor float64) (kx, ky float32) {
+// resolveCells resolves and checks the shared cell-size and z-factor
+// options: CellSizeY 0 means CellSize and ZFactor 0 means 1.
+func resolveCells(cellSize, cellSizeY, zFactor float64) (cx, cy, z float64) {
 	if !(cellSize > 0) || math.IsInf(cellSize, 0) {
 		panic(fmt.Sprintf("terrain: CellSize must be positive and finite, got %v", cellSize))
 	}
@@ -28,10 +29,16 @@ func cellSizes(cellSize, cellSizeY, zFactor float64) (kx, ky float32) {
 	if math.IsNaN(zFactor) || math.IsInf(zFactor, 0) {
 		panic(fmt.Sprintf("terrain: ZFactor must be finite, got %v", zFactor))
 	}
+	return cellSize, cellSizeY, zFactor
+}
+
+// cellSizes resolves and checks the shared options for the Horn kernels.
+func cellSizes(cellSize, cellSizeY, zFactor float64) (kx, ky float32) {
+	cx, cy, z := resolveCells(cellSize, cellSizeY, zFactor)
 	// The kernels multiply by these factors as float32. One that
 	// overflows to ±Inf turns a flat neighbourhood (0·Inf) into NaN, and
 	// one that underflows to 0 flattens every gradient.
-	kx, ky = stencil.HornScales(cellSize, cellSizeY, zFactor)
+	kx, ky = stencil.HornScales(cx, cy, z)
 	if !usableScale(kx) || !usableScale(ky) {
 		panic(fmt.Sprintf("terrain: ZFactor/(8·CellSize) and ZFactor/(8·CellSizeY) must be finite and non-zero as float32, "+
 			"got %v and %v for CellSize %v, CellSizeY %v and ZFactor %v", kx, ky, cellSize, cellSizeY, zFactor))
@@ -61,10 +68,16 @@ func runChunked(ctx context.Context, eopts engine.Options, k exec.Kernel, dem en
 	return exec.ProcessChunked(ctx, outs, []engine.RasterSource{dem}, k, eopts)
 }
 
-// horn holds what every Horn kernel shares: radius 1, one DEM input,
-// NaN at the edges and the resolved cell-size factors.
-type horn struct{ kx, ky float32 }
+// window3 holds what every kernel of this package shares: radius 1, one
+// DEM input, one output unless overridden, and NaN at the edges.
+type window3 struct{}
 
-func (horn) Radius() int                  { return 1 }
-func (horn) Arity() (inputs, outputs int) { return 1, 1 }
-func (horn) Edge() float32                { return float32(math.NaN()) }
+func (window3) Radius() int                  { return 1 }
+func (window3) Arity() (inputs, outputs int) { return 1, 1 }
+func (window3) Edge() float32                { return float32(math.NaN()) }
+
+// horn is window3 with the resolved Horn cell-size factors.
+type horn struct {
+	window3
+	kx, ky float32
+}

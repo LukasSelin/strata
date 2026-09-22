@@ -33,7 +33,13 @@ import (
 //     Symmetries cannot see a kernel that uses each axis's cell size for
 //     the other, since transposing swaps the sizes back; this relation
 //     can.
-//   - Slope, Aspect and Hillshade are functions of Gradient's dx and dy.
+//   - Slope, Aspect and Hillshade are functions of Gradient's dx and dy,
+//     and Curvature is its documented formula of the DEM's cells.
+//   - Curvature's Zevenbergen–Thorne derivatives map like dx and dy
+//     under the symmetries, so a mirror leaves it bitwise unchanged; a
+//     transposition reorders its sums and holds up to rounding. Scaling
+//     the cell sizes by a power of two scales it by the inverse power,
+//     exactly.
 //   - An output cell depends only on the DEM cells, Data and validity, in
 //     its 3×3 neighbourhood, and on nothing under invalid cells.
 //
@@ -43,17 +49,18 @@ import (
 
 // relOp is a terrain operation with its options.
 type relOp struct {
-	kind              int // 0 gradient, 1 slope, 2 aspect, 3 hillshade
+	kind              int // 0 gradient, 1 slope, 2 aspect, 3 hillshade, 4 curvature
 	cs, csy, z        float64
+	curv              CurvatureType
 	units             SlopeUnits
 	zeroFlat, trig    bool
 	azimuth, altitude float64
 }
 
 func (o relOp) String() string {
-	name := [...]string{"gradient", "slope", "aspect", "hillshade"}[o.kind]
-	return fmt.Sprintf("%s cs %v csy %v z %v units %d zeroFlat %v trig %v az %v alt %v",
-		name, o.cs, o.csy, o.z, o.units, o.zeroFlat, o.trig, o.azimuth, o.altitude)
+	name := [...]string{"gradient", "slope", "aspect", "hillshade", "curvature"}[o.kind]
+	return fmt.Sprintf("%s cs %v csy %v z %v units %d zeroFlat %v trig %v az %v alt %v curv %v",
+		name, o.cs, o.csy, o.z, o.units, o.zeroFlat, o.trig, o.azimuth, o.altitude, o.curv)
 }
 
 func (o relOp) outputs() int {
@@ -141,6 +148,16 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 		default:
 			err = HillshadeChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
+	case 4:
+		opts := CurvatureOptions{o.cs, o.csy, o.z, o.curv}
+		switch path {
+		case 0:
+			Curvature(outs[0], dem, opts)
+		case 1:
+			err = CurvatureTiled(ctx, outs[0], dem, opts, eopts)
+		default:
+			err = CurvatureChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
+		}
 	}
 	if err != nil {
 		panic(err) // a background context never fails
@@ -186,7 +203,7 @@ func relDEM(d fuzzdata.Source, w, h, values int, masked bool) raster.Float32Rast
 // TestTerrainRelations checks the same body with rapid instead.
 func FuzzTerrainRelations(f *testing.F) {
 	for rel := range 11 {
-		for kind := range 4 {
+		for kind := range 5 {
 			f.Add([]byte{byte(rel), byte(kind), 12, 7, 1, 2, 3, 4, 5})
 		}
 	}
@@ -201,7 +218,7 @@ func FuzzTerrainRelations(f *testing.F) {
 // own memory layout, so a relation also catches a halo or tile that reads
 // the wrong cells.
 func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
-	rel, kind := d.IntN(11), d.IntN(4)
+	rel, kind := d.IntN(11), d.IntN(5)
 	o := relOp{
 		kind:     kind,
 		cs:       float64(d.Range(1, 200)) / 4,
@@ -210,6 +227,7 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 		zeroFlat: d.Bool(), trig: d.Bool(),
 		azimuth:  float64(d.Range(-720, 720)) / 2,
 		altitude: float64(d.Range(0, 180)) / 2,
+		curv:     CurvatureType(d.IntN(3)),
 	}
 	if d.Bool() {
 		o.csy = float64(d.Range(1, 200)) / 4
@@ -244,7 +262,8 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 			scaled.Data[i] *= float32(s)
 		}
 		so := o
-		if d.Bool() {
+		byZ := d.Bool()
+		if byZ {
 			z := o.z
 			if z == 0 {
 				z = 1
@@ -254,7 +273,17 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 			so.cs *= s
 			so.csy *= s
 		}
-		requireSameOutputs(t, fmt.Sprintf("%s: DEM·2^%d with %v", id, k, so), run(so, scaled), run(o, dem), true)
+		want := run(o, dem)
+		if o.kind == 4 && !byZ {
+			// Curvature is in 1/length: p and q are unchanged and r, s
+			// and t, so the result, scale by 1/s, exactly.
+			for _, out := range want {
+				for i := range out.Data {
+					out.Data[i] *= float32(1 / s)
+				}
+			}
+		}
+		requireSameOutputs(t, fmt.Sprintf("%s: DEM·2^%d with %v", id, k, so), run(so, scaled), want, true)
 	case 3: // negation
 		dem := relDEM(d, w, h, anyValues, masked)
 		neg := rastertest.Compact(dem)
@@ -401,7 +430,7 @@ func testDihedral(t rastertest.TB, d fuzzdata.Source, id string, o relOp, w, h i
 	t.Helper()
 	tr := rastertest.All()[d.Range(1, 7)]
 	mirror := tr == rastertest.Dihedral{FlipX: true}
-	exact := o.kind <= 1 || o.kind == 3 && mirror
+	exact := o.kind <= 1 || o.kind == 3 && mirror || o.kind == 4 && !tr.Swap
 	values := moderateValues
 	if exact {
 		values = anyValues
@@ -470,6 +499,13 @@ func testDihedral(t rastertest.TB, d fuzzdata.Source, id string, o relOp, w, h i
 				if diff := math.Abs(float64(bv) - want); math.Min(diff, 360-diff) > 1e-4 {
 					fail(fmt.Sprintf("%v within 1e-4°", want))
 				}
+			case o.kind == 4:
+				// The derivatives are the same float32 values, so only
+				// the formula's rounding differs, on each side.
+				der := derivs32(o, dem, u, v)
+				if tol := 2 * curvatureTol(o.curv, der, [5]float64{}); math.Abs(float64(bv)-float64(av)) > tol {
+					fail(fmt.Sprintf("%v within %.3g", av, tol))
+				}
 			default:
 				if math.Abs(float64(bv)-float64(av)) > 1e-3 {
 					fail(fmt.Sprintf("%v within 1e-3", av))
@@ -503,11 +539,15 @@ func mapAspect(tr rastertest.Dihedral, a float64, trig bool) float64 {
 }
 
 // testDerived checks that Slope, Aspect and Hillshade are the documented
-// functions of Gradient's dx and dy, bit for bit, cell by cell, including
-// validity.
+// functions of Gradient's dx and dy, and Curvature the documented
+// function of the DEM, bit for bit, cell by cell, including validity.
 func testDerived(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
+	if o.kind == 4 {
+		testDerivedCurvature(t, id, o, dem, run)
+		return
+	}
 	g := o
 	g.kind = 0
 	grad := run(g, dem)
@@ -590,4 +630,94 @@ func derivedHillshade(gx, gy, c, bx, by float32) float32 {
 		v = 255
 	}
 	return v
+}
+
+// testDerivedCurvature is testDerived for Curvature: validity is the 3×3
+// erosion of the DEM's, and valid cells are derivedCurvature's bits.
+func testDerivedCurvature(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
+	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
+	t.Helper()
+	out := run(o, dem)[0]
+	k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+	for y := range dem.Height {
+		for x := range dem.Width {
+			interior := x > 0 && y > 0 && x < dem.Width-1 && y < dem.Height-1
+			valid := interior
+			for j := -1; valid && j <= 1; j++ {
+				for i := -1; valid && i <= 1; i++ {
+					valid = dem.IsValid(x+i, y+j)
+				}
+			}
+			if out.Valid != nil && out.IsValid(x, y) != valid {
+				t.Fatalf("%s: cell (%d, %d) valid = %v, want %v", id, x, y, out.IsValid(x, y), valid)
+			}
+			got := out.Data[out.Index(x, y)]
+			if !interior {
+				if got == got && out.IsValid(x, y) {
+					t.Fatalf("%s: border cell (%d, %d) = %v, want NaN or invalid", id, x, y, got)
+				}
+				continue
+			}
+			if !valid {
+				continue
+			}
+			var z [9]float32
+			for j := range 3 {
+				for i := range 3 {
+					z[j*3+i] = dem.Data[dem.Index(x+i-1, y+j-1)]
+				}
+			}
+			want := derivedCurvature(o.curv, z, k.kp, k.kq, k.kr, k.kt, k.ks)
+			if !rastertest.SameFloat(got, want) {
+				t.Fatalf("%s: cell (%d, %d) = %v (%#08x), from window %v %v (%#08x)",
+					id, x, y, got, math.Float32bits(got), z, want, math.Float32bits(want))
+			}
+		}
+	}
+}
+
+// derivs32 is the float32 Zevenbergen–Thorne derivatives of the window
+// centred on (x, y), as Curvature computes them, widened to float64.
+func derivs32(o relOp, dem raster.Float32Raster, x, y int) [5]float64 {
+	k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+	at := func(dx, dy int) float32 { return dem.Data[dem.Index(x+dx, y+dy)] }
+	p, q, r, s, t := ztDerivs32(at(-1, -1), at(0, -1), at(1, -1), at(-1, 0), at(0, 0), at(1, 0), at(-1, 1), at(0, 1), at(1, 1),
+		k.kp, k.kq, k.kr, k.kt, k.ks)
+	return [5]float64{float64(p), float64(q), float64(r), float64(s), float64(t)}
+}
+
+func ztDerivs32(z1, z2, z3, z4, z5, z6, z7, z8, z9, kp, kq, kr, kt, ks float32) (p, q, r, s, t float32) {
+	p = float32((z6 - z4) * kp)
+	q = float32((z8 - z2) * kq)
+	r = float32(((z4 + z6) - (z5 + z5)) * kr)
+	t = float32(((z2 + z8) - (z5 + z5)) * kt)
+	s = float32(((z1 + z9) - (z3 + z7)) * ks)
+	return p, q, r, s, t
+}
+
+func derivedCurvature(c CurvatureType, z [9]float32, kp, kq, kr, kt, ks float32) float32 {
+	p, q, r, s, t := ztDerivs32(z[0], z[1], z[2], z[3], z[4], z[5], z[6], z[7], z[8], kp, kq, kr, kt, ks)
+	p2, q2 := float32(p*p), float32(q*q)
+	pq2 := float32(p*q) + float32(p*q)
+	g := p2 + q2
+	w := 1 + g
+	sw := float32(math.Sqrt(float64(w)))
+	switch c {
+	case CurvatureProfile:
+		num := (float32(p2*r) + float32(pq2*s)) + float32(q2*t)
+		if g == 0 {
+			return num + 0
+		}
+		return 0 - num/g/float32(w*sw)
+	case CurvaturePlan:
+		num := (float32(q2*r) - float32(pq2*s)) + float32(p2*t)
+		if g == 0 {
+			return num + 0
+		}
+		return 0 - num/g/float32(math.Sqrt(float64(g)))
+	default:
+		num := (float32((1+q2)*r) - float32(pq2*s)) + float32((1+p2)*t)
+		d := float32(w * sw)
+		return 0 - num/(d+d)
+	}
 }

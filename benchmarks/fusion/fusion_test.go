@@ -108,6 +108,12 @@ func TestCounter(t *testing.T) {
 // TestAllocs checks that no form allocates per tile or per band: a bound
 // that does not grow with the raster, as in the engine category.
 func TestAllocs(t *testing.T) {
+	if raceEnabled {
+		// The pipeline's scratch comes from a sync.Pool (ScratchKernel),
+		// which drops blocks at random under -race; internal/exec's
+		// TestScratchIsReused skips for the same reason.
+		t.Skip("sync.Pool drops blocks at random under -race")
+	}
 	defer kernels.UseScalar(false)
 	f := newFixture(300)
 	for name, run := range map[string]form{"chained": chained, "pipeline": pipelined, "fused": fused} {

@@ -1,0 +1,154 @@
+;; strata's floating-point kernels as Herbie inputs (README.md).
+;;
+;; Each expression is written in the evaluation order of the canonical
+;; scalar kernel, which the AVX2 and NEON kernels match bit for bit
+;; (DESIGN.md §15). Constants are the exact values of the float32
+;; constants the Go code uses, so Herbie's real-number reference is the
+;; formula the code computes, and the error it reports is rounding alone.
+;; Preconditions are realistic input ranges, not the full float32 range:
+;; gradients (tan of the slope) within ±1e3, elevations within 0..9000 m.
+
+;; ---------------------------------------------------------------------
+;; Horn gradient, internal/stencil/horn.go (hornDX) times kx. This is the
+;; neighbour-first grouping Herbie proposed in the first run (RESULTS.md);
+;; the original summed the elevations first:
+;;   (- (+ (+ z3 z9) (+ z6 z6)) (+ (+ z1 z7) (+ z4 z4)))
+
+;; Neighbouring cells of a real DEM are close: a 3×3 window at 1000 m with
+;; 100 m of local relief. This is the case that matters for flat terrain
+;; and for aspect, whose direction comes from small gradients.
+(FPCore (z1 z3 z4 z6 z7 z9 kx)
+  :name "hornDX*kx, one window (horn.go hornDX)"
+  :precision binary32
+  :pre (and (<= 1000 z1 1100) (<= 1000 z3 1100) (<= 1000 z4 1100)
+            (<= 1000 z6 1100) (<= 1000 z7 1100) (<= 1000 z9 1100)
+            (<= 1e-4 kx 1.25))
+  (let ([d (- z6 z4)])
+    (* (+ (+ (- z3 z1) (- z9 z7)) (+ d d)) kx)))
+
+;; The same over independent elevations anywhere in 0..9000 m.
+(FPCore (z1 z3 z4 z6 z7 z9 kx)
+  :name "hornDX*kx, any elevations (horn.go hornDX)"
+  :precision binary32
+  :pre (and (<= 0 z1 9000) (<= 0 z3 9000) (<= 0 z4 9000)
+            (<= 0 z6 9000) (<= 0 z7 9000) (<= 0 z9 9000)
+            (<= 1e-4 kx 1.25))
+  (let ([d (- z6 z4)])
+    (* (+ (+ (- z3 z1) (- z9 z7)) (+ d d)) kx)))
+
+;; ---------------------------------------------------------------------
+;; Slope, internal/stencil/horn.go:174 (magnitude) and :159 (angle).
+
+(FPCore (gx gy)
+  :name "slope magnitude (horn.go:174)"
+  :precision binary32
+  :pre (and (<= -1e3 gx 1e3) (<= -1e3 gy 1e3))
+  (sqrt (+ (* gx gx) (* gy gy))))
+
+;; Atan32 (horn.go:202-216), one FPCore per branch of the argument
+;; reduction. The reference is the Cephes polynomial evaluated exactly,
+;; so this measures the evaluation order, not the approximation.
+(FPCore (x)
+  :name "Atan32, x <= tan(pi/8) (horn.go:202)"
+  :precision binary32
+  :pre (<= 0 x 0.4142135679721832)
+  (let* ([t x]
+         [z (* t t)]
+         [p (- (* (+ (* (- (* 0.08053744584321976 z) 0.13877685368061066) z)
+                     0.19977711141109467) z) 0.3333294987678528)])
+    (+ (+ (* (* p z) t) t) 0)))
+
+(FPCore (x)
+  :name "Atan32, tan(pi/8) < x <= tan(3pi/8) (horn.go:202)"
+  :precision binary32
+  :pre (<= 0.4142135679721832 x 2.4142136573791504)
+  (let* ([t (/ (- x 1) (+ x 1))]
+         [z (* t t)]
+         [p (- (* (+ (* (- (* 0.08053744584321976 z) 0.13877685368061066) z)
+                     0.19977711141109467) z) 0.3333294987678528)])
+    (+ 0.7853981852531433 (+ (* (* p z) t) t))))
+
+(FPCore (x)
+  :name "Atan32, x > tan(3pi/8) (horn.go:202)"
+  :precision binary32
+  :pre (<= 2.4142136573791504 x 1e30)
+  (let* ([t (/ -1 x)]
+         [z (* t t)]
+         [p (- (* (+ (* (- (* 0.08053744584321976 z) 0.13877685368061066) z)
+                     0.19977711141109467) z) 0.3333294987678528)])
+    (+ 1.5707963705062866 (+ (* (* p z) t) t))))
+
+;; ---------------------------------------------------------------------
+;; Aspect, internal/stencil/aspect.go.
+
+;; Atan2F32's reflection for x < 0 (aspect.go:44), a = Atan32(|y|/|x|).
+(FPCore (a)
+  :name "Atan2F32 reflection pi - a (aspect.go:44)"
+  :precision binary32
+  :pre (<= 0 a 1.5707963705062866)
+  (- 3.1415927410125732 a))
+
+;; aspectDegrees (aspect.go:103-117): radians to degrees, folded into
+;; [0, 360). a is Atan2F32's result.
+(FPCore (a)
+  :name "aspectDegrees fold (aspect.go:104)"
+  :precision binary32
+  :pre (<= -3.1415927410125732 a 3.1415927410125732)
+  (let ([d (* a 57.295780181884766)])
+    (if (< d 0) (+ d 360) d)))
+
+;; ---------------------------------------------------------------------
+;; Hillshade, internal/stencil/aspect.go:150-152. c = 255·sin(alt) with
+;; alt in (0, 90]; bx, by = ∓255·cos(alt)·sin/cos(az).
+(FPCore (gx gy c bx by)
+  :name "hillshade (aspect.go:150)"
+  :precision binary32
+  :pre (and (<= -1e3 gx 1e3) (<= -1e3 gy 1e3)
+            (<= 1e-3 c 255) (<= -255 bx 255) (<= -255 by 255))
+  (/ (+ c (+ (* bx gx) (* by gy)))
+     (sqrt (+ 1 (+ (* gx gx) (* gy gy))))))
+
+;; The light vector, once per call in float64 (terrain/hillshade.go:97-102),
+;; azimuth and altitude already in radians.
+(FPCore (alt az)
+  :name "hillshade light bx (hillshade.go:101)"
+  :precision binary64
+  :pre (and (<= 1e-3 alt 1.5707963267948966) (<= 0 az 6.283185307179586))
+  (* (* -255 (cos alt)) (sin az)))
+
+;; ---------------------------------------------------------------------
+;; Pointwise kernels, internal/vec/scalar.go. Controls: both forms are
+;; deliberate (DESIGN.md §16, §18).
+
+(FPCore (v a b)
+  :name "Affine v*a + b (scalar.go:68)"
+  :precision binary32
+  :pre (and (<= -1e4 v 1e4) (<= -1e4 a 1e4) (<= -1e4 b 1e4))
+  (+ (* v a) b))
+
+(FPCore (v lo span)
+  :name "SubDiv (v - lo) / span (scalar.go:79)"
+  :precision binary32
+  :pre (and (<= -1e4 lo 1e4) (<= 1e-3 span 1e4) (<= lo v (+ lo span)))
+  (/ (- v lo) span))
+
+;; ---------------------------------------------------------------------
+;; Transfer functions.
+
+;; Lookup's interpolation between two knots, internal/curve/scalar.go:110-111.
+;; Scalar only: there is no SIMD Lookup kernel.
+(FPCore (v x0 x1 y0 y1)
+  :name "Lookup lerp (curve/scalar.go:110)"
+  :precision binary32
+  :pre (and (<= -1e4 x0 1e4) (<= -1e4 x1 1e4) (< x0 v x1)
+            (<= -1e4 y0 1e4) (<= -1e4 y1 1e4))
+  (+ y0 (* (/ (- v x0) (- x1 x0)) (- y1 y0))))
+
+;; Rescale's offset, once per call in float64 (transfer/transfer.go:243-244),
+;; before the float32 rounding of a.
+(FPCore (il ih ol oh)
+  :name "rescaleCoeffs offset b (transfer.go:244)"
+  :precision binary64
+  :pre (and (<= -1e6 il 1e6) (<= -1e6 ih 1e6) (< il ih)
+            (<= -1e6 ol 1e6) (<= -1e6 oh 1e6))
+  (- ol (* (/ (- oh ol) (- ih il)) il)))

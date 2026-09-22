@@ -19,11 +19,13 @@ engine, or a file-format compatibility project.
 Pre-release. The v0.1 scope — float32 rasters, windows, validity bitmaps,
 the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
 tiled and bounded-memory execution — is implemented and measured, but the
-API is not stable and nothing is tagged yet. v0.2 is under way: the fold
+API is not stable and nothing is tagged yet. An arm64 NEON backend has
+since joined the AVX2 one. v0.2 is under way: the fold
 side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
 `Stats` follow once their accumulator is benchmarked. The `transfer`
 package has landed alongside them, so a computed surface can now be
-turned into a factor or a class. The engine also counts the bytes each
+turned into a factor or a class, and the `focal` package adds
+convolution and focal statistics for any radius up to 8. The engine also counts the bytes each
 call moves (`engine.Stats`), and it can run a chain of pointwise kernels
 as a single pass over each tile. That chain (the `Pipeline`) is internal
 for now. Two things judge the library from outside: an acceptance
@@ -33,7 +35,7 @@ against `gdaldem`.
 The status table at the top of [DESIGN.md](DESIGN.md) summarizes where
 everything stands. In DESIGN.md, §42 has the milestone checklist, §49
 covers reductions, §50 transfer functions, §51 the traffic counter, §52
-pipelines, and §45 the roadmap.
+pipelines, §53 focal operations, and §45 the roadmap.
 
 ## Installation
 
@@ -103,7 +105,8 @@ bit-for-bit identical results for every tile size and worker count.
 | --------- | -------- |
 | `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
-| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
+| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`; and profile, plan and mean `Curvature` from the Zevenbergen–Thorne quadratic. |
+| `focal`   | Neighbourhood operations of radius 1 to 8: `Correlate` and `Convolve` with a caller's weights, `CorrelateSeparable` (with `Gaussian` taps), and focal `Mean`, `Min`, `Max`. The same bits for every tile size, worker count and backend. |
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
 | `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
@@ -113,10 +116,10 @@ semantics, edge handling, and cancellation behaviour.
 
 ## SIMD
 
-Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` on amd64
-CPUs with AVX2 runs vectorized kernels that agree bit-for-bit with the
-scalar ones; every other build runs scalar. ARM64 NEON kernels are not
-implemented yet.
+Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` runs
+vectorized kernels that agree bit-for-bit with the scalar ones: AVX2 on
+amd64 CPUs that have it, and NEON on every arm64 CPU (Apple Silicon,
+Graviton, Ampere). Every other build runs scalar.
 
 ```bash
 GOEXPERIMENT=simd go build ./...

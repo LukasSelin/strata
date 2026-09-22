@@ -1,8 +1,10 @@
 # Continuous integration (DESIGN.md §39).
 #
-# The SIMD kernels are behind `//go:build goexperiment.simd && amd64`, so a
-# default build never compiles, tests or lints them. Everything that can
-# see them therefore runs twice, once per build configuration.
+# The SIMD kernels are behind `//go:build goexperiment.simd && amd64` (AVX2)
+# and `goexperiment.simd && arm64` (NEON), so a default build never
+# compiles, tests or lints them. Everything that can see them therefore
+# runs in both build configurations, and the SIMD one on both
+# architectures.
 
 name: CI
 
@@ -23,8 +25,8 @@ concurrency:
 jobs:
   test:
     # The scalar path, on each OS with platform-specific files in the
-    # benchmark suite (cores_*.go, memory_*.go). macOS runners are arm64,
-    # which runs the scalar kernels until STRATA-11.
+    # benchmark suite (cores_*.go, memory_*.go). Without the experiment,
+    # every architecture runs scalar.
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -41,12 +43,18 @@ jobs:
       - run: go test ./...
 
   test-simd:
-    # The vector path. Kernels dispatch at runtime, so this job proves the
-    # SIMD build compiles and its bit-for-bit agreement tests pass; on a
+    # The vector path: AVX2 on the amd64 runner, NEON on the arm64 macOS
+    # runner. Kernels dispatch at runtime, so this job proves the SIMD
+    # build compiles and its bit-for-bit agreement tests pass; on an amd64
     # runner without AVX2 the dispatch falls back to scalar and the
-    # comparison is vacuous rather than failing.
-    name: test (simd)
-    runs-on: ubuntu-latest
+    # comparison is vacuous rather than failing. NEON is baseline on arm64,
+    # so there it always runs.
+    name: test (simd, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     env:
       GOEXPERIMENT: simd
     steps:
@@ -61,16 +69,21 @@ jobs:
   race:
     # internal/exec is the only package that starts goroutines; its tests
     # and engine's also fail on a leaked goroutine (goleak). Both builds,
-    # since the kernels run under those workers.
+    # and both SIMD backends, since the kernels run under those workers.
     name: race (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: default
+            os: ubuntu-latest
             goexperiment: ""
           - name: simd
+            os: ubuntu-latest
+            goexperiment: simd
+          - name: simd-arm64
+            os: macos-latest
             goexperiment: simd
     env:
       GOEXPERIMENT: ${{ matrix.goexperiment }}
@@ -91,6 +104,8 @@ jobs:
     # GOTOOLCHAIN to a literal version — it would force an older toolchain
     # than go.mod targets the next time go.mod is bumped. The version of
     # golangci-lint itself is pinned to the one .golangci.yml documents.
+    # The NEON files only exist for GOARCH=arm64, so one entry lints the
+    # SIMD build cross-compiled for it.
     name: lint (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
@@ -99,8 +114,13 @@ jobs:
         include:
           - name: default
             goexperiment: ""
+            goarch: ""
           - name: simd
             goexperiment: simd
+            goarch: ""
+          - name: simd-arm64
+            goexperiment: simd
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -119,6 +139,7 @@ jobs:
       - name: Run kernelborder
         env:
           GOEXPERIMENT: ${{ matrix.goexperiment }}
+          GOARCH: ${{ matrix.goarch }}
         run: go vet -vettool="$RUNNER_TEMP/kernelborder" ./...
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
@@ -127,4 +148,5 @@ jobs:
       - name: Run golangci-lint
         env:
           GOEXPERIMENT: ${{ matrix.goexperiment }}
+          GOARCH: ${{ matrix.goarch }}
         run: golangci-lint run ./...

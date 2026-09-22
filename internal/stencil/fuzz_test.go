@@ -119,19 +119,21 @@ func FuzzErodeBox(f *testing.F) {
 	})
 }
 
-// FuzzHornRows runs every Horn row kernel on the current backend and on
-// the scalar one over arbitrary elevations and parameters, and requires
-// identical results (any NaN matching any NaN), no reads past n+2 input
-// cells (the extra cells are poisoned) and no writes past n.
+// FuzzHornRows runs every Horn row kernel, and the curvature kernel, on
+// the current backend and on the scalar one over arbitrary elevations and
+// parameters, and requires identical results (any NaN matching any NaN),
+// no reads past n+2 input cells (the extra cells are poisoned) and no
+// writes past n.
 func FuzzHornRows(f *testing.F) {
 	f.Add([]byte{0, 9, 1})
 	f.Add([]byte{1, 16, 0, 1})
 	f.Add([]byte{2, 33, 1, 0})
 	f.Add([]byte{3, 8, 0, 0})
+	f.Add([]byte{4, 17, 2, 1})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer UseScalar(false)
 		d := fuzzdata.New(data)
-		kind, n := d.IntN(4), d.Range(0, 40)
+		kind, n := d.IntN(5), d.Range(0, 40)
 		const extra = 3
 		rows := make([][]float32, 3)
 		for k := range rows {
@@ -148,6 +150,7 @@ func FuzzHornRows(f *testing.F) {
 		}
 		kx, ky, p1, p2, p3 := param(), param(), param(), param(), param()
 		flag := d.Bool()
+		curv := CurvatureKind(d.IntN(3))
 
 		// run poisons the cells past n+2 with poison, so that a backend
 		// reading them disagrees with a run poisoned differently.
@@ -171,6 +174,8 @@ func FuzzHornRows(f *testing.F) {
 				HornAspectRow(dst, rows[0], rows[1], rows[2], kx, ky, p1, flag)
 			case 3:
 				HornHillshadeRow(dst, rows[0], rows[1], rows[2], kx, ky, p1, p2, p3)
+			case 4:
+				ZTCurvatureRow(dst, rows[0], rows[1], rows[2], kx, ky, p1, p2, p3, curv)
 			}
 			return a, b
 		}
@@ -180,8 +185,8 @@ func FuzzHornRows(f *testing.F) {
 		ga, gb := run(1e30)
 		for i := range wa {
 			if !sameResult(ga[i], wa[i]) || !sameResult(gb[i], wb[i]) {
-				t.Fatalf("kind %d n %d kx %v ky %v params %v %v %v %v: cell %d = %v, %v on %s, want %v, %v (scalar)",
-					kind, n, kx, ky, p1, p2, p3, flag, i, ga[i], gb[i], Backend(), wa[i], wb[i])
+				t.Fatalf("kind %d n %d kx %v ky %v params %v %v %v %v %v: cell %d = %v, %v on %s, want %v, %v (scalar)",
+					kind, n, kx, ky, p1, p2, p3, flag, curv, i, ga[i], gb[i], Backend(), wa[i], wb[i])
 			}
 		}
 		for i := n; i < len(wa); i++ {

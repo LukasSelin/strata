@@ -43,6 +43,7 @@ func init() {
 		reduceMin: reduceMinFloat32AVX2,
 		reduceMax: reduceMaxFloat32AVX2,
 	}
+	simdName = "avx2"
 	UseScalar(false)
 }
 
@@ -55,19 +56,28 @@ func store8(v archsimd.Float32x8, s []float32) {
 }
 
 // min8 and max8 reproduce Go's builtin min and max lanewise. VMINPS and
-// VMAXPS return the second operand when the operands compare equal or are
-// unordered, which gets two cases wrong: a NaN first operand, and
+// VMAXPS return their second source when the operands compare equal or are
+// unordered, which gets two cases wrong: a NaN in the first source, and
 // min(-0, +0) / max(+0, -0). Equal lanes therefore take the bitwise OR (min)
 // or AND (max) of both operands, which only differs from either operand for
-// signed zeros, and NaN lanes in x are restored from x.
+// signed zeros, and NaN lanes are repaired from both x and y. Repairing
+// only x is not enough: the compiler treats archsimd's Min and Max as
+// commutative and may swap the sources for register allocation, which it
+// does in a multi-accumulator fold (see TestMinMax8FoldNaNSecondOperand),
+// and then a NaN in y is lost.
+//
+// min8 folds both repairs into one blend: x|y is NaN when either operand
+// is, so equal and unordered lanes both take it. max8 cannot, since the
+// AND it needs for equal lanes can turn a NaN into ±Inf, so its NaN lanes
+// take x+y instead.
 func min8(x, y archsimd.Float32x8) archsimd.Float32x8 {
-	r := x.ToBits().Or(y.ToBits()).BitsToFloat32().IfElse(x.Equal(y), x.Min(y))
-	return x.IfElse(x.IsNaN(), r)
+	o := x.ToBits().Or(y.ToBits()).BitsToFloat32()
+	return o.IfElse(x.Equal(y).Or(x.IsNaN().Or(y.IsNaN())), x.Min(y))
 }
 
 func max8(x, y archsimd.Float32x8) archsimd.Float32x8 {
 	r := x.ToBits().And(y.ToBits()).BitsToFloat32().IfElse(x.Equal(y), x.Max(y))
-	return x.IfElse(x.IsNaN(), r)
+	return x.Add(y).IfElse(x.IsNaN().Or(y.IsNaN()), r)
 }
 
 func addFloat32AVX2(dst, a, b []float32) {

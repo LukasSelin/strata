@@ -1,6 +1,6 @@
 // Package stencil holds row kernels for radius-1 (3×3) neighbourhood
-// operations such as terrain gradients, slope, aspect and hillshade, and
-// the word-level validity erosion that goes with them.
+// operations such as terrain gradients, slope, aspect, hillshade and
+// curvature, and the word-level validity erosion that goes with them.
 //
 // A row kernel fills dst[0:n] from three input rows r0, r1, r2 (rows y-1,
 // y and y+1). Each input row starts one column left of dst[0] and has at
@@ -10,11 +10,12 @@
 // abstraction (DESIGN.md §22) and by tiled execution with halos (§23, §25).
 //
 // This file holds the scalar backend, which is canonical (DESIGN.md §15).
-// SIMD backends (simd_amd64.go, built with GOEXPERIMENT=simd) must agree
-// with it bit-for-bit, any NaN matching any NaN. To make that possible the
-// scalar code fixes its evaluation order and wraps every product in an
-// explicit float32 conversion, which stops the compiler fusing a
-// multiply-add into FMA (see docs/adr/0001-simd-backend.md).
+// SIMD backends (simd_amd64.go and simd_arm64.go, built with
+// GOEXPERIMENT=simd) must agree with it bit-for-bit, any NaN matching any
+// NaN. To make that possible the scalar code fixes its evaluation order
+// and wraps every product in an explicit float32 conversion, which stops
+// the compiler fusing a multiply-add into FMA (see
+// docs/adr/0001-simd-backend.md).
 //
 // Like internal/vec, exported functions panic on mismatched lengths.
 //
@@ -32,21 +33,25 @@ var (
 	hornSlopeRow     = scalarHornSlopeRow
 	hornAspectRow    = scalarHornAspectRow
 	hornHillshadeRow = scalarHornHillshadeRow
+	ztCurvatureRow   = scalarZTCurvatureRow
 )
 
-// simdGradient, simdSlope, simdAspect and simdHillshade are the SIMD set,
-// or nil when this build or CPU has none. SIMD builds set all or none.
+// simdGradient, simdSlope, simdAspect, simdHillshade and simdCurvature
+// are the SIMD set, or nil when this build or CPU has none. SIMD builds
+// set all or none, and simdName, what Backend reports for them.
 var (
+	simdName      string
 	simdGradient  func(dx, dy, r0, r1, r2 []float32, kx, ky float32)
 	simdSlope     func(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 	simdAspect    func(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 	simdHillshade func(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
+	simdCurvature func(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
 )
 
-// Backend names the kernels currently in use: "avx2" or "scalar".
+// Backend names the kernels currently in use: "avx2", "neon" or "scalar".
 func Backend() string {
 	if simdSlope != nil && !usingScalar {
-		return "avx2"
+		return simdName
 	}
 	return "scalar"
 }
@@ -61,10 +66,12 @@ func UseScalar(scalar bool) {
 	if scalar || simdSlope == nil {
 		hornGradientRow, hornSlopeRow = scalarHornGradientRow, scalarHornSlopeRow
 		hornAspectRow, hornHillshadeRow = scalarHornAspectRow, scalarHornHillshadeRow
+		ztCurvatureRow = scalarZTCurvatureRow
 		return
 	}
 	hornGradientRow, hornSlopeRow = simdGradient, simdSlope
 	hornAspectRow, hornHillshadeRow = simdAspect, simdHillshade
+	ztCurvatureRow = simdCurvature
 }
 
 func requireRows(n int, r0, r1, r2 []float32) {
@@ -109,13 +116,20 @@ func HornSlopeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool) {
 }
 
 // hornDX and hornDY are the weighted differences before scaling. The
-// grouping is shared with the SIMD kernels.
+// grouping is shared with the SIMD kernels. Opposite cells are subtracted
+// first: a DEM's neighbours lie within a factor of two of each other, so
+// each difference is exact (Sterbenz) and only the small sums round.
+// Adding the elevations first would round at the ulp of four times the
+// elevation (5.9e-3 at 8800 m) and bury the gradient of gentle terrain
+// (TestHornGradientNearFlat, tools/herbie/RESULTS.md).
 func hornDX(z1, z3, z4, z6, z7, z9 float32) float32 {
-	return ((z3 + z9) + (z6 + z6)) - ((z1 + z7) + (z4 + z4))
+	d := z6 - z4
+	return ((z3 - z1) + (z9 - z7)) + (d + d)
 }
 
 func hornDY(z1, z2, z3, z7, z8, z9 float32) float32 {
-	return ((z7 + z9) + (z8 + z8)) - ((z1 + z3) + (z2 + z2))
+	d := z8 - z2
+	return ((z7 - z1) + (z9 - z3)) + (d + d)
 }
 
 // hornViews returns the eight views of the input rows that a 3×3 kernel

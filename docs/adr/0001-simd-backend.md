@@ -164,7 +164,10 @@ return the second operand on NaN and on equal operands. The removed asm
 patched only the NaN case, so it returned the wrong sign for, e.g.,
 `Min(-0, +0)`; the old `==`-based tests could not see that. The archsimd
 kernels OR (min) or AND (max) the bits of equal lanes and restore NaN lanes
-from the first operand.
+from both operands, since the compiler may swap `VMINPS`/`VMAXPS` operands.
+(Restoring only the first operand's NaN was the original rule; it broke in
+`internal/focalrow`'s four-accumulator fold, where the compiler put the
+accumulator in the second source and `min(+Inf, NaN)` returned +Inf.)
 
 Results on the same machine, go1.27.1 with `GOEXPERIMENT=simd`, from the
 `internal/vec` benchmarks (4096 cells, medians of 5, ns/op):
@@ -194,8 +197,8 @@ gap versus the spike's NaN-only archsimd Clamp (567).
 - **CI** must test three configurations:
   - default,
   - `GOEXPERIMENT=simd`,
-  - `GOARCH=arm64` with `GOEXPERIMENT=simd` (build at minimum, run on arm64
-    hardware or emulation for STRATA-11).
+  - `GOARCH=arm64` with `GOEXPERIMENT=simd` (run on the arm64 macOS
+    runner since STRATA-11).
   Scalar-equivalence tests (§39) run in every configuration.
 - **Kernel-writing rules** for review:
   - write loops in BCE form: array-pointer loads over shrinking slices;
@@ -209,7 +212,12 @@ gap versus the spike's NaN-only archsimd Clamp (567).
     shows it as a per-call cost);
   - handle NaN explicitly with `IsNaN` / `IfElse`. `VMINPS`/`VMAXPS` return the
     second operand on NaN, and arm64 `FMIN` propagates it, so raw `Min`/`Max`
-    semantics differ by arch;
+    semantics differ by arch. On amd64, restore NaN lanes from both operands
+    (min: `(x|y).IfElse(x.Equal(y).Or(x.IsNaN().Or(y.IsNaN())), x.Min(y))`;
+    max: `x.Add(y).IfElse(x.IsNaN().Or(y.IsNaN()), r)`), never from the first
+    alone: the compiler treats `Min`/`Max` as commutative and may swap the
+    `VMINPS`/`VMAXPS` sources for register allocation, so which Go operand
+    ends up "second" is not fixed by the source order;
   - prevent FMA fusion in scalar references with explicit `float32(...)`
     conversions so SIMD and scalar stay bit-identical;
   - gate amd64 SIMD on AVX2 (not just AVX), avoiding golang/go#81405.
@@ -220,6 +228,21 @@ gap versus the spike's NaN-only archsimd Clamp (567).
   `FMIN`/`FMAX` against scalar rather than assuming x86 semantics. Default
   arm64 builds use scalar until the experiment graduates. SVE is out of scope
   (golang/go#79781).
+
+  *Outcome (2026-09-22, Go 1.27.0, Apple M-series):* landed in `internal/vec`,
+  `internal/stencil` and `internal/accum`. What the check found:
+  - NEON `FMIN`/`FMAX` already are Go's builtin `min`/`max`: NaN from either
+    operand, and −0 below +0. So `min4`/`max4` are the raw ops, with none of
+    `min8`/`max8`'s repairs. `vec.TestSIMDMinMaxEdgePairs` pins this over
+    every ordered pair of special values.
+  - The compiler does not fuse archsimd's `Mul`+`Add` into `VFMLA`.
+  - The arm64 API differs from amd64's in spelling. There is no `IsNaN`
+    (use `x.NotEqual(x)`), no `GetLo`/`GetHi` (use `ExtendLo2…` and
+    `HiToLo`), no variable `ShiftLeft` (use the signed `Shift`) and no
+    `MulWidenEven` (use `MulWidenLo`). `ClearAVXUpperBits` has no
+    counterpart and needs none.
+  - The equivalence tests became architecture-neutral (`simd_test.go`, one
+    per package), so a third backend only needs a small per-arch test file.
 - **Fusion (§29)** becomes a Go code-generation problem rather than an
   assembly one, which keeps it viable.
 - `internal/spike/simdbackend` kept the asm-vs-archsimd slope-row comparison

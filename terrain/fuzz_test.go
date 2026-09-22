@@ -38,13 +38,12 @@ type terrainCall struct {
 	chunked func(ctx context.Context, outs []engine.RasterSink, dem engine.RasterSource, o engine.Options) error
 	// inRange reports whether a valid interior value is possible.
 	inRange func(v float32) bool
-	// finite reports whether a cell whose neighbourhood is finite and
-	// moderate (and has gradients gx, gy, computed in float64) must have
-	// a value that is not NaN.
-	finite func(gx, gy float64) bool
+	// finite reports whether a cell whose neighbourhood z is finite and
+	// moderate must have a value that is not NaN.
+	finite func(z [9]float64) bool
 }
 
-// FuzzTerrain runs Gradient, Slope, Aspect and Hillshade with options
+// FuzzTerrain runs Gradient, Slope, Aspect, Hillshade and Curvature with options
 // decoded from the fuzz input, sane or arbitrary (NaN, infinities, huge
 // and tiny values), over DEMs with arbitrary values, windows, strides and
 // masks, and outputs that may lack a mask or overlap the DEM. Invalid
@@ -60,10 +59,11 @@ func FuzzTerrain(f *testing.F) {
 	f.Add([]byte{3, 40, 4, 1, 1, 0, 0, 1, 2, 3})
 	f.Add([]byte{2, 3, 3, 2, 0, 1, 7})
 	f.Add([]byte{0, 66, 6, 0, 3, 3, 1, 1})
+	f.Add([]byte{4, 20, 7, 1, 2, 2, 0, 1, 1, 0})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer stencil.UseScalar(false)
 		d := fuzzdata.New(data)
-		kind := d.IntN(4)
+		kind := d.IntN(5)
 		// Options: mostly sane, sometimes arbitrary.
 		opt := func(sane float64) float64 {
 			if d.IntN(4) == 0 {
@@ -80,6 +80,10 @@ func FuzzTerrain(f *testing.F) {
 		}
 		az, alt := opt(float64(d.Range(0, 400))), opt(float64(d.Range(0, 90)))
 		zeroFlat, trig := d.Bool(), d.Bool()
+		curv := CurvatureType(d.IntN(3))
+		if d.IntN(10) == 0 {
+			curv = CurvatureType(d.Range(-1, 5))
+		}
 
 		// The documented option rules.
 		csy0, z0, alt0 := csy, z, alt
@@ -99,6 +103,14 @@ func FuzzTerrain(f *testing.F) {
 			return k32 != 0 && !math.IsInf(float64(k32), 0)
 		}
 		optionsOK := cs > 0 && finiteF(cs) && csy0 > 0 && finiteF(csy0) && finiteF(z0) && scaleOK(kx64) && scaleOK(ky64)
+		// Curvature has its own factors and does not need Horn's.
+		cellsOK := cs > 0 && finiteF(cs) && csy0 > 0 && finiteF(csy0) && finiteF(z0)
+		ztK := [5]float64{z0 / (2 * cs), z0 / (2 * csy0), z0 / (cs * cs), z0 / (4 * cs * csy0), z0 / (csy0 * csy0)}
+		hornGrad := func(z [9]float64) (gx, gy float64) {
+			gx = ((z[2] + z[8]) + 2*z[5] - (z[0] + z[6]) - 2*z[3]) * kx64
+			gy = ((z[6] + z[8]) + 2*z[7] - (z[0] + z[2]) - 2*z[1]) * ky64
+			return gx, gy
+		}
 
 		ctx := context.Background()
 		flat := float32(AspectFlat)
@@ -118,7 +130,7 @@ func FuzzTerrain(f *testing.F) {
 					return GradientChunked(ctx, outs[0], outs[1], dem, o, e)
 				},
 				func(float32) bool { return true },
-				func(gx, gy float64) bool { return true },
+				func([9]float64) bool { return true },
 			}
 		case 1:
 			o := SlopeOptions{cs, csy, z, units}
@@ -139,7 +151,7 @@ func FuzzTerrain(f *testing.F) {
 					return SlopeChunked(ctx, outs[0], dem, o, e)
 				},
 				func(v float32) bool { return v >= 0 && v <= top },
-				func(gx, gy float64) bool { return true },
+				func([9]float64) bool { return true },
 			}
 		case 2:
 			o := AspectOptions{cs, csy, z, zeroFlat, trig}
@@ -152,7 +164,7 @@ func FuzzTerrain(f *testing.F) {
 					return AspectChunked(ctx, outs[0], dem, o, e)
 				},
 				func(v float32) bool { return v == flat || v >= 0 && v < 360 },
-				func(gx, gy float64) bool { return true },
+				func([9]float64) bool { return true },
 			}
 		case 3:
 			o := HillshadeOptions{cs, csy, z, az, alt}
@@ -168,7 +180,38 @@ func FuzzTerrain(f *testing.F) {
 				func(v float32) bool { return v >= 0 && v <= 255 },
 				// Squares of larger gradients overflow float32, and
 				// Inf/Inf is NaN.
-				func(gx, gy float64) bool { return math.Abs(gx) < 1e15 && math.Abs(gy) < 1e15 },
+				func(z [9]float64) bool {
+					gx, gy := hornGrad(z)
+					return math.Abs(gx) < 1e15 && math.Abs(gy) < 1e15
+				},
+			}
+		case 4:
+			o := CurvatureOptions{cs, csy, z, curv}
+			optionsOK = cellsOK && curv >= CurvatureProfile && curv <= CurvatureMean
+			for _, k := range ztK {
+				optionsOK = optionsOK && scaleOK(k)
+			}
+			call = terrainCall{"curvature", 1,
+				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Curvature(outs[0], dem, o) },
+				func(ctx context.Context, outs []raster.Float32Raster, dem raster.Float32Raster, e engine.Options) error {
+					return CurvatureTiled(ctx, outs[0], dem, o, e)
+				},
+				func(ctx context.Context, outs []engine.RasterSink, dem engine.RasterSource, e engine.Options) error {
+					return CurvatureChunked(ctx, outs[0], dem, o, e)
+				},
+				// A zero result is +0.
+				func(v float32) bool { return math.Float32bits(v) != 1<<31 },
+				// With these bounds every product and sum of the formulas
+				// is finite in float32, so only overflow of a quotient
+				// (to ±Inf, never NaN) remains.
+				func(z [9]float64) bool {
+					p, q := (z[5]-z[3])*ztK[0], (z[7]-z[1])*ztK[1]
+					r := (z[3] - 2*z[4] + z[5]) * ztK[2]
+					s := (z[0] - z[2] - z[6] + z[8]) * ztK[3]
+					t := (z[1] - 2*z[4] + z[7]) * ztK[4]
+					return math.Abs(p) < 1e9 && math.Abs(q) < 1e9 &&
+						math.Abs(r) < 1e18 && math.Abs(s) < 1e18 && math.Abs(t) < 1e18
+				},
 			}
 		}
 
@@ -402,10 +445,8 @@ func FuzzTerrain(f *testing.F) {
 						if v == v && !call.inRange(v) {
 							t.Fatalf("%s: output %d cell (%d, %d) = %v, outside the documented range", rid, k, x, y, v)
 						}
-						gx := ((z[2] + z[8]) + 2*z[5] - (z[0] + z[6]) - 2*z[3]) * kx64
-						gy := ((z[6] + z[8]) + 2*z[7] - (z[0] + z[2]) - 2*z[1]) * ky64
-						if v != v && moderate && call.finite(gx, gy) {
-							t.Fatalf("%s: output %d cell (%d, %d) is NaN for elevations %v (gradient %g, %g)", rid, k, x, y, z, gx, gy)
+						if v != v && moderate && call.finite(z) {
+							t.Fatalf("%s: output %d cell (%d, %d) is NaN for elevations %v", rid, k, x, y, z)
 						}
 					}
 				}
