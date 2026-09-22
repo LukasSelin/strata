@@ -33,3 +33,11 @@ func SetFusion(on bool) (restore func()) {
 
 // Fused reports whether p lowered to a fused chain.
 func (p *Pipeline) Fused() bool { return p.chain != nil }
+
+// SetPoisonScratch sets whether scratch is filled with garbage every time
+// it is lent, and returns a function that restores the old setting.
+func SetPoisonScratch(on bool) (restore func()) {
+	old := poisonScratch
+	poisonScratch = on
+	return func() { poisonScratch = old }
+}

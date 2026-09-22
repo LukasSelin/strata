@@ -27,7 +27,10 @@ are reconciled, and the reconciliations are the interesting part:
     dividing by the cell size; strata divides. They agree only for
     square cells, which this raster has (12.5 m both ways).
 
-Usage:  python gdalcompare.py [dir] [width] [height]
+Usage:  python gdalcompare.py [dir] [width] [height] [nodata] [cell]
+
+nodata and cell are the DEM's own NoData value and cell size;
+gdalcheck.sh reads both from the ENVI header GDAL wrote.
 """
 
 import os
@@ -39,10 +42,12 @@ import numpy as np
 D = sys.argv[1] if len(sys.argv) > 1 else "out-gdal"
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 4096
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 4096
+# The DEM is float32, so compare against the fill as float32 holds it.
+DEM_NODATA = float(np.float32(sys.argv[4])) if len(sys.argv) > 4 else 65535.0
+CELL = float(sys.argv[5]) if len(sys.argv) > 5 else 12.5
 
 GDAL_NODATA = -9999.0
 STRATA_FILL = -9999.0
-DEM_NODATA = 65535.0
 
 results = []
 
@@ -62,7 +67,10 @@ def u8(name):
 
 dem = f32("dem.raw")
 src_valid = dem != DEM_NODATA
-print(f"{W}x{H} cells, {100 * src_valid.mean():.1f}% of the DEM is valid\n")
+print(
+    f"{W}x{H} cells, NoData {DEM_NODATA:g}, cell {CELL:g}: "
+    f"{100 * src_valid.mean():.1f}% of the DEM is valid\n"
+)
 
 # Where both tools say a result exists.
 gslope = f32("gdal-slope.raw")
@@ -81,6 +89,10 @@ record(
     f"{disagree} cells differ; {int(g_has.sum())} carry data",
 )
 both = g_has & s_has
+if not both.any():
+    # Agreeing that there is no data anywhere says nothing about the kernels.
+    record("some cells to compare", False, "neither tool produced data in this window")
+    sys.exit(1)
 
 # --------------------------------------------------------------------
 # 2. Slope.
@@ -108,6 +120,9 @@ record(
 )
 
 sloped = both & ~g_flat & ~s_flat
+if not sloped.any():
+    record("some sloped cells to compare", False, "the window is entirely flat")
+    sys.exit(1)
 diff = np.abs(gasp[sloped] - sasp[sloped]) % 360.0
 diff = np.minimum(diff, 360.0 - diff)
 record(
@@ -145,7 +160,6 @@ record(
 # --------------------------------------------------------------------
 
 zz = np.where(dem == DEM_NODATA, np.nan, dem)
-CELL = 12.5
 a_, b_, c_ = zz[:-2, :-2], zz[:-2, 1:-1], zz[:-2, 2:]
 d_, f_ = zz[1:-1, :-2], zz[1:-1, 2:]
 g_, h_, i_ = zz[2:, :-2], zz[2:, 1:-1], zz[2:, 2:]
@@ -154,14 +168,40 @@ dy = ((g_ + 2 * h_ + i_) - (a_ + 2 * b_ + c_)) / (8 * CELL)
 truth = np.full((H, W), np.nan)
 truth[1:-1, 1:-1] = np.degrees(np.arctan(np.hypot(dx, dy)))
 
+# How far apart may two correct float32 implementations land? Not a
+# fixed number of ulps of the slope: Horn's weighted sums cancel, so on
+# high, nearly flat terrain (elevations near 500 m, slopes near 0.1 deg)
+# a rounding of the sum moves the gradient by far more than an ulp of
+# the result. Derive it the way check.py's TOLERANCES does. Horn's
+# numerator is six weighted elevations of magnitude at most zmax (here
+# the largest |z| in the cell's own 3x3 window), accumulated in at most
+# six roundings of a partial sum of magnitude at most 4*zmax, so each
+# gradient component is off by at most
+#
+#       gtol = 3 * 2^-24 * zmax / cellsize
+#
+# and |gradient| by at most hypot(gtol, gtol). atan has derivative at
+# most 1, so the slope is off by at most DEG * that. Both tools round,
+# so the gap between them is at most twice it, plus one float32 rounding
+# of each tool's result (an ulp of the slope each). A real defect is
+# wrong by a fraction of the signal, which dwarfs this on any cell with
+# relief; on a cell with none, both tools are rightly allowed to differ.
+EPS = 2.0**-24  # float32 half-ulp
+win = np.stack([a_, b_, c_, d_, zz[1:-1, 1:-1], f_, g_, h_, i_])
+zmax = np.full((H, W), np.nan)
+zmax[1:-1, 1:-1] = np.abs(win).max(axis=0)
+gtol = 3 * EPS * zmax / CELL
 t = both & np.isfinite(truth)
-eg, es = np.abs(gslope[t] - truth[t]), np.abs(sslope[t] - truth[t])
 ulp = np.spacing(np.abs(sslope[t]).astype(np.float32)).astype(np.float64)
-worst_ulp = (np.abs(gslope[t] - sslope[t]) / np.maximum(ulp, 1e-300)).max()
+tol = 2 * np.degrees(np.hypot(gtol[t], gtol[t])) + 2 * ulp
+gap = np.abs(gslope[t] - sslope[t])
+eg, es = np.abs(gslope[t] - truth[t]), np.abs(sslope[t] - truth[t])
+worst = (gap / tol).max()
 record(
-    "strata and gdaldem within 2 ulps of each other",
-    worst_ulp <= 2.0,
-    f"worst {worst_ulp:.2f} ulp, {100 * (eg == es).mean():.2f}% bit-identical",
+    "strata and gdaldem within float32 rounding",
+    worst <= 1.0,
+    f"worst {worst:.2f}x the bound, {int((gap > tol).sum()):,} cells over, "
+    f"{100 * (eg == es).mean():.2f}% bit-identical",
 )
 print(
     f"      both vs a float64 reference: mean error gdaldem {eg.mean():.2e} deg, "

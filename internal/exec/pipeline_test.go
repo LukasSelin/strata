@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -318,6 +319,8 @@ func TestPipelineTraffic(t *testing.T) {
 type spyKernel struct {
 	mu       sync.Mutex
 	maxSpan  int
+	maxW     int
+	maxH     int
 	asked    int
 	askedW   int
 	askedH   int
@@ -340,7 +343,14 @@ func (k *spyKernel) Process(dst exec.Span, src exec.Window) {
 	if n := dst.Width * dst.Height; n > k.maxSpan {
 		k.maxSpan = n
 	}
+	k.maxW, k.maxH = max(k.maxW, dst.Width), max(k.maxH, dst.Height)
+	asked := k.asked
 	k.mu.Unlock()
+	// The engine lends exactly what was asked for, however large the
+	// pooled block behind it, so an overrun still trips a bounds check.
+	if c := dst.Scratch.Cells; cap(c) != len(c) || len(c) != asked {
+		panic(fmt.Sprintf("scratch of length %d, capacity %d; asked for %d", len(c), cap(c), asked))
+	}
 	if len(dst.Scratch.Cells) < dst.Width*dst.Height {
 		panic(fmt.Sprintf("scratch %d cells for a %d×%d span",
 			len(dst.Scratch.Cells), dst.Width, dst.Height))
@@ -388,6 +398,13 @@ func TestScratchBoundsEverySpan(t *testing.T) {
 				if k.maxSpan > k.asked {
 					t.Errorf("%s: largest span %d cells, scratch sized for %d (%d×%d)",
 						id, k.maxSpan, k.asked, k.askedW, k.askedH)
+				}
+				// Scratch(w, h) bounds each side, not only the area: a
+				// kernel whose scratch is a row (focal's separable
+				// kernels) sizes it from w alone.
+				if k.maxW > k.askedW || k.maxH > k.askedH {
+					t.Errorf("%s: spans up to %d wide and %d tall, scratch sized for %d×%d",
+						id, k.maxW, k.maxH, k.askedW, k.askedH)
 				}
 			}
 		}
@@ -447,4 +464,117 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestPipelineConcurrentCalls runs one Pipeline value from several
+// goroutines at once, in both drivers. Scratch is pooled across calls, so
+// this is where a block lent to two calls at once, or returned while a
+// worker still writes it, would show: as a wrong product, or under -race.
+func TestPipelineConcurrentCalls(t *testing.T) {
+	const w, h = 97, 61
+	const inputs = 5
+	stages, out := chain(inputs)
+	rng := rand.New(rand.NewPCG(5, 8))
+	src := make([]raster.Float32Raster, inputs)
+	for i := range src {
+		src[i] = newOperand(rng, w, h, false, true).r
+	}
+	want := unfused(t, src, stages, out)
+	p := exec.NewPipeline(inputs, stages, out)
+	defer exec.SetBandCells(128)() // many bands, so workers interleave
+
+	const calls = 8
+	got := make([]raster.Float32Raster, calls)
+	errs := make([]error, calls)
+	var wg sync.WaitGroup
+	for c := range calls {
+		got[c] = raster.NewFloat32Like(src[0])
+		opts := engine.Options{Workers: 1 + c%3, TileWidth: 16 * (c % 2), TileHeight: 11 * (c % 2)}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 5 {
+				if c%2 == 0 {
+					errs[c] = exec.ProcessN(context.Background(), got[c:c+1], src, p, opts)
+				} else {
+					sources := make([]engine.RasterSource, inputs)
+					for i := range sources {
+						sources[i] = engine.NewMemorySource(src[i])
+					}
+					errs[c] = exec.ProcessChunked(context.Background(),
+						[]engine.RasterSink{engine.NewMemorySink(got[c])}, sources, p, opts)
+				}
+				if errs[c] != nil {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for c := range calls {
+		id := fmt.Sprintf("call %d", c)
+		if errs[c] != nil {
+			t.Fatalf("%s: %v", id, errs[c])
+		}
+		sameRaster(t, id, got[c], want)
+	}
+}
+
+// TestScratchIsReused checks that a ScratchKernel's working memory is not
+// allocated on every call. It compares each call with the same call of a
+// kernel that asks for no scratch, so that what else a call allocates —
+// a chunked call's tile buffers, which are per call (§27) — cancels out:
+// after the first call, the difference must be a small fraction of the
+// scratch lent. Before scratch was pooled it was all of it, 1 MiB here.
+func TestScratchIsReused(t *testing.T) {
+	if raceEnabled {
+		t.Skip("sync.Pool drops blocks at random under -race")
+	}
+	// 512² in default strips is four bands of 512×128, and chunked in
+	// tiles of 128 rows it is four tiles of the same size: four workers,
+	// each lent 64 Ki cells.
+	const size, workers = 512, 4
+	const lent = workers * 512 * 128 * 4
+	src, dst := ramp(size, size), ramp(size, size)
+
+	drivers := map[string]func(exec.Kernel) error{
+		"ProcessN": func(k exec.Kernel) error {
+			return exec.ProcessN(context.Background(),
+				[]raster.Float32Raster{dst}, []raster.Float32Raster{src}, k,
+				engine.Options{Workers: workers})
+		},
+		"ProcessChunked": func(k exec.Kernel) error {
+			return exec.ProcessChunked(context.Background(),
+				[]engine.RasterSink{engine.NewMemorySink(dst)},
+				[]engine.RasterSource{engine.NewMemorySource(src)}, k,
+				engine.Options{Workers: workers, TileHeight: size / workers})
+		},
+	}
+	perCall := func(call func(exec.Kernel) error, k exec.Kernel) int64 {
+		if err := call(k); err != nil { // and fill the pools
+			t.Fatal(err)
+		}
+		const n = 20
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for range n {
+			if err := call(k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return int64(after.TotalAlloc-before.TotalAlloc) / n
+	}
+	for name, call := range drivers {
+		spy := &spyKernel{}
+		scratch := perCall(call, spy)
+		plain := perCall(call, boxKernel{inputs: 1})
+		if spy.asked*workers*4 != lent {
+			t.Fatalf("%s: lent %d cells per worker, want %d", name, spy.asked, lent/workers/4)
+		}
+		if extra := scratch - plain; extra > lent/16 {
+			t.Errorf("%s: a ScratchKernel call allocates %d B more than a plain one, want at most %d (%d B lent)",
+				name, extra, lent/16, lent)
+		}
+	}
 }

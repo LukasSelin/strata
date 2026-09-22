@@ -33,12 +33,14 @@ type Kernel interface {
 // ScratchKernel is a Kernel that needs working memory of its own, such
 // as a Pipeline holding the values between its stages.
 //
-// The engine allocates the memory once per worker and lends the same
-// memory to every Process call that worker makes, in Span.Scratch. That
-// is what keeps the Kernel contract intact: a kernel that keeps nothing
-// between calls stays safe for concurrent spans, and a band still
-// allocates nothing (DESIGN.md §26). What a Process call leaves in
-// scratch is unspecified, and the next call may find anything there.
+// The engine lends each worker the memory once per ProcessN or
+// ProcessChunked call and passes the same memory to every Process call
+// that worker makes, in Span.Scratch. That is what keeps the Kernel
+// contract intact: a kernel that keeps nothing between calls stays safe
+// for concurrent spans, and a band still allocates nothing (DESIGN.md
+// §26). The memory comes from a pool shared by every call, and is not
+// zeroed: what a Process call leaves in scratch is unspecified, and the
+// next call — this one's or another's — may find anything there.
 type ScratchKernel interface {
 	Kernel
 	// Scratch returns how much working memory one Process call needs for

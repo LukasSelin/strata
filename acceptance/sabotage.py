@@ -107,6 +107,160 @@ def wrong_extreme(d):
     json.dump(man, open(p, "w"))
 
 
+def _normalize_inputs(d, stem):
+    z = read(d, f"{stem}.f32")
+    p = os.path.join(d, f"{stem}.mask.u8")
+    valid = np.fromfile(p, dtype=np.uint8).reshape(H, W).astype(bool) if os.path.exists(p) else np.ones((H, W), bool)
+    return z, valid
+
+
+def reciprocal_normalize(d):
+    """Normalize as one multiply-add with a precomputed 1/(hi-lo) - the
+    obvious fast rewrite, which rounds differently."""
+    for stem in ("hill", "plane", "noisy"):
+        z, valid = _normalize_inputs(d, stem)
+        lo, hi = z[valid].min(), z[valid].max()
+        a = np.float32(1) / (hi - lo)
+        for form in ("plain", "tiled", "chunked"):
+            write(d, f"{stem}-normalize-{form}.f32", z * a - lo * a)
+
+
+def normalize_over_nodata(d):
+    """Normalize taking its range from every cell, NoData included."""
+    z, _ = _normalize_inputs(d, "noisy")
+    lo, hi = z.min(), z.max()
+    write(d, "noisy-normalize-chunked.f32", (z - lo) / (hi - lo))
+
+
+def flip_curvature(d):
+    """Curvature with the opposite sign convention (concave positive)."""
+    for f in os.listdir(d):
+        if "curvature_" in f and f.endswith(".f32"):
+            write(d, f, -read(d, f))
+
+
+def swap_profile_plan(d):
+    """Profile and plan curvature swapped - the two quadratic forms mixed up."""
+    for stem in ("hill", "plane", "noisy"):
+        for form in ("plain", "tiled", "chunked"):
+            pr = read(d, f"{stem}-curvature_profile-{form}.f32")
+            pl = read(d, f"{stem}-curvature_plan-{form}.f32")
+            write(d, f"{stem}-curvature_profile-{form}.f32", pl)
+            write(d, f"{stem}-curvature_plan-{form}.f32", pr)
+
+
+def curvature_drift(d):
+    """Mean curvature 0.05% too large - a constant-factor slip."""
+    for f in os.listdir(d):
+        if "curvature_mean" in f and f.endswith(".f32"):
+            write(d, f, read(d, f) * 1.0005)
+
+
+# The focal mutations rewrite every form of a result the same way, as a
+# library bug would, so that only the reference, border and validity
+# checks - not plain == tiled == chunked - can catch them.
+
+STEMS = ("hill", "plane", "noisy")
+FORMS = ("plain", "tiled", "chunked")
+
+
+def _case(stem, op):
+    for c in MAN["rasters"]:
+        if c["surface"] == stem and c["op"] == op and c["form"] == "plain":
+            return c
+    raise KeyError(op)
+
+
+def _focal_write(d, stem, op, a):
+    for form in FORMS:
+        write(d, f"{stem}-{op}-{form}.f32", a)
+
+
+def _correlate(z, w):
+    """float64 correlation over the interior, NaN on the border."""
+    k = w.shape[0]
+    r = k // 2
+    out = np.full(z.shape, np.nan)
+    acc = np.zeros((H - 2 * r, W - 2 * r))
+    for j in range(k):
+        for c in range(k):
+            acc += w[j, c] * z[j : j + H - 2 * r, c : c + W - 2 * r]
+    out[r : H - r, r : W - r] = acc
+    return out
+
+
+def flipped_correlate(d):
+    """Correlate applying Convolve's rotation of the weights."""
+    for stem in STEMS:
+        for form in FORMS:
+            shutil.copy(os.path.join(d, f"{stem}-focal_convolve_r2-{form}.f32"),
+                        os.path.join(d, f"{stem}-focal_correlate_r2-{form}.f32"))
+
+
+def swapped_passes(d):
+    """CorrelateSeparable applying the row taps down the columns and the
+    column taps along the rows."""
+    for stem in STEMS:
+        c = _case(stem, "focal_separable_r2")
+        z = read(d, f"{stem}.f32").astype(np.float64)
+        w = np.outer(np.array(c["row"], np.float32), np.array(c["col"], np.float32)).astype(np.float64)
+        _focal_write(d, stem, "focal_separable_r2", _correlate(z, w))
+
+
+def radius_one_short(d):
+    """Min of radius 3 reading a radius-2 window, with a radius-2 border."""
+    for stem in STEMS:
+        z = read(d, f"{stem}.f32")
+        r = 2
+        out = np.full(z.shape, np.nan, np.float32)
+        acc = None
+        for j in range(2 * r + 1):
+            for c in range(2 * r + 1):
+                v = z[j : j + H - 2 * r, c : c + W - 2 * r]
+                acc = v.copy() if acc is None else np.minimum(acc, v)
+        out[r : H - r, r : W - r] = acc
+        _focal_write(d, stem, "focal_min_r3", out)
+
+
+def mean_wrong_count(d):
+    """Mean dividing by the neighbours without the centre, 24 for 5x5."""
+    for stem in STEMS:
+        _focal_write(d, stem, "focal_mean_r2", read(d, f"{stem}-focal_mean_r2-plain.f32") * np.float32(25 / 24))
+
+
+def erosion_3x3(d):
+    """A radius-2 validity computed with a 3x3 erosion."""
+    src = np.fromfile(os.path.join(d, "noisy.mask.u8"), dtype=np.uint8).reshape(H, W)
+    m = np.zeros((H, W), np.uint8)
+    e = np.ones((H - 2, W - 2), np.uint8)
+    for j in range(3):
+        for c in range(3):
+            e &= src[j : j + H - 2, c : c + W - 2]
+    m[1:-1, 1:-1] = e
+    for form in FORMS:
+        m.tofile(os.path.join(d, f"noisy-focal_mean_r2-{form}.mask.u8"))
+
+
+def focal_leaky_nodata(d):
+    """One output of a radius-3 Max whose neighbourhood holds NoData
+    marked valid."""
+    p = os.path.join(d, "noisy-focal_max_r3-plain.mask.u8")
+    m = np.fromfile(p, dtype=np.uint8).reshape(H, W)
+    inner = np.zeros((H, W), bool)
+    inner[3 : H - 3, 3 : W - 3] = True
+    y, x = np.argwhere((m == 0) & inner)[0]
+    m[y, x] = 1
+    m.tofile(p)
+
+
+def focal_seam(d):
+    """One tiled Gaussian cell wrong, as a halo bug at a seam would be:
+    row 46 and column 74 are tile edges of the 37x23 tiling."""
+    a = read(d, "hill-focal_gaussian_r3-tiled.f32")
+    a[46, 74] += np.float32(0.01)
+    write(d, "hill-focal_gaussian_r3-tiled.f32", a)
+
+
 MUTATIONS = [
     ("slope 0.05% too large", drift),
     ("dx and dy swapped", transpose_kernel),
@@ -116,6 +270,18 @@ MUTATIONS = [
     ("one NoData cell leaking in", leaky_nodata),
     ("count one too many", miscount),
     ("max slightly wrong", wrong_extreme),
+    ("normalize by a reciprocal", reciprocal_normalize),
+    ("normalize range from NoData", normalize_over_nodata),
+    ("curvature sign flipped", flip_curvature),
+    ("profile and plan swapped", swap_profile_plan),
+    ("mean curvature 0.05% too large", curvature_drift),
+    ("correlate with convolve's flip", flipped_correlate),
+    ("separable passes swapped", swapped_passes),
+    ("focal radius one short", radius_one_short),
+    ("mean divides by 24, not 25", mean_wrong_count),
+    ("radius-2 validity eroded 3x3", erosion_3x3),
+    ("focal NoData leaking in", focal_leaky_nodata),
+    ("focal tile seam", focal_seam),
 ]
 
 

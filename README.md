@@ -19,13 +19,23 @@ engine, or a file-format compatibility project.
 Pre-release. The v0.1 scope — float32 rasters, windows, validity bitmaps,
 the scalar and AVX2 backends, pointwise algebra, terrain derivatives, and
 tiled and bounded-memory execution — is implemented and measured, but the
-API is not stable and nothing is tagged yet. v0.2 is under way: the fold
+API is not stable and nothing is tagged yet. An arm64 NEON backend has
+since joined the AVX2 one. v0.2 is under way: the fold
 side of the engine and `reduce.Count`/`MinMax` have landed, and `Sum` and
 `Stats` follow once their accumulator is benchmarked. The `transfer`
 package has landed alongside them, so a computed surface can now be
-turned into a factor or a class. See [DESIGN.md](DESIGN.md) §42 for the
-milestone checklist, §49 for reductions, §50 for transfer functions, and
-§45 for the roadmap.
+turned into a factor or a class, and the `focal` package adds
+convolution and focal statistics for any radius up to 8. The engine also counts the bytes each
+call moves (`engine.Stats`), and it can run a chain of pointwise kernels
+as a single pass over each tile. That chain (the `Pipeline`) is internal
+for now. Two things judge the library from outside: an acceptance
+harness checks it against numpy and `gdaldem`, and a benchmark times it
+against `gdaldem`.
+
+The status table at the top of [DESIGN.md](DESIGN.md) summarizes where
+everything stands. In DESIGN.md, §42 has the milestone checklist, §49
+covers reductions, §50 transfer functions, §51 the traffic counter, §52
+pipelines, §53 focal operations, and §45 the roadmap.
 
 ## Installation
 
@@ -95,20 +105,21 @@ bit-for-bit identical results for every tile size and worker count.
 | --------- | -------- |
 | `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
-| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`. |
+| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`; and profile, plan and mean `Curvature` from the Zevenbergen–Thorne quadratic. |
+| `focal`   | Neighbourhood operations of radius 1 to 8: `Correlate` and `Convolve` with a caller's weights, `CorrelateSeparable` (with `Gaussian` taps), and focal `Mean`, `Min`, `Max`. The same bits for every tile size, worker count and backend. |
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
-| `engine`  | Execution options and the `RasterSource` / `RasterSink` interfaces, with memory and raw float32 file implementations. |
+| `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
 
 Each package's doc comment is the reference for its operand rules, validity
 semantics, edge handling, and cancellation behaviour.
 
 ## SIMD
 
-Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` on amd64
-CPUs with AVX2 runs vectorized kernels that agree bit-for-bit with the
-scalar ones; every other build runs scalar. ARM64 NEON kernels are not
-implemented yet.
+Kernels dispatch at runtime. Building with `GOEXPERIMENT=simd` runs
+vectorized kernels that agree bit-for-bit with the scalar ones: AVX2 on
+amd64 CPUs that have it, and NEON on every arm64 CPU (Apple Silicon,
+Graviton, Ampere). Every other build runs scalar.
 
 ```bash
 GOEXPERIMENT=simd go build ./...
@@ -129,6 +140,15 @@ Pointwise algebra is memory-bandwidth-bound from 4096² on. The suites live
 under `benchmarks/`, each with its own `RESULTS.md`, and run through
 `stratabench`.
 
+Those numbers all compare strata with strata. For an outside one,
+[`benchmarks/gdal/`](benchmarks/gdal/RESULTS.md) times the same
+operations against GDAL's `gdaldem` in the same container, on a 126.9M
+cell raster, and then differences the files it timed. Single-threaded on
+one core, strata computes slope, aspect and hillshade in 2.57 s against
+gdaldem's 9.39 s; on 12 workers, 1.33 s. On the scalar kernels — a build
+without `GOEXPERIMENT=simd` — it is roughly a tie, so the advantage is
+AVX2, not the language.
+
 ## Testing
 
 Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also
@@ -138,6 +158,13 @@ injection, bounds-check elimination assertions, and `golangci-lint`.
 ```bash
 go test ./...
 ```
+
+Those tests share the library author's understanding of the problem.
+[`acceptance/`](acceptance/README.md) is the independent check. It is a
+separate module that drives strata through its public API. A numpy
+program written from published definitions then judges the results.
+`gdalcheck.sh` differences strata's output against `gdaldem` on a real
+raster.
 
 CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
 race detector, and `golangci-lint` in both the default and the

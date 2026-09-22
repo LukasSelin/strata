@@ -38,6 +38,8 @@ func applyStaged(first int, steps []Step, dst []float32, srcs [][]float32) {
 			MulScalar(acc, acc, s.K[0])
 		case OpAffine:
 			Affine(acc, acc, s.K[0], s.K[1])
+		case OpSubDiv:
+			SubDiv(acc, acc, s.K[0], s.K[1])
 		case OpClamp:
 			Clamp(acc, acc, s.K[0], s.K[1])
 		case OpAbs:
@@ -261,8 +263,9 @@ func TestOpString(t *testing.T) {
 	if got := OpMul.String(); got != "Mul" {
 		t.Errorf("OpMul = %q, want %q", got, "Mul")
 	}
-	if got := numOps.String(); got != "Op(12)" {
-		t.Errorf("numOps = %q, want %q", got, "Op(12)")
+	unknown := fmt.Sprintf("Op(%d)", uint8(numOps))
+	if got := numOps.String(); got != unknown {
+		t.Errorf("numOps = %q, want %q", got, unknown)
 	}
 	for o := Op(0); o < numOps; o++ {
 		if opNames[o] == "" {

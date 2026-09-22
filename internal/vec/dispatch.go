@@ -11,6 +11,7 @@ var (
 	addScalarFloat32 = scalarAddScalarFloat32
 	mulScalarFloat32 = scalarMulScalarFloat32
 	affineFloat32    = scalarAffineFloat32
+	subDivFloat32    = scalarSubDivFloat32
 	minFloat32       = scalarMinFloat32
 	maxFloat32       = scalarMaxFloat32
 	clampFloat32     = scalarClampFloat32
@@ -27,6 +28,7 @@ type kernelSet struct {
 	addScalar            func(dst, src []float32, value float32)
 	mulScalar            func(dst, src []float32, value float32)
 	affine               func(dst, src []float32, a, b float32)
+	subDiv               func(dst, src []float32, lo, span float32)
 	min, max             func(dst, a, b []float32)
 	clamp                func(dst, src []float32, lo, hi float32)
 	abs, sqrt            func(dst, src []float32)
@@ -42,6 +44,7 @@ var scalarKernels = kernelSet{
 	addScalar: scalarAddScalarFloat32,
 	mulScalar: scalarMulScalarFloat32,
 	affine:    scalarAffineFloat32,
+	subDiv:    scalarSubDivFloat32,
 	min:       scalarMinFloat32,
 	max:       scalarMaxFloat32,
 	clamp:     scalarClampFloat32,
@@ -52,23 +55,27 @@ var scalarKernels = kernelSet{
 	chain:     scalarChainFloat32,
 }
 
-// simdKernels is the SIMD set, or nil when this build or CPU has none.
-var simdKernels *kernelSet
+// simdKernels is the SIMD set, or nil when this build or CPU has none,
+// and simdName is what Backend reports for it.
+var (
+	simdKernels *kernelSet
+	simdName    string
+)
 
 func (k *kernelSet) install() {
 	addFloat32, subFloat32, mulFloat32, divFloat32 = k.add, k.sub, k.mul, k.div
 	addScalarFloat32, mulScalarFloat32 = k.addScalar, k.mulScalar
-	affineFloat32 = k.affine
+	affineFloat32, subDivFloat32 = k.affine, k.subDiv
 	minFloat32, maxFloat32, clampFloat32 = k.min, k.max, k.clamp
 	absFloat32, sqrtFloat32 = k.abs, k.sqrt
 	reduceMinFloat32, reduceMaxFloat32 = k.reduceMin, k.reduceMax
 	chainFloat32 = k.chain
 }
 
-// Backend names the kernels currently in use: "avx2" or "scalar".
+// Backend names the kernels currently in use: "avx2", "neon" or "scalar".
 func Backend() string {
 	if simdKernels != nil && !usingScalar {
-		return "avx2"
+		return simdName
 	}
 	return "scalar"
 }
@@ -142,6 +149,15 @@ func MulScalar(dst, src []float32, value float32) {
 func Affine(dst, src []float32, a, b float32) {
 	requireEqualLen2(dst, src)
 	affineFloat32(dst, src, a, b)
+}
+
+// SubDiv computes dst[i] = (src[i] - lo) / span, rounding the
+// difference and then the quotient, the kernel of algebra.Normalize.
+// Neither step can fuse, so the scalar and vector backends agree bit for
+// bit on every architecture.
+func SubDiv(dst, src []float32, lo, span float32) {
+	requireEqualLen2(dst, src)
+	subDivFloat32(dst, src, lo, span)
 }
 
 // Min computes dst[i] = min(a[i], b[i]).

@@ -22,9 +22,12 @@ python check.py out             # numpy judges them
 python check.py out --png       # ... and writes pictures to out/png
 python sabotage.py out          # check the checker (see below)
 ./gdalcheck.sh <some.tif>       # difference against gdaldem in Docker
+python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ```
 
-`check.py` needs numpy; `--png` also needs matplotlib. It prints one line
+`check.py` needs numpy; with scipy installed it also cross-checks its
+focal reference against `scipy.ndimage` (check 10), and `--png` needs
+matplotlib. It prints one line
 per check, exits non-zero if any failed, and on a failure prints only the
 failures.
 
@@ -32,25 +35,35 @@ failures.
 
 `main.go` builds three small DEMs — a tilted plane, a smooth hill on
 rectangular cells, and a noisy surface with two NoData regions — and runs
-every terrain, algebra and reduce operation on each, in all three forms
-(plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked` through
-raw float32 files on 4 workers). 237 checks come out of that:
+every terrain, focal, algebra and reduce operation on each, in all three
+forms (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked`
+through raw float32 files on 4 workers). The focal cases are Correlate
+and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
+with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
+2, and Min and Max at radii 1 and 3. 600 checks come out of that
+(594 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient recomputed in float64 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip |
-| 2 | The one-cell border carries no data | Horn needs all eight neighbours; a border cell that holds a number is reading outside the raster |
-| 3 | The plane against its analytic slope and aspect | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; focal results against their definition as shifted sums, Min and Max exactly | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid |
+| 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
+| 3 | The plane against its analytic slope, aspect and zero curvature | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
-| 5 | Validity after a 3×3 erosion of the input mask | NoData leaking into a result, or valid cells wrongly discarded |
+| 5 | Validity after a (2r+1)×(2r+1) erosion of the input mask, 3×3 for terrain | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
 | 7 | `Count` and `MinMax` against numpy over the valid cells | A reduction that misses a tile or double-counts one |
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
+| 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
+| 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
 
 The reference implementations are derived in `check.py`'s docstring from
-Horn's kernel as gdaldem documents it, and from the definition of
-shaded relief as the cosine between the light and the surface normal —
-not from strata's code.
+Horn's kernel as gdaldem documents it, from the definition of shaded
+relief as the cosine between the light and the surface normal, for
+curvature from Zevenbergen and Thorne's (1987) quadratic and
+Florinsky's (2016) normal-section formulas, and from the textbook
+definitions of correlation and convolution (the latter
+scipy.ndimage's) — not from strata's code. `gdaldem` has no curvature
+mode, so for curvature this numpy reference is the only outside opinion.
 
 ## Tolerances
 
@@ -59,14 +72,27 @@ by float32 rounding alone. Each tolerance is **derived, not tuned**:
 Horn's numerator is six weighted elevations accumulated in at most six
 roundings of a partial sum of magnitude ≤ 4·zmax, so the gradient is off
 by at most `3 · 2⁻²⁴ · zmax / cellsize`, and every other tolerance
-follows from how the operation propagates that. Each line reports the
-observed error, the bound, and their ratio — currently 0.04× to 0.25×,
-so the results sit comfortably inside a bound that is itself tight.
+follows from how the operation propagates that. A focal weighted sum of
+m = (2r+1)² products is bounded by the classic dot-product bound,
+`(m + 1) · 2⁻²⁴ · Σ|w||z|` plus a rounding of the result. Each line
+reports the observed error, the bound, and their ratio — currently 0.04×
+to 0.25×, so the results sit comfortably inside a bound that is itself
+tight. Focal Min and Max do no arithmetic and must match exactly.
 
 Aspect gets a per-cell tolerance, because the direction of a nearly flat
 cell is genuinely undefined: a float32 rounding in the gradient can swing
 the bearing by degrees. Cells whose tolerance exceeds 5° are counted and
 reported rather than judged.
+
+Curvature gets per-cell tolerances too. Its own differences have their
+own rounding bounds (p: one rounding of 2·zmax; r and t: two of 4·zmax;
+s: three of 4·zmax), which are carried to first order through each
+formula with its partial derivatives, plus about one float32 epsilon per
+operation on the magnitude of the formula's terms. Profile and plan
+curvature divide by the gradient, so like aspect they have cells too
+flat to judge: where the error of p and q exceeds 1% of the gradient's
+length, first order no longer holds, and those cells are counted rather
+than judged (none, on the three DEMs here). Flat cells must hold 0.
 
 ## Checking the checker
 
@@ -85,7 +111,25 @@ chunked result off by one row     yes      3
 one NoData cell leaking in        yes      3
 count one too many                yes      1
 max slightly wrong                yes      1
+normalize by a reciprocal         yes      9
+normalize range from NoData       yes      3
+curvature sign flipped            yes      18
+profile and plan swapped          yes      18
+mean curvature 0.05% too large    yes      3
+correlate with convolve's flip    yes      9
+separable passes swapped          yes      9
+focal radius one short            yes      15
+mean divides by 24, not 25        yes      9
+radius-2 validity eroded 3x3      yes      7
+focal NoData leaking in           yes      3
+focal tile seam                   yes      2
 ```
+
+One plausible focal defect is out of reach: a Mean that multiplies by a
+rounded 1/(2r+1)² instead of dividing is off by about an ulp, well
+inside the float64 reference's derived bound, where `Normalize`'s is
+caught because it has an exact float32 reference. The unit tests in
+`focal/` pin Mean's division bit for bit instead.
 
 A 0.05% slope error — far smaller than any plausible real bug — is
 caught 34× over its tolerance.
@@ -126,17 +170,50 @@ slope == gdaldem slope              max 7.63e-06 deg
 aspect flat cells agree             0 disagree; 2,681,171 flat cells
 aspect == gdaldem aspect            max 3.05e-05 deg
 hillshade == gdaldem hillshade      12,849,447 of 12,849,874 exact, 427 off by one, 0 worse
-within 2 ulps of each other         76.21% bit-identical
+within float32 rounding             worst 0.09× the bound, 76.21% bit-identical
 no seam every 256 rows              1.222e-06 on chunk boundaries vs 1.203e-06 elsewhere
 ```
 
-Check 5 does not stop at "they differ in the last digit": it recomputes
-the slope in float64 and scores **both** tools against it. On that run
-gdaldem was closer on 17.4% of cells and strata on 6.4%, tied on 76.2%,
-with mean errors of 1.40e-06 and 1.85e-06 degrees. So strata is very
-slightly the less accurate of the two, by an amount that is inside its
-own documented float32 bounds and about a millionth of a degree — worth
-knowing, not worth fixing.
+Check 5 asks how far apart two *correct* float32 implementations of
+Horn's slope may land, and the answer is not a fixed number of ulps of
+the slope. Horn's weighted sums cancel, so on high, nearly flat terrain
+each tool's rounding legitimately moves the gradient by about
+`2⁻²⁴·zmax / (|gradient|·cellsize)` relative — far more than an ulp of
+the result. The bound is derived the same way as `check.py`'s
+[tolerances](#tolerances): a gradient tolerance
+`gtol = 3 · 2⁻²⁴ · zmax / cellsize`, with zmax the largest |z| in the
+cell's own 3×3 window, propagated to slope (d atan(m)/dm ≤ 1), doubled
+because both tools round, plus an ulp of each tool's result.
+
+A fixed 2-ulp bound fails on exactly that terrain: the `noisy`
+acceptance DEM (257×193, 30 m cells, elevations up to ~520 m, slopes
+near 0.1°), written as a GeoTIFF and run with `STRATA_TILE=64
+./gdalcheck.sh noisy.tif 0 0 193`, differed by up to 1664 ulps on
+11,812 cells although gdaldem and strata were equally close to a
+float64 Horn slope (mean errors 5.0e-06 and 4.5e-06°). Under the derived
+bound it passes at 0.28×.
+
+Check 5 also does not stop at "they differ": it recomputes the slope in
+float64 and scores **both** tools against it. On the canopy run gdaldem
+was closer on 17.4% of cells and strata on 6.4%, tied on 76.2%, with
+mean errors of 1.40e-06 and 1.85e-06 degrees. So strata is very slightly
+the less accurate of the two there, by an amount inside its own
+documented float32 bounds and about a millionth of a degree — worth
+knowing, not worth fixing. (On `noisy` strata was the closer one.)
+
+A bound wide enough to admit flat, high terrain must still reject a real
+defect. `gdalsabotage.py`, run with the same arguments after
+`gdalcheck.sh`, scales strata's slope by a constant factor and confirms
+check 5 goes red:
+
+```
+                 canopy 4096²          noisy 193²
+slope × 1.0005   caught, 371× bound    caught, 709× bound
+slope × 1.00002  caught, 15× bound     caught, 28× bound
+```
+
+On `noisy`, the 1.00002 drift passes the absolute `slope == gdaldem
+slope` check (max 7.9e-04° < 1e-3°); only the derived bound catches it.
 
 `out-gdal/slope-difference.png` shows where the two disagree. It should
 be featureless speckle following the terrain texture; horizontal bands
@@ -146,6 +223,9 @@ have hidden.
 ## What this does not tell you
 
 * **Speed.** `benchmarks/` and `benchmarks/cmd/stratademo` measure that.
+  [`benchmarks/gdal/`](../benchmarks/gdal/) times the same three
+  operations against `gdaldem` on the same raster this directory checks
+  them against, and re-runs these checks on the files it timed.
 * **Ground elevation.** The raster used above is canopy height, not a
   DEM. `gdaldem` does not care what Z means, so the numerical
   cross-check is valid either way, but the slopes are not terrain
@@ -160,7 +240,8 @@ have hidden.
 
   On an AVX2 machine (checked on a Ryzen 9 3900X) all 101 files are
   byte-identical, which is the SIMD claim in the top-level README tested
-  from outside the library. On a CPU without AVX2 the vector build falls
+  from outside the library. That run predates curvature, whose files
+  have not been diffed on AVX2 hardware yet. On a CPU without AVX2 the vector build falls
   back to scalar and the comparison proves nothing.
 * **Anything outside these operations.** Extending it means adding a
   case to `main.go` and a reference to `expected()` in `check.py`.

@@ -5,9 +5,9 @@
 //	go run .              # in this directory
 //	go run . -dir out     # somewhere else
 //
-// It builds three small DEMs, runs the terrain, algebra and reduce
-// operations on each in all three forms (plain, Tiled, Chunked), and
-// writes:
+// It builds three small DEMs, runs the terrain, focal, algebra and
+// reduce operations on each in all three forms (plain, Tiled, Chunked),
+// and writes:
 //
 //	<dem>.f32              the elevation, raw little-endian float32
 //	<dem>.mask.u8          1 per valid cell, 0 per NoData cell (masked DEMs)
@@ -31,6 +31,7 @@ import (
 
 	"github.com/LukasSelin/strata/algebra"
 	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/focal"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/reduce"
 	"github.com/LukasSelin/strata/terrain"
@@ -66,6 +67,13 @@ type rasterCase struct {
 	CellSizeY float64 `json:"cell_size_y"`
 	Azimuth   float64 `json:"azimuth,omitempty"`
 	Altitude  float64 `json:"altitude,omitempty"`
+	// The focal operations' parameters: the radius, and the weights or
+	// taps exactly as passed (float32 values, which JSON carries
+	// exactly).
+	Radius  int       `json:"radius,omitempty"`
+	Weights []float32 `json:"weights,omitempty"`
+	Row     []float32 `json:"row,omitempty"`
+	Col     []float32 `json:"col,omitempty"`
 }
 
 type scalarCase struct {
@@ -165,6 +173,9 @@ type op struct {
 	name     string
 	azimuth  float64
 	altitude float64
+	radius   int
+	weights  []float32
+	row, col []float32
 	plain    func(dst, dem raster.Float32Raster)
 	tiled    func(ctx context.Context, dst, dem raster.Float32Raster, eo engine.Options) error
 	chunked  func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error
@@ -222,6 +233,20 @@ func (d dem) ops() []op {
 		}
 	}
 
+	curvature := func(ct terrain.CurvatureType, name string) op {
+		o := terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: ct}
+		return op{
+			name:  "curvature_" + name,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Curvature(dst, dm, o) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.CurvatureTiled(ctx, dst, dm, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.CurvatureChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+
 	return []op{
 		slope(terrain.SlopeDegrees),
 		slope(terrain.SlopeRadians),
@@ -239,6 +264,20 @@ func (d dem) ops() []op {
 			},
 		},
 		{
+			// Not a terrain operation, but it needs a whole DEM and all
+			// three forms, which is what this list runs.
+			name:  "normalize",
+			plain: func(dst, dm raster.Float32Raster) { algebra.Normalize(dst, dm) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				_, _, err := algebra.NormalizeTiled(ctx, dst, dm, eo)
+				return err
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				_, _, err := algebra.NormalizeChunked(ctx, dst, src, eo)
+				return err
+			},
+		},
+		{
 			name:     "hillshade",
 			azimuth:  ho.Azimuth,
 			altitude: ho.Altitude,
@@ -250,12 +289,90 @@ func (d dem) ops() []op {
 				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
 			},
 		},
+		curvature(terrain.CurvatureProfile, "profile"),
+		curvature(terrain.CurvaturePlan, "plan"),
+		curvature(terrain.CurvatureMean, "mean"),
+	}
+}
+
+// focalOps are the focal operations, with weights and taps that are
+// asymmetric in both axes, so that a kernel applied flipped, transposed
+// or with its passes swapped does not give the same result.
+func focalOps() []op {
+	w5 := make([]float32, 25)
+	for i := range w5 {
+		w5[i] = float32((i*7)%11-4) / 8
+	}
+	wo := focal.WeightsOptions{Radius: 2, Weights: w5}
+	sep := focal.SeparableOptions{Radius: 2, Row: []float32{-0.5, 0.25, 1, 2, 0.75}, Col: []float32{1.5, -1, 0.5, 0.125, 3}}
+	g := focal.Gaussian(3, 1.5)
+	gauss := focal.SeparableOptions{Radius: 3, Row: g, Col: g}
+
+	weighted := func(name string, rotate bool) op {
+		plain, tiled, chunked := focal.Correlate, focal.CorrelateTiled, focal.CorrelateChunked
+		if rotate {
+			plain, tiled, chunked = focal.Convolve, focal.ConvolveTiled, focal.ConvolveChunked
+		}
+		return op{
+			name: name, radius: 2, weights: w5,
+			plain: func(dst, src raster.Float32Raster) { plain(dst, src, wo) },
+			tiled: func(ctx context.Context, dst, src raster.Float32Raster, eo engine.Options) error {
+				return tiled(ctx, dst, src, wo, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return chunked(ctx, dst, src, wo, eo)
+			},
+		}
+	}
+	separable := func(name string, o focal.SeparableOptions) op {
+		return op{
+			name: name, radius: o.Radius, row: o.Row, col: o.Col,
+			plain: func(dst, src raster.Float32Raster) { focal.CorrelateSeparable(dst, src, o) },
+			tiled: func(ctx context.Context, dst, src raster.Float32Raster, eo engine.Options) error {
+				return focal.CorrelateSeparableTiled(ctx, dst, src, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return focal.CorrelateSeparableChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+	type boxFuncs struct {
+		plain   func(dst, src raster.Float32Raster, o focal.BoxOptions)
+		tiled   func(ctx context.Context, dst, src raster.Float32Raster, o focal.BoxOptions, eo engine.Options) error
+		chunked func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, o focal.BoxOptions, eo engine.Options) error
+	}
+	box := func(kind string, r int, f boxFuncs) op {
+		o := focal.BoxOptions{Radius: r}
+		return op{
+			name: fmt.Sprintf("focal_%s_r%d", kind, r), radius: r,
+			plain: func(dst, src raster.Float32Raster) { f.plain(dst, src, o) },
+			tiled: func(ctx context.Context, dst, src raster.Float32Raster, eo engine.Options) error {
+				return f.tiled(ctx, dst, src, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return f.chunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+	mean := boxFuncs{focal.Mean, focal.MeanTiled, focal.MeanChunked}
+	mn := boxFuncs{focal.Min, focal.MinTiled, focal.MinChunked}
+	mx := boxFuncs{focal.Max, focal.MaxTiled, focal.MaxChunked}
+	return []op{
+		weighted("focal_correlate_r2", false),
+		weighted("focal_convolve_r2", true),
+		separable("focal_separable_r2", sep),
+		separable("focal_gaussian_r3", gauss),
+		box("mean", 2, mean),
+		box("min", 1, mn),
+		box("max", 1, mx),
+		box("min", 3, mn),
+		box("max", 3, mx),
 	}
 }
 
 func (d dem) runTerrain(m *manifest) error {
 	ctx := context.Background()
-	for _, o := range d.ops() {
+	for _, o := range append(d.ops(), focalOps()...) {
 		// Plain, in memory.
 		plain := raster.NewFloat32Like(d.r)
 		o.plain(plain, d.r)
@@ -340,6 +457,10 @@ func (d dem) emit(m *manifest, o op, form string, r raster.Float32Raster) error 
 		CellSizeY: d.cellY,
 		Azimuth:   o.azimuth,
 		Altitude:  o.altitude,
+		Radius:    o.radius,
+		Weights:   o.weights,
+		Row:       o.row,
+		Col:       o.col,
 	}
 	if d.r.Valid != nil {
 		c.DEMMask = d.name + ".mask.u8"

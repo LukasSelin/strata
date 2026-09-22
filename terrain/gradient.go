@@ -54,7 +54,7 @@ func GradientChunked(ctx context.Context, dx, dy engine.RasterSink, dem engine.R
 // newGradientKernel resolves and checks opts for Gradient's kernel.
 func newGradientKernel(opts GradientOptions) gradientKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
-	return gradientKernel{horn{kx, ky}}
+	return gradientKernel{horn{kx: kx, ky: ky}}
 }
 
 type gradientKernel struct{ horn }

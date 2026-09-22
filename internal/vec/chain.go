@@ -30,6 +30,7 @@ const (
 	OpAddScalar           // acc + K[0]
 	OpMulScalar           // acc * K[0]
 	OpAffine              // float32(acc*K[0]) + K[1]
+	OpSubDiv              // (acc - K[0]) / K[1]
 	OpClamp               // min(max(acc, K[0]), K[1])
 	OpAbs                 // |acc|
 	OpSqrt                // sqrt(acc)
@@ -44,7 +45,8 @@ var opNames = [numOps]string{
 	OpAdd: "Add", OpSub: "Sub", OpMul: "Mul", OpDiv: "Div",
 	OpMin: "Min", OpMax: "Max",
 	OpAddScalar: "AddScalar", OpMulScalar: "MulScalar",
-	OpAffine: "Affine", OpClamp: "Clamp", OpAbs: "Abs", OpSqrt: "Sqrt",
+	OpAffine: "Affine", OpSubDiv: "SubDiv",
+	OpClamp: "Clamp", OpAbs: "Abs", OpSqrt: "Sqrt",
 }
 
 func (o Op) String() string {

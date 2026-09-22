@@ -15,6 +15,7 @@ import (
 
 	"github.com/LukasSelin/strata/algebra"
 	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/focal"
 	"github.com/LukasSelin/strata/internal/exec"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/terrain"
@@ -55,8 +56,20 @@ var chunked = map[string]chunkedFunc{
 	"aspect": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
 		return terrain.AspectChunked(ctx, dst[0], src[0], terrain.AspectOptions{CellSize: 5, Trigonometric: true}, o)
 	},
+	"curvature-plan": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
+		return terrain.CurvatureChunked(ctx, dst[0], src[0], terrain.CurvatureOptions{CellSize: 5, CellSizeY: 4, Type: terrain.CurvaturePlan}, o)
+	},
 	"gradient": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
 		return terrain.GradientChunked(ctx, dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7}, o)
+	},
+	"focal-correlate-r3": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
+		return focal.CorrelateChunked(ctx, dst[0], src[0], focal.WeightsOptions{Radius: 3, Weights: focalWeights}, o)
+	},
+	"focal-separable-r2": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
+		return focal.CorrelateSeparableChunked(ctx, dst[0], src[0], focalSeparable, o)
+	},
+	"focal-max-r4": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
+		return focal.MaxChunked(ctx, dst[0], src[0], focal.BoxOptions{Radius: 4}, o)
 	},
 	"box-r2": func(ctx context.Context, dst []engine.RasterSink, src []engine.RasterSource, o engine.Options) error {
 		return exec.ProcessChunked(ctx, dst, src, boxKernel{r: 2, inputs: 1, outputs: 1}, o)
@@ -160,7 +173,8 @@ func TestChunkedTilesAndWorkers(t *testing.T) {
 	if testing.Short() {
 		dims = []int{1, 7, 0}
 	}
-	names := []string{"box-r2", "clamp", "add", "slope-degrees", "aspect", "hillshade", "gradient"}
+	names := []string{"box-r2", "clamp", "add", "slope-degrees", "aspect", "hillshade", "curvature-plan", "gradient",
+		"focal-correlate-r3", "focal-separable-r2", "focal-max-r4"}
 	masks := []struct{ in, out bool }{{false, false}, {true, true}, {false, true}}
 
 	for _, name := range names {

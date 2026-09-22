@@ -98,6 +98,8 @@ func chainLanes(ops []chainOp, first, dst []float32) int {
 				acc = acc.Mul(o.k0)
 			case OpAffine:
 				acc = acc.Mul(o.k0).Add(o.k1)
+			case OpSubDiv:
+				acc = acc.Sub(o.k0).Div(o.k1)
 			case OpClamp:
 				acc = min8(max8(acc, o.k0), o.k1)
 			case OpAbs:

@@ -81,7 +81,7 @@ func newSlopeKernel(opts SlopeOptions) slopeKernel {
 	default:
 		panic(fmt.Sprintf("terrain: unknown SlopeUnits %d", opts.Units))
 	}
-	return slopeKernel{horn{kx, ky}, scale, atan}
+	return slopeKernel{horn{kx: kx, ky: ky}, scale, atan}
 }
 
 type slopeKernel struct {

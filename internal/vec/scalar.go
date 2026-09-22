@@ -69,6 +69,17 @@ func scalarAffineFloat32(dst, src []float32, a, b float32) {
 	}
 }
 
+// scalarSubDivFloat32 computes dst[i] = (src[i] - lo) / span, the kernel
+// of algebra.Normalize. Subtracting before dividing, rather than
+// multiplying by a reciprocal, is what makes src == lo give exactly 0 and
+// src == lo + span exactly 1.
+func scalarSubDivFloat32(dst, src []float32, lo, span float32) {
+	dst = dst[:len(src)]
+	for i, v := range src {
+		dst[i] = (v - lo) / span
+	}
+}
+
 func scalarMinFloat32(dst, a, b []float32) {
 	a, b = a[:len(dst)], b[:len(dst)]
 	for i := range dst {
@@ -200,6 +211,8 @@ func scalarChainFrom(c *Chain, dst []float32, srcs [][]float32, from int) {
 				scalarMulScalarFloat32(out, acc, s.K[0])
 			case OpAffine:
 				scalarAffineFloat32(out, acc, s.K[0], s.K[1])
+			case OpSubDiv:
+				scalarSubDivFloat32(out, acc, s.K[0], s.K[1])
 			case OpClamp:
 				scalarClampFloat32(out, acc, s.K[0], s.K[1])
 			case OpAbs:

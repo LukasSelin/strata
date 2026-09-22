@@ -82,6 +82,10 @@ var (
 	opHillshade = op{1, func(dem raster.Float32Raster, outs []raster.Float32Raster) {
 		terrain.Hillshade(outs[0], dem, terrain.HillshadeOptions{CellSize: cellSize})
 	}}
+	// Profile curvature, the kind with the most work per cell.
+	opCurvature = op{1, func(dem raster.Float32Raster, outs []raster.Float32Raster) {
+		terrain.Curvature(outs[0], dem, terrain.CurvatureOptions{CellSize: cellSize})
+	}}
 )
 
 func (o op) workload(f *fixture, c suite.Case) suite.Workload {
@@ -109,6 +113,7 @@ func BenchmarkGradient(b *testing.B)  { opGradient.bench(b) }
 func BenchmarkSlope(b *testing.B)     { opSlope.bench(b) }
 func BenchmarkAspect(b *testing.B)    { opAspect.bench(b) }
 func BenchmarkHillshade(b *testing.B) { opHillshade.bench(b) }
+func BenchmarkCurvature(b *testing.B) { opCurvature.bench(b) }
 
 // TestAllocs checks every case on a small raster against a bound that
 // does not grow with the raster: the plain functions run through the
@@ -117,7 +122,9 @@ func BenchmarkHillshade(b *testing.B) { opHillshade.bench(b) }
 func TestAllocs(t *testing.T) {
 	defer stencilKernels.UseScalar(false)
 	const limit = 16
-	ops := map[string]op{"Gradient": opGradient, "Slope": opSlope, "Aspect": opAspect, "Hillshade": opHillshade}
+	ops := map[string]op{
+		"Gradient": opGradient, "Slope": opSlope, "Aspect": opAspect, "Hillshade": opHillshade, "Curvature": opCurvature,
+	}
 	for name, o := range ops {
 		f := newFixture(64, o.outputs)
 		for _, masked := range []bool{false, true} {

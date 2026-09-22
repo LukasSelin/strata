@@ -88,6 +88,17 @@ func BenchmarkHillshade(b *testing.B) {
 	benchShade(b, func(dst, dem raster.Float32Raster) { Hillshade(dst, dem, HillshadeOptions{CellSize: 10}) })
 }
 
+// BenchmarkCurvature is BenchmarkAspect for each kind of Curvature.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Curvature ./terrain
+func BenchmarkCurvature(b *testing.B) {
+	for _, ct := range []CurvatureType{CurvatureProfile, CurvaturePlan, CurvatureMean} {
+		b.Run(ct.String(), func(b *testing.B) {
+			benchShade(b, func(dst, dem raster.Float32Raster) { Curvature(dst, dem, CurvatureOptions{CellSize: 10, Type: ct}) })
+		})
+	}
+}
+
 func benchShade(b *testing.B, op func(dst, dem raster.Float32Raster)) {
 	defer stencil.UseScalar(false)
 	for _, n := range []int{1024, 4096} {
