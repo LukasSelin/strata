@@ -57,7 +57,7 @@ func addSumsAVX2(bins *[lanes][sumBins]int64, sp *specials, xs []float32) uint32
 			continue
 		}
 		s, _, _ := blockSums(blk, base, false)
-		addSumPieces(&bins[0], uint8(base), s)
+		addSumPieces(&bins[0], uint8(base), s) // #nosec G115 -- blockBase's base is in [1, 222]
 	}
 	archsimd.ClearAVXUpperBits()
 	return nzAll | addSums(bins, sp, xs)
@@ -74,8 +74,8 @@ func addMomentsAVX2(bins *[lanes][sumBins]int64, sq *[lanes][sqBins]int64, sp *s
 			continue
 		}
 		s, lo, hi := blockSums(blk, base, true)
-		addSumPieces(&bins[0], uint8(base), s)
-		addSquarePieces(&sq[0], uint8(base), lo, hi)
+		addSumPieces(&bins[0], uint8(base), s)      // #nosec G115 -- blockBase's base is in [1, 238]
+		addSquarePieces(&sq[0], uint8(base), lo, hi) // #nosec G115 -- as above
 	}
 	archsimd.ClearAVXUpperBits()
 	return nzAll | addMoments(bins, sq, sp, xs)
@@ -122,7 +122,7 @@ func blockBase(blk *[block]float32, window int32) (base int32, nz uint32, ok boo
 	var mx, nzv archsimd.Uint32x8
 	mn := archsimd.BroadcastUint32x8(^uint32(0))
 	for i := 0; i < block; i += vlanes {
-		u := archsimd.LoadFloat32x8Array((*[vlanes]float32)(blk[i:])).AsUint32x8()
+		u := archsimd.LoadFloat32x8Array((*[vlanes]float32)(blk[i:])).ToBits()
 		a := u.ShiftAllLeft(1) // magnitude bits, exponent field on top
 		mx = mx.Max(a)
 		mn = mn.Min(a.Sub(one)) // a zero wraps to the largest value
@@ -161,19 +161,19 @@ func blockSums(blk *[block]float32, base int32, squares bool) (s, lo, hi int64) 
 	var acc0, acc1 archsimd.Int64x4
 	var lo0, lo1, hi0, hi1 archsimd.Uint64x4
 	for i := 0; i < block; i += vlanes {
-		u := archsimd.LoadFloat32x8Array((*[vlanes]float32)(blk[i:])).AsUint32x8()
-		e := u.ShiftAllRight(23).And(field).AsInt32x8()
-		a := u.And(mant).AsInt32x8().Or(e.Min(one).ShiftAllLeft(23)) // |significand|
-		sg := u.AsInt32x8().ShiftAllRight(31)                        // 0 or -1
+		u := archsimd.LoadFloat32x8Array((*[vlanes]float32)(blk[i:])).ToBits()
+		e := u.ShiftAllRight(23).And(field).BitsToInt32()
+		a := u.And(mant).BitsToInt32().Or(e.Min(one).ShiftAllLeft(23)) // |significand|
+		sg := u.BitsToInt32().ShiftAllRight(31)                        // 0 or -1
 		m := a.Xor(sg).Sub(sg)
-		sh := e.Max(one).Sub(bv).Max(zero).AsUint32x8()
+		sh := e.Max(one).Sub(bv).Max(zero).ToBits()
 		shLo, shHi := sh.GetLo().ExtendToUint64(), sh.GetHi().ExtendToUint64()
 		acc0 = acc0.Add(m.GetLo().ExtendToInt64().ShiftLeft(shLo))
 		acc1 = acc1.Add(m.GetHi().ExtendToInt64().ShiftLeft(shHi))
 		if squares {
-			au := a.AsUint32x8()
-			q0 := au.GetLo().ExtendToUint64().AsUint32x8()
-			q1 := au.GetHi().ExtendToUint64().AsUint32x8()
+			au := a.ToBits()
+			q0 := au.GetLo().ExtendToUint64().ReshapeToUint32s()
+			q1 := au.GetHi().ExtendToUint64().ReshapeToUint32s()
 			q0s, q1s := q0.MulWidenEven(q0), q1.MulWidenEven(q1) // below 2^48
 			sh0, sh1 := shLo.Add(shLo), shHi.Add(shHi)
 			lo0 = lo0.Add(q0s.And(half).ShiftLeft(sh0))
@@ -189,8 +189,8 @@ func blockSums(blk *[block]float32, base int32, squares bool) (s, lo, hi int64) 
 		var l, h [4]uint64
 		lo0.Add(lo1).StoreArray(&l)
 		hi0.Add(hi1).StoreArray(&h)
-		lo = int64(l[0] + l[1] + l[2] + l[3])
-		hi = int64(h[0] + h[1] + h[2] + h[3])
+		lo = int64(l[0] + l[1] + l[2] + l[3]) // #nosec G115 -- the block's sums are below 2^62
+		hi = int64(h[0] + h[1] + h[2] + h[3]) // #nosec G115 -- as above
 	}
 	return s, lo, hi
 }
