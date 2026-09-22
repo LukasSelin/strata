@@ -291,6 +291,8 @@ func TestPipelineTraffic(t *testing.T) {
 type spyKernel struct {
 	mu       sync.Mutex
 	maxSpan  int
+	maxW     int
+	maxH     int
 	asked    int
 	askedW   int
 	askedH   int
@@ -313,6 +315,7 @@ func (k *spyKernel) Process(dst exec.Span, src exec.Window) {
 	if n := dst.Width * dst.Height; n > k.maxSpan {
 		k.maxSpan = n
 	}
+	k.maxW, k.maxH = max(k.maxW, dst.Width), max(k.maxH, dst.Height)
 	asked := k.asked
 	k.mu.Unlock()
 	// The engine lends exactly what was asked for, however large the
@@ -367,6 +370,13 @@ func TestScratchBoundsEverySpan(t *testing.T) {
 				if k.maxSpan > k.asked {
 					t.Errorf("%s: largest span %d cells, scratch sized for %d (%d×%d)",
 						id, k.maxSpan, k.asked, k.askedW, k.askedH)
+				}
+				// Scratch(w, h) bounds each side, not only the area: a
+				// kernel whose scratch is a row (focal's separable
+				// kernels) sizes it from w alone.
+				if k.maxW > k.askedW || k.maxH > k.askedH {
+					t.Errorf("%s: spans up to %d wide and %d tall, scratch sized for %d×%d",
+						id, k.maxW, k.maxH, k.askedW, k.askedH)
 				}
 			}
 		}
