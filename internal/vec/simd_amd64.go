@@ -43,6 +43,7 @@ func init() {
 		reduceMin: reduceMinFloat32AVX2,
 		reduceMax: reduceMaxFloat32AVX2,
 	}
+	simdName = "avx2"
 	UseScalar(false)
 }
 

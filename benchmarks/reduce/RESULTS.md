@@ -166,3 +166,31 @@ worker.
   its results through `math/big`, plus the per-worker partials. That is
   2.4 ns/cell on one worker, and 1.6 at 1024². From 4096² up the cost per
   call no longer shows.
+
+## arm64 (NEON), STRATA-11
+
+`internal/accum` gained a NEON half of the block backend (`simd_arm64.go`,
+sharing `blocks.go` with AVX2). The rule for keeping it was a clear win
+over the scalar loop on arm64, and it has one. `BenchmarkAccumulators`
+at 2^20 cells on one Apple M4 core, `GOEXPERIMENT=simd` for the NEON
+column, median of 3:
+
+| dist | acc | scalar ns/cell | NEON ns/cell | NEON/scalar |
+|---|---|---:|---:|---:|
+| dem | max (`vec.ReduceMax`) | 0.466 | 0.124 | 3.76× |
+| dem | binned (`Sum`) | 0.785 | 0.573 | 1.37× |
+| dem | moments (`Moments`) | 1.651 | 0.922 | 1.79× |
+| normal | max (`vec.ReduceMax`) | 0.471 | 0.127 | 3.71× |
+| normal | binned (`Sum`) | 0.761 | 0.586 | 1.30× |
+| normal | moments (`Moments`) | 1.660 | 0.932 | 1.78× |
+
+```
+go test ./internal/accum -run '^$' -bench 'Accumulators/dist=.*/n=1048576/acc=(max|binned|moments)$' -count 3
+GOEXPERIMENT=simd go test ./internal/accum -run '^$' -bench 'Accumulators/dist=.*/n=1048576/acc=(max|binned|moments)$' -count 3
+```
+
+Sum gains least. Where that goes was not profiled; the block loop runs 16
+four-lane steps per block against AVX2's 8 eight-lane ones, and extracting
+the high pair of lanes (`HiToLo`) is emulated rather than one
+instruction. `TestBackendsAgree` holds the NEON bins to the scalar ones
+exactly.

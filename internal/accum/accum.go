@@ -22,9 +22,10 @@
 //
 // # Backends
 //
-// Where the CPU has AVX2, a GOEXPERIMENT=simd build adds 64-cell blocks
-// in registers instead (simd_amd64.go) and puts the same integers into
-// the bins, so every result is bit for bit the scalar loop's. The choice
+// On arm64, and on amd64 where the CPU has AVX2, a GOEXPERIMENT=simd
+// build adds 64-cell blocks in registers instead (blocks.go) and puts the
+// same integers into the bins, so every result is bit for bit the scalar
+// loop's. The choice
 // between backends, and what was measured against them, is in
 // benchmarks/reduce/RESULTS.md.
 //
@@ -178,14 +179,14 @@ func (s *specials) combineSpecials(b *specials) {
 }
 
 // sumKernel is the function Sum.Add runs: addSums, or a vector backend's
-// kernel where the CPU has one (simd_amd64.go). Every backend adds the
+// kernel where the CPU has one (blocks.go). Every backend adds the
 // same integers to the bins in some order, so all give the same bits.
 var sumKernel = addSums
 
 // backend names the loops sumKernel and momentsKernel hold.
 var backend = "scalar"
 
-// Backend names the loops in use: "avx2" or "scalar".
+// Backend names the loops in use: "avx2", "neon" or "scalar".
 func Backend() string { return backend }
 
 // addSums is Sum's hot loop: four values per iteration, one into each

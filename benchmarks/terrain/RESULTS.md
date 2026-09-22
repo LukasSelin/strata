@@ -176,3 +176,114 @@ Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 10%.
 The tables are `stratabench`'s: M cells/s and GB/s are the medians, and
 each operation's `allocs/op` is the per-call cost of the engine's
 one-worker path (8 allocations, 11 with masks), not per tile or per cell.
+
+## arm64 (NEON), STRATA-11
+
+The same suite on the NEON kernels of `internal/stencil`, at 256² to
+4096². This is a different machine from the one above, so compare the
+SIMD/scalar ratios, not the absolute numbers, across the two.
+
+**Headline.** As on AVX2, every operation is compute-bound, and SIMD pays
+most where the scalar code does transcendental maths. At 4096² without
+masks: Aspect 5.0× (106 → 535 M cells/s), Hillshade 3.2× (510 → 1640),
+Slope 2.6× (350 → 923), Gradient 2.2× (977 → 2142). That is roughly
+AVX2's ordering at somewhat over half its ratios, as four lanes against
+eight would predict. The M4's core is faster than Zen 2's, so NEON's absolute
+throughput still matches AVX2's on the desktop for Aspect (535 against
+536) and beats it for the other three.
+
+| | |
+|---|---|
+| CPU | Apple M4 (4 performance + 6 efficiency cores), NEON 128-bit |
+| OS | macOS (darwin/arm64), a laptop on mains power with other applications open |
+| Go | go1.27.0 darwin/arm64, **`GOEXPERIMENT=simd`** |
+| Run | `GOMAXPROCS=1 GOEXPERIMENT=simd go test ./benchmarks/terrain -run '^$' -bench '/size=(256\|1024\|4096)/' -count 3`. macOS cannot pin a thread to a core, so the scheduler chooses; the spreads below say how much that cost |
+| Raw output | [`testdata/bench-arm64.txt`](testdata/bench-arm64.txt) |
+| Stats | median of 3 runs, rendered by `go run ./benchmarks/cmd/stratabench < testdata/bench-arm64.txt` |
+
+16384² was left out: it takes most of the run time, and the AVX2 results
+above already show what that size adds.
+
+| | |
+|---|---|
+| CPU | Apple M4 |
+| Cores | 10 physical, 10 logical; 10 usable by the process, GOMAXPROCS 1 |
+| Go | go1.27.0-X:simd darwin/arm64, GOEXPERIMENT=simd |
+| Kernels | stencil: neon |
+| Runs | 3 per benchmark, medians shown |
+
+### terrain
+
+4096 × 4096 raster, no mask, M cells/sec:
+
+```text
+            scalar      SIMD  SIMD/scalar   SIMD + workers
+Gradient       977      2142        2.19×   not measured yet (tile engine, STRATA-8/9)
+Slope          350       923        2.64×   not measured yet (tile engine, STRATA-8/9)
+Aspect         106       535        5.04×   not measured yet (tile engine, STRATA-8/9)
+Hillshade       510      1640        3.22×   not measured yet (tile engine, STRATA-8/9)
+```
+
+#### Gradient
+
+| raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 256 × 256 | off | 930 | 2003 | 2.15× | 0.499 | 11.2 | 24.0 | 8 |
+| 1024 × 1024 | off | 982 | 2171 | 2.21× | 0.461 | 11.8 | 26.1 | 8 |
+| 4096 × 4096 | off | 977 | 2142 | 2.19× | 0.467 | 11.7 | 25.7 | 8 |
+| 256 × 256 | on | 837 | 1613 | 1.93× | 0.620 | 10.4 | 20.0 | 11 |
+| 1024 × 1024 | on | 936 | 1963 | 2.10× | 0.509 | 11.6 | 24.3 | 11 |
+| 4096 × 4096 | on | 922 | 1942 | 2.11× | 0.515 | 11.4 | 24.0 | 11 |
+
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 2%.
+
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (2003 → 2142 M cells/s), SIMD/scalar 2.15× → 2.19×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (1613 → 1942 M cells/s), SIMD/scalar 1.93× → 2.11×.
+
+#### Slope
+
+| raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 256 × 256 | off | 348 | 859 | 2.47× | 1.16 | 2.79 | 6.87 | 8 |
+| 1024 × 1024 | off | 348 | 924 | 2.66× | 1.08 | 2.78 | 7.39 | 8 |
+| 4096 × 4096 | off | 350 | 923 | 2.64× | 1.08 | 2.80 | 7.38 | 8 |
+| 256 × 256 | on | 338 | 800 | 2.37× | 1.25 | 2.78 | 6.60 | 11 |
+| 1024 × 1024 | on | 345 | 897 | 2.60× | 1.11 | 2.85 | 7.40 | 11 |
+| 4096 × 4096 | on | 345 | 902 | 2.62× | 1.11 | 2.84 | 7.45 | 11 |
+
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 6%.
+
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (859 → 923 M cells/s), SIMD/scalar 2.47× → 2.64×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (800 → 902 M cells/s), SIMD/scalar 2.37× → 2.62×.
+
+#### Aspect
+
+| raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 256 × 256 | off | 108 | 504 | 4.66× | 1.98 | 0.87 | 4.04 | 8 |
+| 1024 × 1024 | off | 108 | 529 | 4.90× | 1.89 | 0.86 | 4.23 | 8 |
+| 4096 × 4096 | off | 106 | 535 | 5.04× | 1.87 | 0.85 | 4.28 | 8 |
+| 256 × 256 | on | 109 | 481 | 4.41× | 2.08 | 0.90 | 3.97 | 11 |
+| 1024 × 1024 | on | 108 | 522 | 4.84× | 1.91 | 0.89 | 4.31 | 11 |
+| 4096 × 4096 | on | 105 | 486 | 4.61× | 2.06 | 0.87 | 4.01 | 11 |
+
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 11%.
+
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (504 → 535 M cells/s), SIMD/scalar 4.66× → 5.04×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (481 → 486 M cells/s), SIMD/scalar 4.41× → 4.61×.
+
+#### Hillshade
+
+| raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 256 × 256 | off | 475 | 1632 | 3.43× | 0.613 | 3.80 | 13.1 | 8 |
+| 1024 × 1024 | off | 525 | 1736 | 3.31× | 0.576 | 4.20 | 13.9 | 8 |
+| 4096 × 4096 | off | 510 | 1640 | 3.22× | 0.610 | 4.08 | 13.1 | 8 |
+| 256 × 256 | on | 491 | 1433 | 2.92× | 0.698 | 4.05 | 11.8 | 11 |
+| 1024 × 1024 | on | 510 | 1648 | 3.23× | 0.607 | 4.21 | 13.6 | 11 |
+| 4096 × 4096 | on | 502 | 1571 | 3.13× | 0.637 | 4.15 | 13.0 | 11 |
+
+Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 10%.
+
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (1632 → 1640 M cells/s), SIMD/scalar 3.43× → 3.22×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 4096² (1433 → 1571 M cells/s), SIMD/scalar 2.92× → 3.13×.

@@ -10,11 +10,12 @@
 // abstraction (DESIGN.md §22) and by tiled execution with halos (§23, §25).
 //
 // This file holds the scalar backend, which is canonical (DESIGN.md §15).
-// SIMD backends (simd_amd64.go, built with GOEXPERIMENT=simd) must agree
-// with it bit-for-bit, any NaN matching any NaN. To make that possible the
-// scalar code fixes its evaluation order and wraps every product in an
-// explicit float32 conversion, which stops the compiler fusing a
-// multiply-add into FMA (see docs/adr/0001-simd-backend.md).
+// SIMD backends (simd_amd64.go and simd_arm64.go, built with
+// GOEXPERIMENT=simd) must agree with it bit-for-bit, any NaN matching any
+// NaN. To make that possible the scalar code fixes its evaluation order
+// and wraps every product in an explicit float32 conversion, which stops
+// the compiler fusing a multiply-add into FMA (see
+// docs/adr/0001-simd-backend.md).
 //
 // Like internal/vec, exported functions panic on mismatched lengths.
 package stencil
@@ -35,8 +36,9 @@ var (
 
 // simdGradient, simdSlope, simdAspect, simdHillshade and simdCurvature
 // are the SIMD set, or nil when this build or CPU has none. SIMD builds
-// set all or none.
+// set all or none, and simdName, what Backend reports for them.
 var (
+	simdName      string
 	simdGradient  func(dx, dy, r0, r1, r2 []float32, kx, ky float32)
 	simdSlope     func(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 	simdAspect    func(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
@@ -44,10 +46,10 @@ var (
 	simdCurvature func(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
 )
 
-// Backend names the kernels currently in use: "avx2" or "scalar".
+// Backend names the kernels currently in use: "avx2", "neon" or "scalar".
 func Backend() string {
 	if simdSlope != nil && !usingScalar {
-		return "avx2"
+		return simdName
 	}
 	return "scalar"
 }
