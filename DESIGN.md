@@ -32,7 +32,8 @@ the detailed record; this table only points at it.
 | First validation target: 20000² DEM | §43 | done |
 | Traffic counter (`engine.Stats`) | §51 | done |
 | Reductions: Count, MinMax, the fold driver | §49 | done |
-| Reductions: Sum, Stats, exact accumulator, `benchmarks/reduce` | §49 | not started |
+| Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
+| Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | not started |
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
@@ -2114,6 +2115,8 @@ strata/
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
 │   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
+│   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
+│   │                           accum.go, moments.go, result.go, simd_amd64.go
 │   ├── curve/                 implemented (§50): curve.go, scalar.go
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
@@ -2703,6 +2706,20 @@ benchmark has to show. If it is too expensive, the answer is to weaken
 the guarantee to a documented, plan-independent evaluation order and say
 so — not to let the result depend on `Options`.
 
+**Decision: binned, and the guarantee stands.** `internal/accum` keeps one
+`int64` bin per float32 exponent and adds significands to them, so partials
+are integers and combine exactly. `Moments` adds the squares beside them
+for Mean, Variance and StdDev. Its AVX2 backend adds 64-cell blocks in
+registers after shifting them onto a common exponent, and puts the same
+integer into the bins as the scalar loop, so the backends agree by
+construction. On one core that makes the exact sum as fast as a plain
+float64 loop, and sum plus squares as fast as Neumaier. With workers the
+exact sum reaches 85% of read bandwidth. The numbers, and what lost
+(more bin sets did not help: the scalar loop is instruction-bound, not
+waiting on stores), are in `benchmarks/reduce/RESULTS.md`. Sum, Mean and
+Variance are correctly rounded. StdDev is the 256-bit root of the exact
+variance: within one ulp and still a function of the values alone.
+
 ### Engine
 
 A reduction is a new driver shape in `internal/exec` rather than a new
@@ -2791,10 +2808,10 @@ checking the rule above that no value comes back with an error.
 
 Status: partly done. `Count`, `MinMax` and the fold driver done (STRATA-12): the
 `Reducer`/`Cells` shape, `Reduce` and `ReduceChunked`, `vec.ReduceMin`
-and `vec.ReduceMax`, and package `reduce`. `Sum`, `Stats`, `Summary` and
-the accumulator decision are next, then `algebra.Normalize`;
-`benchmarks/reduce` lands with them, since what it has to measure is the
-cost of an exact accumulator and a `Min` fold is pure bandwidth.
+and `vec.ReduceMax`, and package `reduce`. The accumulator decision and
+`internal/accum` done, with `benchmarks/reduce/RESULTS.md`. `Sum`,
+`Stats` and `Summary` are next, on `accum`, then `algebra.Normalize`; the
+`benchmarks/reduce` suite at the §38 sizes lands with them.
 
 ## 50. Transfer Functions
 
