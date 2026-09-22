@@ -13,6 +13,7 @@ spikes that informed the design.
 | `internal/suite/` | the shared harness: sizes, backend switching, metrics, machine configuration |
 | `cmd/stratabench/` | turns `go test -bench` output into the §42 summary |
 | `cmd/stratademo/` | the §43 validation target: a 20000² raw DEM with bounded memory, checked against the whole-raster result, with measured peak memory |
+| `reduce/` | the §49 accumulator decision: exact binned sums against float64 and Neumaier, by backend and worker count ([`RESULTS.md`](reduce/RESULTS.md)). The benchmarks are in `internal/accum`; the suite lands with `reduce.Sum` |
 | `nodata/` | STRATA-3 spike: NoData representations ([`RESULTS.md`](nodata/RESULTS.md)). Not part of the suite |
 
 Package-level micro-benchmarks, such as `algebra/bench_test.go` (whole
