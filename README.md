@@ -106,6 +106,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
 | `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`; and profile, plan and mean `Curvature` from the Zevenbergen–Thorne quadratic. |
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
+| `resample` | Resamples between grids in the same CRS, gdalwarp's conventions: `Nearest`, `Bilinear`, `Cubic`, `Lanczos`, `Average`, with NoData renormalised as gdalwarp does. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
 | `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
 

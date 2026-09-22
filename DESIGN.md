@@ -22,6 +22,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/engine/RESULTS.md](benchmarks/engine/RESULTS.md): worker scaling and tile shape (STRATA-9).
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
+- [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
 
 Where things stand, as of 2026-09-21. Each section's own **Status** line is
@@ -49,6 +50,7 @@ the detailed record; this table only points at it.
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
 | CRS transformation | §36 | not started; `raster.CRS` is a placeholder |
+| `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
 
@@ -1089,8 +1091,10 @@ the wall. SIMD is worth 8.7× to Aspect, 5.7× to Hillshade, 4.1× to Slope
 and 2.6× to Gradient at 4096². That is why workers scale these operations
 where they barely scale the algebra ones.
 
-Convolution, resampling, interpolation and point-cloud filtering should
-behave like the terrain kernels, and are not measured yet. Benchmarks
+Resampling does (benchmarks/resample/RESULTS.md, §54): every method at
+every scale is compute-bound, asking 2–8 GB/s. Convolution, interpolation
+and point-cloud filtering should behave like the terrain kernels too, and
+are not measured yet. Benchmarks
 distinguish compute-bound, cache-bound, memory-bound and IO-bound
 operations.
 
@@ -1312,6 +1316,8 @@ benchmarks/
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
+├── resample/           implemented: every method at 2×, 4×, ½, 1/1.37, against
+│                        direct 2-D, RESULTS.md (NEON; AVX2 open), §54
 ├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── reduce/             implemented: Min, MinMax, Sum, Stats against read bandwidth, RESULTS.md (§49)
@@ -1567,6 +1573,12 @@ strata/
 │   │                           table checks and the three kernels
 │   └── tiled.go               tiled and chunked entry points
 │
+├── resample/                  implemented (§54)
+│   ├── doc.go
+│   ├── resample.go            Method, Options, Resample, ResampleTiled,
+│   │                           ResampleChunked and their checks
+│   └── tiled.go               tiling, bands, the chunked driver
+│
 ├── terrain/                   implemented
 │   ├── gradient.go
 │   ├── slope.go
@@ -1594,6 +1606,9 @@ strata/
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
 │   │                           for the radius-0 packages' plain functions
+│   ├── resamp/                implemented (§54): table.go (tap tables), band.go
+│   │                           (bands, validity), scalar.go, dispatch.go,
+│   │                           simd_amd64.go, simd_arm64.go
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window
 │   │   ├── process.go         Process, operand checks
@@ -1604,6 +1619,8 @@ strata/
 │   │   ├── reduce.go          Reducer, Cells, Reduce (STRATA-12, §49)
 │   │   ├── reducechunked.go   ReduceChunked: per-worker tile buffers
 │   │   ├── pipeline.go        Pipeline, Stage, NewPipeline: radius 0 (§52)
+│   │   ├── units.go           RunUnits: the scheduler, for packages that plan
+│   │   │                       their own units (§54)
 │   │   └── workspace.go       planned
 │   ├── overlap/               Data and mask overlap checks
 │   │
@@ -1843,6 +1860,7 @@ v0.5   Zarr adapter: chunk-native N-D datasets (§34)
 v0.6   GeoTIFF / COG adapters (§34)
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
 v0.8   resampling, alignment, mosaics, interpolation
+       partly done: same-CRS resampling (§54); reprojection waits on §36
 v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
        register-level fusion measured, not built (§29)
 v0.10  voxel grids as 3-D arrays (§33)
@@ -2748,3 +2766,218 @@ Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
 is what would let a caller build one of these.
+
+## 54. Resampling
+
+Status: done for grids in one CRS: `resample.Resample`, `ResampleTiled` and
+`ResampleChunked` with Nearest, Bilinear, Cubic, Lanczos and Average,
+scalar-canonical passes with AVX2 and NEON kernels that match them bit for
+bit, checked against a float64 reference and against gdalwarp
+(`acceptance/`), measured in `benchmarks/resample`. Open: Mode, mosaics
+and alignment helpers, reprojection (§36), and the AVX2 numbers from the
+Zen 2 machine.
+
+### Scope
+
+Resampling between two `raster.Grid`s in the same CRS: a different
+resolution, a different origin, or both, with axis-aligned cells of any
+sign on either axis. That is v0.8's first item (§45) and needs no CRS
+transformation, which `raster.CRS` cannot give yet (§36): the source
+coordinate of an output cell's centre is an affine function of its
+column alone along x and of its row alone along y. Reprojection breaks
+that and is not attempted.
+
+### Separable, table-driven, gather-free
+
+Because the mapping is separable, every interpolating method is too: its
+2-D weight is the product of a weight per column and a weight per row.
+`internal/resamp` builds, once per call, a tap table per axis: for each
+output index, the run of source indices it reads and their weights,
+computed in float64 and rounded to float32. The filter then runs as two
+passes:
+
+1. horizontal: every source row the output reaches is resampled into an
+   intermediate, `t[j][c] = Σ_k wx[c][k] · src[j][first_c + k]`;
+2. vertical: each output row blends intermediate rows,
+   `out[r][c] = Σ_k wy[r][k] · t[first_r + k][c]`.
+
+The vertical pass is a lane-parallel multiply-accumulate across columns,
+the ideal SIMD shape. The horizontal pass is the hard one: neighbouring
+output columns read unrelated source offsets, so lanes over columns need a
+gather per tap — `VPGATHERDD` is slow on Zen 2, and `simd/archsimd` has no
+gather at all (go1.27). Instead the SIMD kernels transpose L source rows
+(L = 8 on AVX2, 4 on NEON) into a column-major scratch, in which each tap
+of each output column is one contiguous vector of L rows; accumulate with
+the rows in the lanes; and transpose each L×L block of output columns
+back. The transposes are VPUNPCK/VPERM2F128 on AVX2 and ZIP1/ZIP2 on NEON,
+all from archsimd; a last partial block uses masked loads and stores, so
+AVX2's lane loops stay in VEX instructions (ADR 0001). This works the same
+for upsampling and for downsampling of any factor, and every lane performs
+the scalar pass's operations in the scalar pass's order.
+
+### Canonical arithmetic
+
+The bits are defined by the scalar passes (§15): products rounded
+separately (`float32(w*x)`, never a fused multiply-add), taps summed in
+increasing source index starting from the first product (not from +0,
+which would turn −0 into +0), the horizontal pass before the vertical.
+`TestPassesAreNotFused` pins the rounding with a fixture that first proves
+it distinguishes fused from unfused, and a build of the package for
+arm64 and for amd64 with FMA contains no fused instruction; the float64
+table code routes its products through a non-inlined multiply, since a
+`float64(...)` conversion does not stop Go fusing float64 operands, so the
+tables and the ties they decide are the same bits on every architecture.
+
+`resamp.Direct2D` evaluates the same sums cell by cell, recomputing each
+tap row's horizontal sum rather than reusing it. It gives the separable
+passes' bits exactly (`TestSeparableIsDirect`), so separability changes
+the cost and not the answer; it is the tests' reference and the
+benchmarks' direct contender.
+
+A cell centred exactly on a source centre has one tap of weight 1:
+Lanczos is exactly zero at the non-zero integers, taps of weight zero are
+trimmed, and coordinates within 1e-9 of a cell centre or edge are snapped
+for the weights (not for the centre cell, which decides Nearest and
+validity and must round as gdalwarp's does). The identity grid is
+therefore a bit-exact copy under every method, NaN payloads, infinities
+and −0 included.
+
+### gdalwarp's conventions, measured
+
+gdalwarp's same-CRS behaviour is the outside reference, so its
+conventions were measured before anything was written, with gdalwarp
+3.12.1 through GDAL's Python bindings (`-et 0`, `-wt Float64`) on small
+synthetic rasters: ramps, quadratics and impulses whose results can be
+inverted for the weights. What it does, and strata now does:
+
+- Geometry: an output cell is its centre, mapped by the inverse source
+  geotransform, `u = inv0 + X·inv1` with `inv1 = 1/res`; source cell i
+  covers [i, i+1). Nearest takes `floor(u)`, with no epsilon: at 2×
+  downsampling, where every centre lands on a source edge, it takes the
+  cell after the edge.
+- Weights: `K((i + 0.5 − u)/s)` over |·| < support, for the tent, Keys'
+  cubic with a = −0.5, and the Lanczos-3 window. When an axis downsamples,
+  s is its source cells per output cell, which stretches the kernel so it
+  averages: for Bilinear and Cubic once 1/s < 0.95, for Lanczos once s > 1,
+  per axis. Average weighs by area of overlap. Weights are renormalised
+  over the source cells inside the source, so the edge renormalises; an
+  output cell whose centre lies outside the source is invalid (Average:
+  one that overlaps no source cell).
+- Cubic has two modes. With neither axis stretched it is gdalwarp's
+  four-sample formula, which falls back to unstretched Bilinear for a
+  cell whose 4×4 taps of non-zero weight lose one to the edge or, with a
+  mask, include an invalid cell. With either axis stretched it is the
+  general kernel, which renormalises. strata reproduces both: the fallback
+  cells are few (a band two to three cells wide along edges and NoData)
+  and are recomputed by a scalar bilinear after the passes.
+
+### Validity: renormalise, as gdalwarp does
+
+§31 left the choice open between "valid iff every contributing source
+cell is valid" (the stencils' erosion) and renormalising over the valid
+cells. Resampling renormalises, because that is gdalwarp's rule and
+because erosion would cost a kernel's reach — twelve source cells for
+Lanczos downsampling by four — around every NoData cell:
+
+- an output cell is valid iff the source cell under its centre is valid
+  (except under Average) and the weight of its valid source cells is
+  positive;
+- under Lanczos with a masked source, at any scale, at least half of the
+  source cells its window reaches, weight zero included and cells outside
+  the source excluded, must also be valid (measured: 6 of 12 at 2×
+  downsampling, 12 of 24 at 4×, 3 of 6 along an axis at 1:1 or
+  upsampling; a corner cell with most of its window outside the source
+  stays valid), except a cell whose centre lies exactly on a source
+  centre on both axes, which copies that cell. The first probes had
+  missed the rule below 1:1, because the 1:1 probe was aligned, which is
+  the exception; the gdalwarp comparison found it;
+- its value is Σ w·v·x / Σ w·v over the valid cells, where v is 0 or 1.
+
+Both sums are separable, so the masked path runs the same passes over
+two more planes built from the footprint by selection, never by
+multiplying (Data under a cleared bit may be Inf or NaN): the valid
+values with +0 under cleared bits, and the validity as 1 or +0. A count
+of valid taps per cell, small integers exact in float32 and summed by the
+same vertical pass with unit weights, tells cells whose taps are all
+valid, which keep the unmasked sum N. An all-valid mask therefore gives
+the same bits as no mask. Masked sources are processed in chunks of 256
+output columns, each testing its own footprint, so one invalid cell sends
+only its chunk down the masked path. Invalid cells get NaN in Data.
+
+Renormalising over the valid cells of a kernel with negative lobes is
+ill-conditioned where the valid weight nearly cancels: the result can lie
+far outside the inputs, as gdalwarp's does. The tests' tolerances are
+derived from the sums (A/|D|, not a fixed ulp count) for that reason.
+
+### Where strata departs from gdalwarp
+
+Only where gdalwarp departs from its own definitions:
+
+- the stretch: gdalwarp derives it for each warp chunk from pixel
+  counts, the chunk's source window (clipped to the source) over its
+  destination cells, not from the resolutions. The two agree for a
+  destination inside the source on its cell edges, and nearly agree in
+  the interior of a large warp, but where the destination overhangs the
+  source, or gdalwarp splits a warp into chunks, its kernel width depends
+  on the extent and on the chunking (measured to 6e-8: an 80-cell source
+  under 59 cells of 1.37 is stretched by 80/59 = 1.356). strata keeps the
+  resolution ratio, which is the geometry and the same for every tiling,
+  as §23 needs. The acceptance cases compare a non-integer stretch on a
+  grid where the two agree (1.25) and record the others as excluded;
+- Lanczos downsampling by an odd integer factor (3, 5): gdalwarp gives the
+  tap at an output centre about 83 times its weight, which looks like a
+  defect in its optimised Lanczos path;
+- Lanczos for 1 < s < 1.05, where gdalwarp mixes stretched and unstretched
+  kernels;
+- a source one cell wide or high, where gdalwarp's Bilinear degrades to
+  Nearest;
+- Average on output cells that extend past the source's edge, by about 1%.
+
+Values otherwise agree with gdalwarp to within float32 rounding, and
+validity exactly (`acceptance/gdalwarp_resample.py`).
+
+### Execution
+
+The engine's Kernel assumes one grid and a fixed symmetric halo (§22–§24);
+resampling reads, for each output tile, a source footprint of its own
+shape, two table lookups per axis. Rather than generalise `internal/exec`,
+package resample plans its own units and runs them on the engine's
+scheduler, exported for this as `exec.RunUnits` in a new file, the only
+change to `internal/exec`:
+
+- Tiled: engine.Options tiles split into bands of at least 64 rows (2¹⁷
+  cells), each reading its footprint from the in-memory source. A band
+  recomputes the horizontal pass for the source rows it shares with its
+  neighbours, a few per cent at 64 rows; validity words are written under
+  one lock per call, as §26's.
+- Chunked: a tile is the unit, each worker holds one output tile, one
+  footprint window and the intermediates, sized once for the largest
+  footprint, and reads and writes under `context.WithoutCancel` (§25). The
+  bound is in the package documentation; downsampling by a large factor
+  wants small tiles, because the footprint grows with the factor.
+
+Every cell's arithmetic depends only on the tables, so every tiling and
+worker count gives the plain call's bits (`TestTiledAndChunkedMatch`,
+`FuzzResample`).
+
+### Measured
+
+[`benchmarks/resample/RESULTS.md`](benchmarks/resample/RESULTS.md), on an
+Apple M4 with NEON; the AVX2 run on the Zen 2 machine is still to do.
+
+- **Compute-bound, as §28 predicted:** every method at every scale
+  (2×, 4×, ½, 1/1.37) holds its throughput from 256² to the largest size,
+  asking 2–8 GB/s; the taps, not the memory, are the limit.
+- **Separable against direct:** the passes beat `Direct2D` by 3.3–6.5×
+  in the same scalar code (Cubic ×2 335 against 73.5 M cells/s at 4096²,
+  Lanczos ×2 265 against 40.6, Lanczos ½ 72.8 against 13.2) and by
+  11–15× once they vectorise, which the direct form cannot without a
+  gather. The two give the same bits, so nothing is traded for it.
+- **SIMD:** NEON gives 2.0–3.3× on the interpolating methods (Average ×2
+  1900 M cells/s, Bilinear ×2 1279, Lanczos ×2 596, Lanczos ½ 144) and
+  nothing to Nearest, a copy at about 1 G cells/s. AVX2's eight lanes are
+  expected to give more; the Zen 2 run will say.
+- **Masks:** a source mask with 10% of cells invalid at random, which
+  puts an invalid cell in every footprint, costs 5–9×: three horizontal
+  passes, the counts and a per-cell finish. Clustered NoData costs only
+  the chunks whose footprints it touches.
