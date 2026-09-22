@@ -1,24 +1,25 @@
-package resamp
+package resample
 
 import (
 	"math"
 	"math/bits"
 	"sync"
 
+	"github.com/LukasSelin/strata/internal/resamp"
 	"github.com/LukasSelin/strata/raster"
 )
 
-// Source is the source data a band reads: a raster view whose cell (0, 0)
+// source is the source data a band reads: a raster view whose cell (0, 0)
 // is source cell (X0, Y0). It must hold the band's footprint.
-type Source struct {
+type source struct {
 	R      raster.Float32Raster
 	X0, Y0 int
 }
 
-// Workspace is one worker's scratch for Band, grown on demand and reused
+// workspace is one worker's scratch for band, grown on demand and reused
 // across bands. The zero value is ready to use; it must not be shared
 // between goroutines.
-type Workspace struct {
+type workspace struct {
 	t, tm, tf []float32
 	xm, xf    []float32
 	hs        []float32
@@ -43,7 +44,7 @@ func grow[T any](s []T, n int) []T {
 // the same for every tiling and backend.
 var nan = float32(math.NaN())
 
-// maskedChunk is the widest run of output columns Band gives one
+// maskedChunk is the widest run of output columns band gives one
 // footprint when the source has a mask. A footprint with an invalid cell
 // takes the masked path, three horizontal passes and a per-cell finish,
 // so a band is cut into chunks that each decide for themselves, and one
@@ -51,9 +52,9 @@ var nan = float32(math.NaN())
 // whole band at once.
 const maskedChunk = 256
 
-// Band computes the output cells [x0, x0+dst.Width) × [y0,
+// band computes the output cells [x0, x0+dst.Width) × [y0,
 // y0+dst.Height) into dst, a view whose cell (0, 0) is output cell (x0,
-// y0), reading src. If dst has a mask, Band writes its bits for the band
+// y0), reading src. If dst has a mask, band writes its bits for the band
 // under mu, which may be nil when no other goroutine writes dst's mask
 // words. It returns the number of source cells the band read, for
 // engine.Stats.
@@ -66,7 +67,7 @@ const maskedChunk = 256
 // valid ones. Invalid cells get NaN in Data. The value and validity of a
 // cell depend only on the tables and the source, not on the band, so
 // every tiling gives the same bits.
-func (p *Plan) Band(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src Source, mu *sync.Mutex) (read int) {
+func band(p *resamp.Plan, ws *workspace, dst raster.Float32Raster, x0, y0 int, src source, mu *sync.Mutex) (read int) {
 	w, h := dst.Width, dst.Height
 	x1, y1 := x0+w, y0+h
 	cx0, cx1 := max(x0, p.X.Lo), min(x1, p.X.Hi)
@@ -86,15 +87,15 @@ func (p *Plan) Band(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src Sou
 		fillNaN(row[cx1-x0:])
 	}
 	if cx0 < cx1 && cy0 < cy1 {
-		if p.Method == Nearest {
-			read = p.nearest(ws, dst, x0, y0, src, cx0, cx1, cy0, cy1, words)
+		if p.Method == resamp.Nearest {
+			read = nearest(p, ws, dst, x0, y0, src, cx0, cx1, cy0, cy1, words)
 		} else {
 			step := cx1 - cx0
 			if src.R.Valid != nil {
 				step = maskedChunk
 			}
 			for a := cx0; a < cx1; a += step {
-				read += p.chunk(ws, dst, x0, y0, src, a, min(a+step, cx1), cy0, cy1, words)
+				read += chunk(p, ws, dst, x0, y0, src, a, min(a+step, cx1), cy0, cy1, words)
 			}
 		}
 	}
@@ -116,13 +117,13 @@ func setBit(v []uint64, words, r, i int) {
 }
 
 // srcValid reports whether source cell (x, y) is valid.
-func srcValid(src Source, x, y int) bool {
+func srcValid(src source, x, y int) bool {
 	return raster.MaskGet(src.R.Valid, src.R.ValidOffset+(y-src.Y0)*src.R.Stride+x-src.X0)
 }
 
-// nearest is Band for Nearest: a copy through the index tables, bits and
+// nearest is band for Nearest: a copy through the index tables, bits and
 // NaN payloads included.
-func (p *Plan) nearest(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src Source, cx0, cx1, cy0, cy1, words int) int {
+func nearest(p *resamp.Plan, ws *workspace, dst raster.Float32Raster, x0, y0 int, src source, cx0, cx1, cy0, cy1, words int) int {
 	masked := src.R.Valid != nil
 	for y := cy0; y < cy1; y++ {
 		r := y - y0
@@ -144,22 +145,22 @@ func (p *Plan) nearest(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src 
 
 // chunk computes the covered output columns [cx0, cx1) of rows [cy0,
 // cy1) of the band, over their own footprint, and returns its size.
-func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src Source, cx0, cx1, cy0, cy1, words int) int {
+func chunk(p *resamp.Plan, ws *workspace, dst raster.Float32Raster, x0, y0 int, src source, cx0, cx1, cy0, cy1, words int) int {
 	fx0, fy0, fx1, fy1 := p.Footprint(cx0, cy0, cx1, cy1)
 	fpW, fpH, cw := fx1-fx0, fy1-fy0, cx1-cx0
 	stride := src.R.Stride
 	sdata := src.R.Data[(fy0-src.Y0)*stride+fx0-src.X0:]
 	masked := src.R.Valid != nil && !allValid(src, fx0, fy0, fpW, fpH)
 
-	ws.hs = grow(ws.hs, HScratch(fpW))
+	ws.hs = grow(ws.hs, resamp.HScratch(fpW))
 	ws.t = grow(ws.t, fpH*cw)
-	HRows(ws.t, cw, sdata, stride, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+	resamp.HRows(ws.t, cw, sdata, stride, fpH, &p.X, cx0, cx1, fx0, ws.hs)
 	if masked {
-		p.planes(ws, src, fx0, fy0, fpW, fpH, cx0, cx1)
+		planes(p, ws, src, fx0, fy0, fpW, fpH, cx0, cx1)
 		ws.tm = grow(ws.tm, fpH*cw)
 		ws.tf = grow(ws.tf, fpH*cw)
-		HRows(ws.tm, cw, ws.xm, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
-		HRows(ws.tf, cw, ws.xf, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+		resamp.HRows(ws.tm, cw, ws.xm, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
+		resamp.HRows(ws.tf, cw, ws.xf, fpW, fpH, &p.X, cx0, cx1, fx0, ws.hs)
 		ws.nm = grow(ws.nm, cw)
 		ws.d = grow(ws.d, cw)
 		ws.csum = grow(ws.csum, cw)
@@ -178,17 +179,17 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 		ty := int(p.Y.First[y]) - fy0
 		ny := int(p.Y.Taps[y])
 		wy := p.Y.W[p.Y.Off[y] : int(p.Y.Off[y])+ny]
-		VRow(out, ws.t[ty*cw:], cw, wy)
+		resamp.VRow(out, ws.t[ty*cw:], cw, wy)
 		if !masked {
 			switch {
 			case p.Cubic4 && p.Y.Clipped[y]:
 				for c := cx0; c < cx1; c++ {
-					out[c-cx0] = p.fallback(src, c, y, false)
+					out[c-cx0] = fallback(p, src, c, y, false)
 				}
 			case p.Cubic4:
 				for _, c := range p.ClippedX {
 					if c := int(c); c >= cx0 && c < cx1 {
-						out[c-cx0] = p.fallback(src, c, y, false)
+						out[c-cx0] = fallback(p, src, c, y, false)
 					}
 				}
 			}
@@ -198,21 +199,21 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 			continue
 		}
 
-		VRow(ws.nm, ws.tm[ty*cw:], cw, wy)
-		VRow(ws.d, ws.tf[ty*cw:], cw, wy)
+		resamp.VRow(ws.nm, ws.tm[ty*cw:], cw, wy)
+		resamp.VRow(ws.d, ws.tf[ty*cw:], cw, wy)
 		// The valid taps of each cell: counts are small integers, exact in
 		// float32, so the vertical pass with unit weights sums them.
 		csum := ws.csum[:cw]
-		VRow(csum, ws.cnt[ty*cw:], cw, ws.ones[:ny])
+		resamp.VRow(csum, ws.cnt[ty*cw:], cw, ws.ones[:ny])
 		if p.HalfValid {
 			// The valid cells of each window, summed like the tap counts.
-			VRow(ws.wsum[:cw], ws.wcnt[(int(p.Y.WinFirst[y])-fy0)*cw:], cw, ws.ones[:p.Y.WinN[y]])
+			resamp.VRow(ws.wsum[:cw], ws.wcnt[(int(p.Y.WinFirst[y])-fy0)*cw:], cw, ws.ones[:p.Y.WinN[y]])
 		}
 		cy := int(p.Y.Centre[y])
 		for c := cx0; c < cx1; c++ {
 			i := c - cx0
 			ok := ws.d[i] > 0
-			if p.Method != Average {
+			if p.Method != resamp.Average {
 				ok = ok && srcValid(src, int(p.X.Centre[c]), cy)
 			}
 			if ok && p.HalfValid && (!p.X.Exact[c] || !p.Y.Exact[y]) {
@@ -225,7 +226,7 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 			full := int(csum[i]) == int(p.X.Taps[c])*ny
 			switch {
 			case p.Cubic4 && (!full || p.X.Clipped[c] || p.Y.Clipped[y]):
-				out[i] = p.fallback(src, c, y, true)
+				out[i] = fallback(p, src, c, y, true)
 			case !full:
 				out[i] = ws.nm[i] / ws.d[i]
 			}
@@ -240,7 +241,7 @@ func (p *Plan) chunk(ws *Workspace, dst raster.Float32Raster, x0, y0 int, src So
 // selection, never by multiplying (Data under a cleared bit may be Inf or
 // NaN). cnt[j*cw + c-cx0] is the number of valid cells among output
 // column c's taps in footprint row j.
-func (p *Plan) planes(ws *Workspace, src Source, fx0, fy0, fpW, fpH, cx0, cx1 int) {
+func planes(p *resamp.Plan, ws *workspace, src source, fx0, fy0, fpW, fpH, cx0, cx1 int) {
 	cw := cx1 - cx0
 	ws.xm = grow(ws.xm, fpW*fpH)
 	ws.xf = grow(ws.xf, fpW*fpH)
@@ -290,7 +291,7 @@ func (p *Plan) planes(ws *Workspace, src Source, fx0, fy0, fpW, fpH, cx0, cx1 in
 // a tap to the edge or to NoData: unwidened bilinear over the valid
 // cells. Its sums run in the canonical order; with all its taps valid it
 // is the unmasked sum, otherwise the masked sum over the valid weight.
-func (p *Plan) fallback(src Source, c, r int, masked bool) float32 {
+func fallback(p *resamp.Plan, src source, c, r int, masked bool) float32 {
 	bx, by := &p.BX, &p.BY
 	fx, nx := int(bx.First[c]), int(bx.Taps[c])
 	fy, ny := int(by.First[r]), int(by.Taps[r])
@@ -336,7 +337,7 @@ func (p *Plan) fallback(src Source, c, r int, masked bool) float32 {
 
 // allValid reports whether every source cell of the fpW×fpH footprint at
 // (fx0, fy0) is valid.
-func allValid(src Source, fx0, fy0, fpW, fpH int) bool {
+func allValid(src source, fx0, fy0, fpW, fpH int) bool {
 	for j := range fpH {
 		off := src.R.ValidOffset + (fy0+j-src.Y0)*src.R.Stride + fx0 - src.X0
 		for i := 0; i < fpW; i += 64 {
