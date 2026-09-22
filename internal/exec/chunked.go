@@ -262,6 +262,11 @@ func roundUp64(n int) int { return (n + 63) &^ 63 }
 // is always read, computed and written completely: cancellation stops
 // workers claiming tiles, and never leaves a tile half written.
 func (c *chunkJob) run(ctx context.Context) error {
+	defer func() {
+		for i := range c.workers {
+			c.workers[i].t.releaseScratch()
+		}
+	}()
 	ioCtx := context.WithoutCancel(ctx)
 	err := runWorkers(ctx, len(c.workers), c.tiles, func(w, i int) error {
 		return c.tile(ioCtx, &c.workers[w], i)

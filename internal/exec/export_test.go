@@ -19,3 +19,11 @@ func Bands(w, h, tileW, tileH int) [][4]int {
 	}
 	return out
 }
+
+// SetPoisonScratch sets whether scratch is filled with garbage every time
+// it is lent, and returns a function that restores the old setting.
+func SetPoisonScratch(on bool) (restore func()) {
+	old := poisonScratch
+	poisonScratch = on
+	return func() { poisonScratch = old }
+}
