@@ -119,3 +119,50 @@ happens once per call.
   variance, rounded to float64. It is within one ulp of the true value
   and depends only on the values. Sum, Mean and Variance are correctly
   rounded.
+
+## Suite: Count, MinMax, Sum and Stats
+
+These numbers come from `benchmarks/reduce` (`go test ./benchmarks/reduce
+-run '^$' -bench . -short -count 3`, `GOEXPERIMENT=simd`), on the same
+machine as above.
+- **Operand.** One compact DEM, read through the Tiled API. With
+  `mask=on`, 10% of cells are invalid at random, so almost no 64-cell
+  mask word is wholly valid.
+- **Values.** Medians of 3 runs, in GB/s at 4 bytes per cell (4.125 with
+  a mask).
+- **Sizes.** 16384² was not run; `-short` skips it.
+
+At 4096²:
+
+| op | mask | scalar, 1 worker | scalar, 12 | scalar, 24 | simd, 1 | simd, 12 | simd, 24 | simd, 1 worker, ns/cell |
+|---|---|---|---|---|---|---|---|---|
+| MinMax | off | 1.39 | 15.0 | 25.4 | 9.12 | 43.5 | 41.0 | 0.44 |
+| MinMax | on | 1.25 | 13.3 | 21.3 | 1.25 | 13.2 | 21.4 | 3.30 |
+| **Sum** | off | 1.75 | 17.8 | 22.6 | 4.87 | 38.8 | 36.9 | 0.82 |
+| **Sum** | on | 1.24 | 12.1 | 15.7 | 1.84 | 18.0 | 22.4 | 2.24 |
+| **Stats** | off | 0.63 | 6.35 | 9.23 | 2.54 | 24.0 | 29.2 | 1.57 |
+| **Stats** | on | 0.59 | 5.78 | 8.20 | 1.28 | 12.3 | 15.4 | 3.23 |
+
+Count reads no data at all: unmasked it multiplies each band's width by
+its height, and with a mask it popcounts the words, at 26 GB/s on one
+worker.
+
+- **Unmasked, Sum reaches the read bandwidth with the engine's workers.**
+  It hits 38.8 GB/s against MinMax's 43.5, so an exact sum costs next to
+  nothing more than a max fold once the cores share it. Stats, which also
+  sums squares and keeps the extremes, reaches 29 GB/s.
+- **Scattered masks.** Folding a partly valid word cell by cell cost
+  6.0 ns/cell for Sum and 8.5 for Stats. They now pack the valid cells of
+  such words into a 256-cell buffer per worker (`summary.Runs`), which
+  hands them to the accumulator in runs long enough for its 64-cell
+  vector blocks, at 2.2 and 3.2 ns/cell. What is left is the packing loop
+  itself.
+  - A parcel mask, whose NoData is one region outside the parcel, has
+    whole valid or invalid words almost everywhere and takes the
+    unmasked path.
+  - MinMax still walks such words cell by cell: 3.3 ns/cell with either
+    backend, before this work as after. Packing would fix it the same way.
+- **Small rasters.** At 256² every Stats call pays about 10 µs to round
+  its results through `math/big`, plus the per-worker partials. That is
+  2.4 ns/cell on one worker, and 1.6 at 1024². From 4096² up the cost per
+  call no longer shows.

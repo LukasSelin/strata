@@ -34,15 +34,17 @@ const (
 	pieceMask    = 1<<24 - 1
 )
 
-func init() { useScalar(false) }
+func init() { UseScalar(false) }
 
-// useScalar switches Sum and Moments to the scalar loops, or back, for
-// tests that compare the two in one binary.
-func useScalar(scalar bool) {
+// UseScalar switches Sum and Moments to the scalar loops (true) or back to
+// the best available ones (false), for tests and benchmarks that compare
+// the two in one binary. The results are the same bits either way. It is
+// not safe to call while an accumulator is being added to.
+func UseScalar(scalar bool) {
 	if scalar || !archsimd.X86.AVX2() {
-		sumKernel, momentsKernel = addSums, addMoments
+		sumKernel, momentsKernel, backend = addSums, addMoments, "scalar"
 	} else {
-		sumKernel, momentsKernel = addSumsAVX2, addMomentsAVX2
+		sumKernel, momentsKernel, backend = addSumsAVX2, addMomentsAVX2, "avx2"
 	}
 }
 

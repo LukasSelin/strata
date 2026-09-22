@@ -33,7 +33,7 @@ the detailed record; this table only points at it.
 | Traffic counter (`engine.Stats`) | §51 | done |
 | Reductions: Count, MinMax, the fold driver | §49 | done |
 | Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
-| Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | not started |
+| Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | done |
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
@@ -2117,6 +2117,8 @@ strata/
 │   ├── stencil/               implemented: horn.go, aspect.go, mask.go, simd_amd64.go
 │   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
 │   │                           accum.go, moments.go, result.go, simd_amd64.go
+│   ├── summary/               implemented (§49): the Stats reducer and Runs,
+│   │                           shared by reduce and, later, terrain
 │   ├── curve/                 implemented (§50): curve.go, scalar.go
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
@@ -2591,10 +2593,12 @@ a sink.
 
 ```go
 type Summary struct {
-    Count int64   // valid cells
-    Sum   float64
-    Min   float32
-    Max   float32
+    Count  int64   // valid cells
+    Sum    float64
+    Mean   float64
+    StdDev float64 // population
+    Min    float32
+    Max    float32
 }
 
 reduce.Count(src raster.Float32Raster) int64
@@ -2616,15 +2620,22 @@ reduce.CountTiled(ctx, src, engine.Options{}) (int64, error)
 reduce.CountChunked(ctx, src engine.RasterSource, engine.Options{}) (int64, error)
 reduce.MinMaxTiled(ctx, src, engine.Options{}) (min, max float32, count int64, err error)
 reduce.MinMaxChunked(ctx, src engine.RasterSource, engine.Options{}) (min, max float32, count int64, err error)
+reduce.SumTiled(ctx, src, engine.Options{}) (sum float64, count int64, err error)
+reduce.SumChunked(ctx, src engine.RasterSource, engine.Options{}) (sum float64, count int64, err error)
 reduce.StatsTiled(ctx, src, engine.Options{}) (Summary, error)
 reduce.StatsChunked(ctx, src engine.RasterSource, engine.Options{}) (Summary, error)
 ```
 
-Of these, `Count`, `MinMax` and their `Tiled` and `Chunked` forms exist.
-`Sum`, `Stats`, `Summary` and their forms do not yet (Status, below).
+All of these and their `Tiled` and `Chunked` forms exist.
 
-`Mean` is `Sum/Count` and needs no pass of its own. Standard deviation
-needs a second accumulator (sum of squares, or Welford) and can follow.
+`Mean` and `StdDev` are in `Summary` rather than functions of their own.
+Both come from the same pass: the exact accumulator keeps the sum of
+squares beside the sum (`accum.Moments`), which is cheaper than a second
+pass and, unlike Welford, exact. `Mean` is the exact sum over `Count`,
+correctly rounded, which `Sum/Count` in float64 would not be.
+`Summary` is computed by `internal/summary`, not in `reduce`, so that a
+neighbourhood statistic can fold a kernel's output with the same reducer
+and return the same type: the planned terrain statistics (§20).
 Histograms and quantiles are a later operation: they return a vector
 rather than a scalar, and their bin edges are a policy question of their
 own.
@@ -2810,8 +2821,12 @@ Status: partly done. `Count`, `MinMax` and the fold driver done (STRATA-12): the
 `Reducer`/`Cells` shape, `Reduce` and `ReduceChunked`, `vec.ReduceMin`
 and `vec.ReduceMax`, and package `reduce`. The accumulator decision and
 `internal/accum` done, with `benchmarks/reduce/RESULTS.md`. `Sum`,
-`Stats` and `Summary` are next, on `accum`, then `algebra.Normalize`; the
-`benchmarks/reduce` suite at the §38 sizes lands with them.
+`Stats` and `Summary` done, on `accum` and `internal/summary`, with the
+`benchmarks/reduce` suite; its numbers are in the same RESULTS.md. A
+masked fold packs the valid cells of partly valid mask words into a
+per-worker buffer (`summary.Runs`), so the vector blocks apply to
+scattered NoData too. `MinMax` does not use it yet and still walks
+such words cell by cell. `algebra.Normalize` is next.
 
 ## 50. Transfer Functions
 
