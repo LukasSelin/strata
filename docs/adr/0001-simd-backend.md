@@ -164,7 +164,10 @@ return the second operand on NaN and on equal operands. The removed asm
 patched only the NaN case, so it returned the wrong sign for, e.g.,
 `Min(-0, +0)`; the old `==`-based tests could not see that. The archsimd
 kernels OR (min) or AND (max) the bits of equal lanes and restore NaN lanes
-from the first operand.
+from both operands, since the compiler may swap `VMINPS`/`VMAXPS` operands.
+(Restoring only the first operand's NaN was the original rule; it broke in
+`internal/focalrow`'s four-accumulator fold, where the compiler put the
+accumulator in the second source and `min(+Inf, NaN)` returned +Inf.)
 
 Results on the same machine, go1.27.1 with `GOEXPERIMENT=simd`, from the
 `internal/vec` benchmarks (4096 cells, medians of 5, ns/op):
@@ -209,7 +212,12 @@ gap versus the spike's NaN-only archsimd Clamp (567).
     shows it as a per-call cost);
   - handle NaN explicitly with `IsNaN` / `IfElse`. `VMINPS`/`VMAXPS` return the
     second operand on NaN, and arm64 `FMIN` propagates it, so raw `Min`/`Max`
-    semantics differ by arch;
+    semantics differ by arch. On amd64, restore NaN lanes from both operands
+    (min: `(x|y).IfElse(x.Equal(y).Or(x.IsNaN().Or(y.IsNaN())), x.Min(y))`;
+    max: `x.Add(y).IfElse(x.IsNaN().Or(y.IsNaN()), r)`), never from the first
+    alone: the compiler treats `Min`/`Max` as commutative and may swap the
+    `VMINPS`/`VMAXPS` sources for register allocation, so which Go operand
+    ends up "second" is not fixed by the source order;
   - prevent FMA fusion in scalar references with explicit `float32(...)`
     conversions so SIMD and scalar stay bit-identical;
   - gate amd64 SIMD on AVX2 (not just AVX), avoiding golang/go#81405.
