@@ -327,7 +327,9 @@ K3  kernel packages have no go statements, channels or select
 None of the rules applies to `_test.go` files. A new kernel package,
 `internal/focalrow` (§53) or a resampling one, registers by carrying the
 marker; one that imports `simd/archsimd` without it fails K0, which is
-how `focalrow` was found when this check first ran over it.
+how `focalrow` was found when this check first ran over it, and
+`internal/resamp` when it met the check on master: its band driver,
+which reads `raster` masks and takes the mask lock, moved to `resample`.
 
 ## 13. SIMD-First Design
 
@@ -1682,6 +1684,7 @@ strata/
 │   ├── doc.go
 │   ├── resample.go            Method, Options, Resample, ResampleTiled,
 │   │                           ResampleChunked and their checks
+│   ├── band.go                bands over the resamp kernels, validity
 │   └── tiled.go               tiling, bands, the chunked driver
 │
 ├── terrain/                   implemented
@@ -1713,8 +1716,8 @@ strata/
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
 │   │                           for the radius-0 packages' plain functions
-│   ├── resamp/                implemented (§54): table.go (tap tables), band.go
-│   │                           (bands, validity), scalar.go, dispatch.go,
+│   ├── resamp/                implemented (§54), kernel package: table.go (tap
+│   │                           tables), scalar.go, dispatch.go,
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window

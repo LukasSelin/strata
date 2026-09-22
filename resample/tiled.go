@@ -68,7 +68,7 @@ func ceilDiv(a, b int) int { return (a + b - 1) / b }
 
 // chunkWorker is one Chunked worker's buffers.
 type chunkWorker struct {
-	ws    resamp.Workspace
+	ws    workspace
 	in    raster.Float32Raster
 	out   raster.Float32Raster
 	stats engine.Stats
@@ -116,17 +116,17 @@ func runChunked(ctx context.Context, p plan, dst engine.RasterSink, src engine.R
 		x0, y0 := (i%tilesX)*tw, (i/tilesX)*th
 		x1, y1 := min(x0+tw, w), min(y0+th, h)
 		out := view(wk.out, x1-x0, y1-y0)
-		var s resamp.Source
+		var s source
 		fx0, fy0, fx1, fy1 := pl.Footprint(x0, y0, x1, y1)
 		if fx1 > fx0 {
 			in := view(wk.in, fx1-fx0, fy1-fy0)
 			if err := src.ReadWindow(ioCtx, in, fx0, fy0); err != nil {
 				return fmt.Errorf("resample: reading src at (%d, %d): %w", fx0, fy0, err)
 			}
-			s = resamp.Source{R: in, X0: fx0, Y0: fy0}
+			s = source{R: in, X0: fx0, Y0: fy0}
 			wk.stats.SourceRead += int64(fx1-fx0) * int64(fy1-fy0) * 4
 		}
-		read := pl.Band(&wk.ws, out, x0, y0, s, nil)
+		read := band(pl, &wk.ws, out, x0, y0, s, nil)
 		if err := dst.WriteWindow(ioCtx, out, x0, y0); err != nil {
 			return fmt.Errorf("resample: writing dst at (%d, %d): %w", x0, y0, err)
 		}
