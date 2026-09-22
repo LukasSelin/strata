@@ -21,7 +21,12 @@ import (
 // corpus, leaves a goroutine behind: ProcessN and ProcessChunked are the
 // only code in the module that starts goroutines (DESIGN.md §26), and they
 // must join every one before returning, whatever happens.
+//
+// It also poisons scratch every time the engine lends it, so that a
+// ScratchKernel that reads scratch before writing it fails every test
+// that runs it, not only the calls that miss the pool.
 func TestMain(m *testing.M) {
+	exec.SetPoisonScratch(true)
 	goleak.VerifyTestMain(m)
 }
 

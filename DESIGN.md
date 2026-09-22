@@ -1,10 +1,17 @@
 # SIMD-First Spatial Compute Engine
 
+This is the design record of strata's compute layer: memory layout,
+kernels, SIMD, the execution engine, validity, and how each is tested and
+measured. Formats, domain algorithms and GIS workflows sit outside it
+(§7) and appear here only where they constrain the core.
+
 Section numbers in this document are cited from code comments, ADRs and
 benchmark results. Add new material inside existing sections or at the end
 rather than renumbering. That is why §49–§52, which specify work that
-landed after v0.1, follow the long-term sections §46–§48. When a
-section's Status line changes, update the status table below as well.
+landed after v0.1, follow the long-term sections §46–§48, and why a
+section whose subject left the core keeps its number and a short note.
+When a section's Status line changes, update the status table below as
+well.
 
 Decisions recorded elsewhere and summarized here:
 
@@ -37,7 +44,7 @@ the detailed record; this table only points at it.
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
-| Register-level operation fusion | §29 | not started |
+| Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
@@ -47,96 +54,33 @@ the detailed record; this table only points at it.
 
 ## 1. Project Goal
 
-Build a Go-native, SIMD-accelerated spatial compute engine for large environmental, geospatial, and scientific workloads.
-
-The project should initially focus on raster and multidimensional environmental data, while leaving room for point clouds, voxels, and other spatial representations later.
-
-The project is not intended to be:
-
-- a GDAL rewrite
-- a general-purpose GIS suite
-- a vector geometry engine
-- a wrapper around GDAL/OGR
-- a file-format compatibility project
-- a replacement for scientific Python as an analysis environment
-
-Instead, the core focus is:
+Build a Go-native, SIMD-accelerated compute layer for large spatial
+arrays: rasters first, N-dimensional arrays and point batches later.
 
 > High-throughput numerical computation over large spatial datasets using Go-native memory layouts, SIMD, chunking, and concurrency.
 
-The first concrete target is:
+The first concrete target:
 
 > A Go backend should be able to process large spatial datasets efficiently without needing GDAL, Python, or cgo in the hot compute path.
 
+strata is not a GDAL rewrite, a GIS suite, a vector geometry engine, a
+wrapper around GDAL/OGR, a file-format project, or a replacement for
+scientific Python as an analysis environment.
+
 ## 2. Positioning
-
-The project should not be positioned as:
-
-> GDAL for Go
-
-That would place it in direct competition with projects that primarily expose traditional GIS functionality.
-
-Instead, position it as:
-
-> A SIMD-accelerated spatial compute engine for Go, initially focused on large raster and environmental array workloads.
-
-A shorter description:
 
 > Fast numerical computing for spatial data in Go.
 
-The emphasis should be on:
-
-- compute
-- memory layout
-- streaming
-- SIMD
-- bounded-memory execution
-- concurrency
-- reusable spatial kernels
-
-rather than on:
-
-- file-format breadth
-- desktop GIS workflows
-- feature/layer abstractions
-- GIS compatibility
+Not "GDAL for Go". The emphasis is compute, memory layout, bounded-memory
+streaming, SIMD, concurrency and reusable kernels, not format breadth,
+desktop GIS workflows, feature/layer abstractions or GIS compatibility.
 
 ## 3. Why This Project Exists
 
-There are several recurring needs in the Go and geospatial ecosystems.
-
-Developers often face one of these architectures:
-
-```text
-Go application
-     │
-     ├── cgo
-     │    │
-     │    ▼
-     │   GDAL / PDAL / native library
-     │
-     └── HTTP / subprocess
-          │
-          ▼
-      Python / NumPy / xarray
-```
-
-The project aims to make this possible instead:
-
-```text
-Go application
-     │
-     ▼
-Spatial compute engine
-     │
-     ▼
-SIMD + workers
-     │
-     ▼
-CPU
-```
-
-The key value proposition is:
+A Go program that needs serious raster math today either links a native
+stack through cgo (GDAL, PDAL) or calls out to a Python service. strata
+puts that computation in-process, behind ordinary Go calls, with SIMD and
+workers underneath:
 
 > Serious spatial numerical processing inside a normal Go application, with minimal deployment complexity.
 
@@ -150,121 +94,35 @@ numbers must say which mode they use.
 
 ## 4. Evidence of Need
 
-The project is based on several existing signals rather than an assumption that users explicitly asked for this exact architecture.
+The signals behind the project, none of them a request for this exact
+architecture:
 
-### Strong signal: pure-Go alternatives are valuable
+- **Pure-Go demand.** Go users repeatedly remove cgo and native
+  dependencies for cross-compilation, static binaries, containers and
+  simpler CI, and pure-Go geospatial projects exist for that reason.
+- **SIMD over slices.** Spatial workloads are `[]float32` arithmetic,
+  comparisons and reductions, which is what vector execution is for.
+- **Go is already used for geospatial systems** (GDAL bindings, H3 ports,
+  LAS readers, raster packages). What is missing is the numerical layer.
 
-There is repeated demand in the Go ecosystem for removing cgo and native-library dependencies.
-
-The reasons are usually:
-
-```text
-cross compilation
-static binaries
-containers
-simpler deployment
-fewer system dependencies
-portable builds
-easier CI
-```
-
-Geospatial projects are already appearing specifically to replace native dependencies with pure-Go implementations.
-
-This suggests a real user need:
-
-> "I want spatial functionality in Go without bringing a native geospatial stack into my deployment."
-
-### Strong signal: SIMD numerical processing in Go
-
-There is also clear interest in efficient numerical operations over Go slices.
-
-Common workloads are naturally expressed as:
-
-```text
-[]float32
-[]float64
-[]uint16
-```
-
-with operations such as:
-
-```text
-add
-multiply
-clamp
-compare
-reduce
-filter
-normalize
-```
-
-Spatial data is a natural consumer of this type of vectorized execution.
-
-### Moderate signal: geospatial backend workloads in Go
-
-The existence of:
-
-```text
-GDAL bindings
-H3 ports
-LAS/LAZ libraries
-raster packages
-spatial databases
-GIS wrappers
-```
-
-shows that Go is already used for geospatial systems.
-
-The missing layer is a strong Go-native numerical compute foundation.
-
-### Unproven hypothesis
-
-The key hypothesis this project should test is:
+The hypothesis the early releases test:
 
 > A shared compute layer across raster, multidimensional arrays, point clouds, and future spatial representations is useful enough to be preferable to a collection of specialized libraries.
 
-The early releases should deliberately validate this.
-
 ## 5. Primary User Stories
-
-The project should be designed around real jobs rather than around abstract capabilities.
 
 ### 5.1 Go backend processing a large raster
 
-A backend developer needs to compute:
-
-```text
-slope
-aspect
-hillshade
-normalization
-threshold masks
-terrain derivatives
-environmental indices
-```
-
-over a large raster.
-
-They want:
-
-```text
-single Go binary
-bounded memory
-parallel processing
-SIMD
-no Python service
-no GDAL dependency
-```
-
-Example, for a raster that fits in memory:
+The primary v0.x use case. A backend computes slope, aspect, hillshade,
+normalization, threshold masks or environmental indices over a large
+raster, in a single Go binary with bounded memory, workers and SIMD, and
+no Python service or GDAL dependency:
 
 ```go
 dem := raster.NewFloat32(width, height, data) // from any source adapter
 slope := raster.NewFloat32Like(dem)
 
 terrain.Slope(slope, dem, terrain.SlopeOptions{CellSize: 10})
-
-writeResponse(slope)
 ```
 
 Operations write into a caller-supplied destination and allocate nothing
@@ -272,205 +130,64 @@ Operations write into a caller-supplied destination and allocate nothing
 tile through the execution engine, reading windows from a source (§24,
 §25).
 
-This should be the primary v0.x use case.
+### 5.2 Other workloads the core must serve
 
-### 5.2 Environmental modelling
+- **Environmental arrays** such as `temperature[time,y,x]`: map, reduce,
+  normalize, threshold, combine. Needs N-D arrays (§10, v0.3).
+- **Remote-sensing indices** such as NDVI = (NIR − Red) / (NIR + Red):
+  pointwise arithmetic and a natural case for fusion (§29, §52).
+- **Point clouds**: attribute filters, transforms, aggregation and
+  rasterization over point batches (§11, v0.7).
 
-Users may work with:
-
-```text
-weather
-terrain
-forestry
-wildfire
-hydrology
-snow
-agriculture
-remote sensing
-oceanography
-```
-
-Typical data:
-
-```text
-temperature[time,y,x]
-
-humidity[time,y,x]
-
-wind_u[time,y,x]
-
-wind_v[time,y,x]
-
-elevation[y,x]
-```
-
-Typical operations:
-
-```text
-map
-filter
-reduce
-resample
-normalize
-combine
-terrain derivatives
-thresholds
-```
-
-These workloads should map naturally onto the compute engine.
-
-### 5.3 Remote sensing
-
-Users should be able to compute operations such as:
-
-```text
-NDVI
-NDMI
-NBR
-spectral masks
-normalization
-classification inputs
-terrain correction
-```
-
-For example:
-
-```text
-       NIR - Red
-NDVI = ─────────
-       NIR + Red
-```
-
-This is a strong SIMD workload and a natural fit for fused execution later.
-
-### 5.4 Point-cloud processing
-
-Longer term, users should be able to stream point clouds and perform operations such as:
-
-```text
-height filtering
-classification filtering
-coordinate transforms
-aggregation
-voxel downsampling
-rasterization
-terrain extraction
-canopy extraction
-```
-
-Potential workflow:
-
-```text
-LAS / LAZ
-   │
-   ▼
-Point cloud
-   │
-   ├── ground filter
-   ├── vegetation filter
-   │
-   ▼
-Rasterize
-   │
-   ├── DEM
-   └── canopy height
-          │
-          ▼
-      terrain analysis
-```
+strata supplies the arithmetic, stencils, reductions and scheduling. The
+domain workflow — a fire-risk model, a hydrological network, a canopy
+product — belongs to the module that imports strata (§7).
 
 ## 6. Core Architectural Principle
 
-The central compute flow should be:
+The central compute flow:
 
 > Source → chunk → tile/span → vector kernel → sink
 
-For raster workloads:
-
-```text
-Raster
-  ↓
-Tile
-  ↓
-Row
-  ↓
-Span
-  ↓
-SIMD vector
-```
-
-For point clouds:
-
-```text
-Point stream
-   ↓
-Chunk
-   ↓
-Attribute columns
-   ↓
-SIMD filter / transform
-```
-
-This should be the foundation around which the rest of the project evolves.
+For rasters: raster → tile → band of rows → span → SIMD vector. For point
+clouds, later: point stream → batch → attribute columns → SIMD filter or
+transform.
 
 ## 7. Scope Boundary
 
-The compute engine should know as little as possible about specific storage formats.
-
-The core should understand concepts such as:
+strata is the compute layer. The core understands:
 
 ```text
-Array
-Raster
-Grid
-Shape
-Stride
-Window
-Span
-Chunk
-Tile
-Mask
-Kernel
-PointBatch
+Array  Raster  Grid  Shape  Stride  Window  Span
+Chunk  Tile  Mask  Kernel  PointBatch
 ```
 
-It should not fundamentally depend on:
+It does not depend on storage formats (GeoTIFF, COG, LAS, Shapefile,
+GeoPackage, FileGDB, PostGIS, GDAL datasets). Those are adapters (§34).
 
-```text
-Shapefile
-GeoPackage
-PostGIS
-FileGDB
-GDAL Dataset
-LAS file
-GeoTIFF file
-```
+**Domain algorithms live in modules that import strata.** The core keeps
+operations that are domain-neutral numerical building blocks: pointwise
+algebra (§18), neighbourhood stencils (§20), reductions (§49) and transfer
+functions (§50), whose models live in the caller's tables. `terrain` is
+the one domain package in the core, because it is the proving consumer
+for stencils and halos and the operation the gdaldem comparison checks;
+it grows only local derivatives of a DEM.
 
-Those should be adapters or external libraries.
+Anything with non-local dependencies or domain conventions of its own —
+hydrology (depression filling, flow direction, accumulation, watersheds),
+fire-behaviour models, classification schemes — belongs in a separate
+module. Where such a module cannot do what it needs through the public
+API (a kernel it cannot run on the engine, an element type strata lacks),
+that is evidence for what strata publishes next (§9, §22, §52), and it is
+recorded here when it happens.
 
 ## 8. Spatial Representations
 
-The engine should eventually support multiple kinds of spatial data.
-
-Do not force them into one generic abstraction.
-
-Instead, distinguish between broad computational families.
-
-```text
-                     Spatial engine
-
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-        Dense          Sparse          Graph
-        spatial        spatial         spatial
-
-          │              │              │
-     ┌────┴────┐    ┌────┴────┐      networks
-     ▼         ▼    ▼         ▼
-   Raster    Voxel Points    Mesh
-```
-
-These representations should share low-level compute infrastructure where appropriate, but retain domain-specific APIs.
+The engine will eventually serve three computational families, each with
+its own API rather than one generic abstraction: **dense** (raster,
+voxel, N-D array), **sparse** (point clouds, meshes) and **graph**
+(networks). They share low-level infrastructure — workers, buffers, SIMD
+primitives, masks, reductions — where that fits (§12).
 
 ## 9. Raster Model
 
@@ -526,9 +243,9 @@ type Dataset struct {
 
 ## 10. Multidimensional Arrays
 
-Environmental data is often not purely two-dimensional.
-
-A future core array representation may look like:
+Environmental data is often not purely two-dimensional: `[time,y,x]`,
+`[level,time,y,x]`, `[scenario,time,y,x]`. A future core array may look
+like:
 
 ```go
 type Array[T Number] struct {
@@ -538,64 +255,23 @@ type Array[T Number] struct {
 }
 ```
 
-Examples:
-
-```text
-[y,x]
-
-[time,y,x]
-
-[z,y,x]
-
-[scenario,time,y,x]
-```
-
-Typical environmental datasets include:
-
-```text
-temperature[time,y,x]
-
-wind[level,time,y,x]
-
-risk[scenario,time,y,x]
-
-fuel[class,y,x]
-```
-
-This aligns naturally with chunked storage systems such as Zarr.
-
-Arrays need the same validity bitmap as rasters (§31). Note that `Stride`
-here is per dimension, while `Float32Raster.Stride` is the row stride in
-elements.
+This aligns with chunked storage such as Zarr. Arrays need the same
+validity bitmap as rasters (§31). `Stride` here is per dimension, while
+`Float32Raster.Stride` is the row stride in elements. The element-type
+decision made here also decides integer and float64 rasters (§9), which
+importing modules need for counts and labels (§7).
 
 Status: not started (v0.3).
 
 ## 11. Point-Cloud Model
 
-Point clouds should use a column-oriented representation.
-
-Avoid:
-
-```go
-type Point struct {
-    X float32
-    Y float32
-    Z float32
-
-    Intensity uint16
-}
-```
-
-as the internal compute model.
-
-Prefer Structure of Arrays:
+Point clouds use a column-oriented representation (Structure of Arrays),
+never a `[]Point` of structs, so attribute filters, distances, masks and
+transforms map onto SIMD:
 
 ```go
 type PointCloud struct {
-    X []float32
-    Y []float32
-    Z []float32
-
+    X, Y, Z        []float32
     Intensity      []uint16
     Classification []uint8
 }
@@ -604,71 +280,17 @@ type PointCloud struct {
 Coordinates may need `float64`, or `float32` offsets from a batch origin,
 for large coordinate ranges (§39). That decision belongs to v0.7.
 
-This enables operations such as:
-
-```text
-height filtering
-distance calculations
-mask generation
-attribute filtering
-coordinate transforms
-aggregation
-```
-
-to map naturally onto SIMD.
-
 Status: not started (v0.7).
 
 ## 12. Dense vs Sparse Scheduling
 
-Raster and point-cloud workloads need different execution strategies.
-
-Dense spatial data:
-
-```text
-Raster
-Voxel
-N-D Array
-```
-
-should be scheduled using:
-
-```text
-tiles
-chunks
-halos
-strides
-```
-
-Sparse data:
-
-```text
-Point clouds
-Meshes
-```
-
-should be scheduled using:
-
-```text
-batches
-streams
-attribute columns
-spatial partitions
-```
-
-The engine should share:
-
-```text
-workers
-buffers
-SIMD primitives
-masks
-reductions
-chunk lifecycle
-```
-
-without forcing identical high-level APIs. In particular, dense sources are
-random-access windowed readers and sparse sources are streams (§24).
+Dense data (raster, voxel, N-D array) is scheduled in tiles, chunks and
+halos over strides. Sparse data (point clouds, meshes) is scheduled in
+batches and streams over attribute columns and spatial partitions. The
+engine shares workers, buffers, SIMD primitives, masks, reductions and
+the chunk lifecycle between them without forcing identical high-level
+APIs. In particular, dense sources are random-access windowed readers and
+sparse sources are streams (§24).
 
 ## 13. SIMD-First Design
 
@@ -969,7 +591,9 @@ terrain/
 └── stencil.go     shared row driver, edge and validity policy
 ```
 
-Later: `ruggedness.go`, `curvature.go`.
+Later: `ruggedness.go`, `curvature.go`. `terrain` stays limited to local
+derivatives of a DEM; flow routing and everything built on it are a
+separate module's (§7).
 
 - **Method.** All four operations use Horn's 3×3 gradient, computed a
   whole row at a time. Each SIMD lane loads the three neighbouring rows
@@ -1206,30 +830,9 @@ Status: done for dense data. `MemorySource`, `MemorySink`, `RawSource`,
 `RawSink` and `RawFile` are in package `engine`; chunked entry points
 run over them (§25, §27).
 
-Potential later sources:
-
-```text
-Zarr
-GeoTIFF
-COG
-LAS / LAZ
-HTTP
-S3
-database
-generated data
-```
-
-Potential later sinks:
-
-```text
-Zarr
-GeoTIFF
-COG
-network stream
-database
-```
-
-This keeps computation independent from storage.
+Later sources and sinks are adapters (§34): Zarr, GeoTIFF, COG, LAS/LAZ,
+object storage, generated data. This keeps computation independent from
+storage.
 
 ## 25. Execution Engine
 
@@ -1365,9 +968,10 @@ validity and never write it, so the mask lock below has nothing to guard.
 
 **Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
 goroutines per call and uses the calling goroutine as the last worker;
-there is no global pool. Workers take bands from the plan in order with an
-atomic counter, each with its own views and erosion scratch, and the call
-joins them before it returns. Kernels run concurrently on disjoint bands.
+there is no global pool of goroutines. Workers take bands from the plan
+in order with an atomic counter, each with its own views and erosion
+scratch, and the call joins them before it returns. Kernels run
+concurrently on disjoint bands.
 Validity words can be shared between bands (cells side by side, row ends
 when the stride is not a multiple of 64, inputs and outputs in one mask),
 so all mask work runs under one lock per call, after the band's Data.
@@ -1477,25 +1081,10 @@ the wall. SIMD is worth 8.7× to Aspect, 5.7× to Hillshade, 4.1× to Slope
 and 2.6× to Gradient at 4096². That is why workers scale these operations
 where they barely scale the algebra ones.
 
-The rest of the list should benefit the same way, and is not measured yet:
-
-```text
-convolution
-resampling
-interpolation
-remote-sensing indices
-point-cloud filtering
-coordinate transforms
-```
-
-Benchmarks should explicitly distinguish:
-
-```text
-compute-bound
-cache-bound
-memory-bound
-IO-bound
-```
+Convolution, resampling, interpolation and point-cloud filtering should
+behave like the terrain kernels, and are not measured yet. Benchmarks
+distinguish compute-bound, cache-bound, memory-bound and IO-bound
+operations.
 
 `stratabench` classifies each measured operation this way (§38).
 
@@ -1553,41 +1142,28 @@ loaded, and computes validity once for the chain. Its intermediates still
 go through scratch memory, so register-level fusion, which removes them,
 is not started, and neither is a public way to build a chain.
 
+Register-level fusion has been measured before being built.
+`benchmarks/fusion` runs §52's six-factor product as five chained calls,
+as a `Pipeline` and as a hand-written fused kernel, all bit-identical.
+From 4096² up the fused kernel is 0.96–1.11× the `Pipeline` in default
+strips, and both reach the DRAM limit, about 26 GB/s on 12 workers: the
+scratch traffic between stages stays in cache. Chained to `Pipeline` is
+the large step, 1.6–2.6×. At 1024² the fused kernel wins by up to 5.5×,
+but that measures the `Pipeline` allocating its scratch per worker on
+every call (12.6 MB/op on 12 workers), not fusion. So a generator for
+pointwise chains is not worth building on this evidence. Measure again
+for stencil or longer chains, whose intermediates would spill out of
+cache, and at in-cache sizes once scratch is not allocated per call.
+The run is one `-count 3` on an unquiet machine; see
+`benchmarks/fusion/RESULTS.md` for the numbers and their caveats.
+
 ## 30. Streaming Pipelines
 
-The project should eventually support pipeline-style processing.
-
-For point clouds:
-
-```text
-Reader
-  ↓
-Filter
-  ↓
-Transform
-  ↓
-Aggregate
-  ↓
-Rasterize
-  ↓
-Sink
-```
-
-For rasters:
-
-```text
-Source
-  ↓
-Normalize
-  ↓
-Index calculation
-  ↓
-Threshold
-  ↓
-Sink
-```
-
-The engine should ideally fuse compatible stages and avoid unnecessary materialization.
+Pipeline-style processing — source, several operations, sink, with no
+materialised intermediates — is the raster form of what §52 builds: a
+chain of kernels run on each tile while it is loaded. Point-cloud
+pipelines (reader, filter, transform, aggregate, rasterize) follow the
+same idea over batches once §11 exists.
 
 Status: partly done for rasters. The radius-0 `Pipeline` (§52) runs a
 chain of pointwise stages from one source read to one sink write, inside
@@ -1636,148 +1212,46 @@ unchanged for integer data.
 
 ## 32. Point-Cloud to Raster Workflows
 
-A major long-term strength should be crossing spatial representations.
-
-Example:
-
-```text
-LiDAR
-  │
-  ├── ground points
-  │      │
-  │      ▼
-  │     DEM
-  │      │
-  │      ├── slope
-  │      └── aspect
-  │
-  └── vegetation points
-         │
-         ▼
-      canopy height
-      canopy density
-```
-
-This is directly useful for:
-
-```text
-wildfire
-forestry
-terrain analysis
-drone mapping
-infrastructure
-```
-
-and provides a natural reason for the project to support multiple spatial representations.
+Crossing representations — rasterizing point batches into a DEM or a
+canopy-height grid — is a core operation once point batches exist (v0.7):
+an aggregation kernel from sparse input to a dense output. The LiDAR →
+DEM → terrain workflow built on it is a caller's workflow and the §44
+demo, not core scope.
 
 ## 33. 3D and Voxel Direction
 
-Spatial computing is increasingly not limited to 2D rasters.
-
-The project should leave room for:
-
-```text
-point clouds
-voxel grids
-meshes
-3D fields
-```
-
-Potential voxel datasets include:
-
-```text
-fuel_density[x,y,z]
-
-temperature[x,y,z]
-
-vegetation[x,y,z]
-
-moisture[x,y,z]
-```
-
-This may become especially relevant for future fire, forestry, atmospheric, and remote-sensing workloads.
-
-Raster should therefore be treated as the first compute model, not the permanent boundary.
+Raster is the first compute model, not the permanent boundary. Voxel
+grids (`fuel_density[x,y,z]`, `moisture[x,y,z]`) are dense 3-D arrays and
+should fall out of §10 rather than need an engine of their own. Status:
+v0.10 experimentation.
 
 ## 34. IO Architecture
 
-Formats should remain adapters.
+Formats are adapters, never the core. An adapter implements the source
+and sink interfaces of §24 and converts its format's data types and fill
+values into `float32` plus validity at the boundary (§9, §31).
 
-Potential future modules:
-
-```text
-io/
-├── geotiff/
-├── cog/
-├── zarr/
-├── netcdf/
-├── las/
-└── gdal/
-```
-
-An optional GDAL adapter may eventually provide access to GDAL's large format ecosystem:
-
-```text
-GDAL
-  │
-  ▼
-adapter
-  │
-  ▼
-Raster / Array
-  │
-  ▼
-Compute engine
-```
-
-GDAL is therefore a data source, not the architectural foundation. An
-adapter that needs cgo lives in its own module, so the core stays cgo-free.
-
-Adapters implement the source and sink interfaces of §24. They convert
-their formats' data types and fill values into `float32` plus validity
-(§9, §31).
+- An adapter that needs cgo — GDAL, which would give access to its
+  format ecosystem — lives in its own module, so the core stays cgo-free.
+  GDAL is a data source, not a foundation.
+- Candidate adapters: GeoTIFF, COG, Zarr, NetCDF, LAS/LAZ. Whether they
+  live under `io/` in this repository or in their own modules is decided
+  with the first one (v0.5/v0.6).
 
 ## 35. Use Existing Format Libraries Where Possible
 
-The project should avoid unnecessarily reimplementing formats.
-
-Prefer:
-
-```text
-format library
-     │
-     ▼
-common chunks / arrays
-     │
-     ▼
-spatial compute
-```
-
-For example:
-
-```text
-existing Zarr package
-        │
-        ▼
-      Array
-
-LAS / LAZ library
-        │
-        ▼
-   Point batches
-```
-
-The project's differentiator should remain computation rather than parsing.
+Adapters wrap existing format libraries (a Zarr package into `Array`, a
+LAS/LAZ library into point batches) rather than reimplementing parsers.
+strata's differentiator is computation, not parsing.
 
 ## 36. CRS and Reprojection
 
-Do not attempt to replace PROJ in the initial project.
+Do not attempt to replace PROJ.
 
-Today `raster.CRS` is an opaque placeholder (`Code string`, for example
+`raster.CRS` is an opaque placeholder (`Code string`, for example
 `"EPSG:25833"`). A `Grid` carries it along, but nothing interprets it.
-
-When transformation is needed, define a narrow abstraction over coordinate
-columns rather than point structs (§11):
+When transformation is needed, define a narrow abstraction over
+coordinate columns rather than point structs (§11):
 
 ```go
 type Transformer interface {
@@ -1785,8 +1259,8 @@ type Transformer interface {
 }
 ```
 
-Native support may eventually include a useful subset (WGS84, Web Mercator,
-UTM). More advanced transformations remain adapter-driven.
+A native subset (WGS84, Web Mercator, UTM) may follow; the rest stays
+adapter-driven.
 
 ## 37. Memory Management
 
@@ -1801,25 +1275,18 @@ Avoid allocating complete temporary rasters for every operation:
   worker per call and reuses them across tiles, with no pooling (§27).
   Raw sources and sinks read and write straight into them and allocate
   nothing.
+- **Done.** A `ScratchKernel`'s working memory (§52) is pooled across
+  calls, in `internal/exec/scratch.go`: one `sync.Pool` per kind and size
+  class, a block per worker lent for the call and returned when its
+  workers have stopped, never zeroed. That is the one pool, and it is
+  allowed by the rule below because scratch's ownership is settled: the
+  engine owns it, lends it for one call, and the contract already says
+  its contents are unspecified and that a kernel must not keep it. Tile
+  buffers are still per call.
 
-Possible future concepts:
-
-```text
-workspaces
-chunk-local scratch buffers
-arena-like temporary memory
-buffer reuse
-```
-
-Example:
-
-```go
-type Workspace struct {
-    Float32 []float32
-}
-```
-
-Do not introduce aggressive pooling before ownership semantics are stable.
+Per-worker scratch for pipeline stages exists (§52). Workspaces shared
+across calls, or arena-like temporaries, may follow; do not introduce
+aggressive pooling before ownership semantics are stable.
 
 ## 38. Benchmarks
 
@@ -1839,12 +1306,9 @@ benchmarks/
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
-├── reduce/             planned: lands with Sum and its accumulator decision (§49)
-├── transfer/           planned: lands with a vector Reclass or Lookup (§50)
-├── remote_sensing/     planned
-├── convolution/        planned
-├── pointcloud/         planned
-└── nd/                 planned
+├── reduce/             implemented: Min, MinMax, Sum, Stats against read bandwidth, RESULTS.md (§49)
+├── fusion/             implemented: register-level fusion measured before building it, RESULTS.md (§29)
+└── transfer/           planned: lands with a vector Reclass or Lookup (§50)
 ```
 
 `algebra.Mask` has no suite benchmark yet (§42), and `transfer`'s
@@ -1856,18 +1320,8 @@ Benchmark names:
 Benchmark<Op>/size=<N>/mask=<off|on>/backend=<scalar|simd>/workers=<W>[/tiles=<T>]
 ```
 
-Metrics:
-
-```text
-ns/cell
-cells/sec
-points/sec
-GB/sec
-allocations
-SIMD/scalar speedup
-parallel scaling
-peak memory
-```
+Metrics: ns/cell, cells/s, GB/s, allocations, SIMD/scalar speedup,
+parallel scaling and peak memory.
 
 - Peak memory is not measured by the harness's benchmarks. The algebra,
   engine and terrain suites' peaks were measured by hand and documented in
@@ -1890,27 +1344,7 @@ peak memory
   scalar/SIMD numbers remain the internal measure, and the two are not
   interchangeable.
 
-Raster sizes:
-
-```text
-256 × 256
-
-1024 × 1024
-
-4096 × 4096
-
-16384 × 16384
-```
-
-Suggested point-cloud sizes:
-
-```text
-1M points
-
-10M points
-
-100M points
-```
+Raster sizes: 256², 1024², 4096² and 16384².
 
 ## 39. Correctness Testing
 
@@ -2091,14 +1525,11 @@ turn the result red. `gdalcheck.sh` runs `gdaldem` on a real raster in
 Docker and differences it against strata's `Chunked` output. `transfer`
 is not covered by the harness yet.
 
-For point clouds also test:
+Every new public operation gets a reference in `acceptance/` as well as
+tests here; an operation with no outside reference is not done.
 
-```text
-empty batches
-attribute length mismatch
-sparse masks
-large coordinate ranges
-```
+Point batches, when they exist, add empty batches, attribute-length
+mismatches, sparse masks and large coordinate ranges to the table above.
 
 ## 40. Package Layout
 
@@ -2178,56 +1609,27 @@ strata/
 └── docs/adr/
 ```
 
-Later:
-
-```text
-array/
-pointcloud/
-voxel/
-mesh/
-remote/
-io/
-```
+Later: `array/` (v0.3) and `pointcloud/` (v0.7), and format adapters
+(§34). Domain packages other than `terrain` live in other modules (§7).
 
 ## 41. Explicit Non-Goals for v0.1
 
-Do not initially build:
+Do not build, in the core:
 
 ```text
-Shapefile support
-GeoPackage support
-PostGIS integration
-vector geometry
-polygon overlay
-
-GeoTIFF parser
-COG parser
-LAS parser
-
-CRS transformation
-PROJ replacement
-
-point-cloud engine
-
-voxel engine
-
-generic (non-float32) raster types
-
-ARM64 SIMD kernels
-
-distributed execution
-
-GPU acceleration
-
-CUDA
-OpenCL
-
+vector geometry, polygon overlay, vectorization of rasters
+format parsers: GeoTIFF, COG, LAS, Shapefile, GeoPackage, PostGIS
+CRS transformation, a PROJ replacement
+domain algorithms beyond local terrain derivatives (§7)
+point-cloud and voxel engines (until v0.7 / v0.10)
+generic (non-float32) raster types (until v0.3)
+ARM64 SIMD kernels (STRATA-11)
+distributed execution, GPU, CUDA, OpenCL
 full GIS workflows
 ```
 
-These may become integrations later.
-
-The first release should prove the compute foundation.
+Formats may become adapters later (§34); domain algorithms are other
+modules' business.
 
 ## 42. Initial Milestone — v0.1
 
@@ -2311,7 +1713,9 @@ on (§28). `Mask`, added after those runs, has no benchmark yet.
 Status: done. Every item above is implemented and measured, and the §43
 validation target ran. Of what publishing needed beyond this list, the
 fetchable module path (`github.com/LukasSelin/strata`), the README and CI
-are done. A licence has not been chosen yet, and nothing is tagged.
+are done. A licence has not been chosen yet — until one is, nothing may
+import strata for reuse — and nothing is tagged for importing modules to
+pin (§7, §45).
 
 ## 43. First Validation Target
 
@@ -2359,44 +1763,13 @@ runs, at 4096² and 20000², equal the whole-raster result.
 
 ## 44. Second Validation Target
 
-The second major proof should test cross-representation usefulness.
+The second proof tests cross-representation usefulness: stream a large
+LAZ file as point batches, filter ground and vegetation, rasterize a DEM
+and a canopy-height grid, run slope and aspect, and write the results —
+in one Go binary, with bounded memory, workers and SIMD.
 
-Potential demo:
-
-```text
-5 GB LAZ
-   │
-   ▼
-stream point batches
-   │
-   ├── ground filter
-   └── vegetation filter
-          │
-          ▼
-      rasterization
-          │
-    ┌─────┴─────┐
-    ▼           ▼
-   DEM      canopy height
-    │
-    ▼
-slope + aspect
-    │
-    ▼
-Zarr / GeoTIFF
-```
-
-The important properties would be:
-
-```text
-one Go binary
-bounded memory
-parallel
-SIMD accelerated
-streaming
-```
-
-That would make the project's value proposition immediately understandable.
+It needs point batches (v0.7), a rasterization kernel (§32) and a LAZ
+adapter (§34). The demo program itself need not live in the core module.
 
 ## 45. Development Roadmap
 
@@ -2448,65 +1821,28 @@ broadcast-style operations
 general Source / Sink APIs beyond raw files
 streaming sources for sparse data
 workspace reuse
-pipeline execution          partly done: the radius-0 Pipeline, internal (§52)
+pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
+                            radius > 0 and several outputs remain
+deciding whether to publish Kernel (§22, §52)
 ```
 
-**v0.5: Zarr integration**
+**Later milestones**
 
 ```text
-chunk-native datasets
-environmental time series
-large N-D arrays
+v0.5   Zarr adapter: chunk-native N-D datasets (§34)
+v0.6   GeoTIFF / COG adapters (§34)
+v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
+v0.8   resampling, alignment, mosaics, interpolation
+v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
+       register-level fusion measured, not built (§29)
+v0.10  voxel grids as 3-D arrays (§33)
 ```
 
-**v0.6: Raster interoperability**
-
-```text
-GeoTIFF
-COG
-external adapters
-```
-
-**v0.7: Point-cloud foundation**
-
-```text
-PointBatch
-Structure of Arrays
-filters
-reductions
-aggregation
-rasterization
-```
-
-**v0.8: Spatial processing**
-
-```text
-resampling
-alignment
-mosaics
-interpolation
-```
-
-**v0.9: Pipeline optimization**
-
-```text
-operation fusion            partly done: tile-level, radius 0 (§29, §52)
-lazy planning
-kernel scheduling
-```
-
-**v0.10: 3D experimentation**
-
-```text
-voxel grids
-3D arrays
-point-to-voxel aggregation
-```
-
-**Not tied to a milestone:** revisiting portable `simd` with Go 1.28
-(ADR 0001). The ARM64 NEON kernels (STRATA-11), the traffic counter
-(§51), the outside benchmark against `gdaldem` (§38) and the acceptance
-harness (§39) landed this way and are done.
+**Not tied to a milestone:** a licence and tagged releases, so domain
+modules can import and pin strata (§7, §42); and revisiting portable
+`simd` with Go 1.28 (ADR 0001). The ARM64 NEON kernels (STRATA-11), the
+traffic counter (§51), the outside benchmark against `gdaldem` (§38) and
+the acceptance harness (§39) landed this way and are done.
 
 **v1.0**
 
@@ -2518,71 +1854,26 @@ with strong raster, environmental-array, and streaming foundations.
 
 ## 46. Long-Term Identity
 
-The project should live closer to:
-
-```text
-NumPy / xarray
-+
-raster algebra
-+
-PDAL-style streaming
-+
-terrain processing
-+
-Zarr
-+
-Go SIMD
-```
-
-than to:
-
-```text
-QGIS
-+
-GDAL
-+
-OGR
-```
-
-The goal is not to own every spatial data format.
-
-The goal is to become the efficient compute layer those formats can feed.
+strata should sit closer to NumPy/xarray + raster algebra + PDAL-style
+streaming + Zarr + Go SIMD than to QGIS + GDAL + OGR. The goal is not to
+own spatial data formats or domain workflows; it is to be the efficient
+compute layer that formats feed and domain modules import.
 
 ## 47. Long-Term Architecture
 
 ```text
-                         Sources
-
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-        Zarr            GeoTIFF          LAZ
-          │               │               │
-          └───────────────┼───────────────┘
-                          ▼
-                        Chunks
+ format adapters (§34)          GeoTIFF · Zarr · LAZ · raw
+          │
+          ▼
+       chunks ──► representations: Raster · Array · PointBatch
                           │
                           ▼
-                   Spatial representations
-
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-          Raster        Array       PointCloud
-             │            │            │
-             └────────────┼────────────┘
-                          ▼
-                    Execution engine
+                  execution engine (§25)
+                     SIMD │ scalar
                           │
-                 ┌────────┴────────┐
-                 ▼                 ▼
-               SIMD             scalar
-                          │
+ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┼─ ─ ─ ─ ─ ─ ─ ─ ─  strata's public API
                           ▼
-                     Domain layers
-
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-       terrain         remote          wildfire
-                       sensing
+ domain modules       terrain (in core) · hydrology · remote sensing · wildfire
 ```
 
 ## 48. Core Architectural Principles to Protect
@@ -2598,6 +1889,7 @@ The following principles should survive every future expansion:
 - Scalar execution defines correctness.
 - Validity is carried beside the data, never encoded in it.
 - The project should optimize numerical spatial computation, not recreate the entire GIS ecosystem.
+- Domain algorithms live in modules that import strata (§7).
 
 The shortest expression of the architecture is:
 
@@ -3377,7 +2669,7 @@ hash it cannot accidentally satisfy.
 Status: partly done. The radius-0 cut is done: `Pipeline`, `NewPipeline`, the
 `ScratchKernel`/`ScratchSize`/`Scratch` contract extension and
 `Span.Scratch`, per-worker scratch in `job.allocScratch` sized by
-`plan.spanSize` and `chunkJob.spanSize`, and
+`plan.spanSize` and `chunkJob.spanSize` and pooled across calls, and
 `internal/exec/pipeline_test.go`.
 
 The acceptance test passes at both numbers: a six-input product over
@@ -3403,6 +2695,44 @@ built for every one of a great many small bands; by pointer the same
 matrix is geomean −0.68% against the parent commit, which is the
 machine's noise. That is the §51 counter's sibling lesson — a cheap
 measurement caught a cost that was invisible in the design.
+
+Scratch is pooled across calls (`internal/exec/scratch.go`, §37),
+because allocating it per call cost more than the pipeline saved. Every
+call made and zeroed a fresh block per worker — 1 MiB for the four
+intermediates of `benchmarks/fusion`'s five-Mul chain in default strips,
+12 MiB on 12 workers — and at 1024², where the operands are near cache,
+that allocation was the call: the pipeline ran slower on 12 workers
+than on one. Now each worker takes a block from a `sync.Pool` per kind
+and size class (eight to an octave, so at most 1/8 over; the usual
+spans are powers of two and waste nothing) and gives it back when the
+call's workers have stopped. Nothing is zeroed, which the contract
+already allowed. A `sync.Pool` rather than a cache on the `Pipeline`
+because it serves every `ScratchKernel` and both drivers, is already
+safe for concurrent calls, and is emptied by the collector; rather
+than caller-supplied scratch because that would put ownership in the
+public API for a saving the engine can make alone. The slices lent are
+still exactly the lengths asked for, capacity included, so an overrun
+still trips a bounds check; views are cleared on the way back so a
+pooled block does not keep a caller's rasters alive; and tests poison
+every block lent (NaN cells, patterned bits, junk views), so a kernel
+that reads scratch before writing it fails every test, not only a pool
+miss. `TestScratchIsReused` checks that a scratch call allocates no more
+than the same call of a plain kernel, and `TestPipelineConcurrentCalls`
+runs one `Pipeline` from eight goroutines through both drivers.
+
+Measured with `BenchmarkMulPipeline` (AVX2, 12-core Zen 2, -count 5,
+median):
+
+| 1024², default strips | before | after |
+|---|---:|---:|
+| 1 worker, M cells/s | 516 | 547 |
+| 12 workers, M cells/s | 417 | 1065 |
+| 12 workers, B/op | 12.3 MiB | 13.5 KiB |
+
+From 4096² the call is bandwidth-bound and the change is within noise
+(an interleaved re-run of the 1-worker cases: +6% strips, the rest
+unchanged); B/op drops from 1–12 MiB to 13–75 KiB, which is about one
+pool miss per benchmark run spread over its few dozen calls.
 
 Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
