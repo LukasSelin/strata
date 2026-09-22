@@ -319,3 +319,50 @@ func TestAtan2F32Accuracy(t *testing.T) {
 		}
 	}
 }
+
+// TestHornGradientNearFlat checks the Horn differences on windows whose
+// cells lie within a factor of two of each other, as a DEM's neighbours
+// do. There each neighbour difference is exact (Sterbenz), so the
+// weighted difference must be within one float32 ulp of the sum of their
+// magnitudes, however high the terrain. Summing the elevations before
+// subtracting instead rounds at the ulp of four times the elevation, up
+// to 5.9e-3 at 8800 m, which on gentle slopes swamps the gradient and
+// turns aspect by up to 180° (tools/herbie/RESULTS.md).
+func TestHornGradientNearFlat(t *testing.T) {
+	ulp := func(s float64) float64 {
+		if s == 0 {
+			return 0
+		}
+		_, e := math.Frexp(s)
+		return math.Ldexp(1, e-24)
+	}
+	check := func(axis string, base, relief float64, i int, got float32, a, b, d float64) {
+		t.Helper()
+		want := a + b + 2*d
+		tol := ulp(math.Abs(a) + math.Abs(b) + 2*math.Abs(d))
+		if err := math.Abs(float64(got) - want); err > tol {
+			t.Errorf("base %g relief %g cell %d: %s = %g, want %g (error %.3g, tolerance %.3g)",
+				base, relief, i, axis, got, want, err, tol)
+		}
+	}
+	const n = 37 // lanes and a scalar tail on both SIMD backends
+	rng := rand.New(rand.NewPCG(31, 32))
+	for _, base := range []float64{500, 1000, 4000, 8800} {
+		for _, relief := range []float64{0.01, 1, 100} {
+			var rows [3][]float32
+			for r := range rows {
+				rows[r] = make([]float32, n+2)
+				for c := range rows[r] {
+					rows[r][c] = float32(base + (rng.Float64()*2-1)*relief)
+				}
+			}
+			dx, dy := make([]float32, n), make([]float32, n)
+			HornGradientRow(dx, dy, rows[0], rows[1], rows[2], 1, 1)
+			for i := range n {
+				z := func(r, c int) float64 { return float64(rows[r][i+c]) }
+				check("dx", base, relief, i, dx[i], z(0, 2)-z(0, 0), z(2, 2)-z(2, 0), z(1, 2)-z(1, 0))
+				check("dy", base, relief, i, dy[i], z(2, 0)-z(0, 0), z(2, 2)-z(0, 2), z(2, 1)-z(0, 1))
+			}
+		}
+	}
+}

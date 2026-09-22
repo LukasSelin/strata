@@ -48,8 +48,10 @@ func hornDiff4(r0, r1, r2 []float32) (dx, dy archsimd.Float32x4) {
 	z1, z2, z3 := load4(r0), load4(r0[1:]), load4(r0[2:])
 	z4, z6 := load4(r1), load4(r1[2:])
 	z7, z8, z9 := load4(r2), load4(r2[1:]), load4(r2[2:])
-	dx = z3.Add(z9).Add(z6.Add(z6)).Sub(z1.Add(z7).Add(z4.Add(z4)))
-	dy = z7.Add(z9).Add(z8.Add(z8)).Sub(z1.Add(z3).Add(z2.Add(z2)))
+	d := z6.Sub(z4)
+	dx = z3.Sub(z1).Add(z9.Sub(z7)).Add(d.Add(d))
+	d = z8.Sub(z2)
+	dy = z7.Sub(z1).Add(z9.Sub(z3)).Add(d.Add(d))
 	return dx, dy
 }
 
