@@ -36,7 +36,7 @@ the detailed record; this table only points at it.
 | Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
 | arm64 NEON backend (`GOEXPERIMENT=simd`, STRATA-11) | §14, §17 | done: `vec`, `stencil`, `accum` |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
-| `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature | §20 | done; ruggedness open |
+| `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -457,6 +457,7 @@ func HornSlopeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 func HornAspectRow(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 func HornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
 func ZTCurvatureRow(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
+func RuggednessRow(dst, r0, r1, r2 []float32, kind RuggednessKind)
 
 func Erode3x3(...) // validity of radius-1 outputs, word-level
 func ClearBorder(...)
@@ -638,12 +639,12 @@ terrain/
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
+├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness
 └── stencil.go     shared row driver, edge and validity policy
 ```
 
-Later: `ruggedness.go`. `terrain` stays limited to local
-derivatives of a DEM; flow routing and everything built on it are a
-separate module's (§7).
+`terrain` stays limited to local derivatives of a DEM; flow routing and
+everything built on it are a separate module's (§7).
 
 - **Method.** Gradient, Slope, Aspect and Hillshade use Horn's 3×3
   gradient, computed a whole row at a time. Each SIMD lane loads the
@@ -654,6 +655,24 @@ separate module's (§7).
   curvature, positive where convex. It is the terrain kernel with the
   most arithmetic per cell and no arctangent: two divisions and a
   square root.
+- **Ruggedness.** Riley's and Wilson's terrain ruggedness index, the
+  topographic position index and roughness (max − min) of the 3×3
+  window, in elevation units, with no cell size or ZFactor. Unlike the
+  other kernels, whose conventions are gdaldem's but whose rounding is
+  their own, these reproduce gdaldem's arithmetic operation for
+  operation (apps/gdaldem_lib.cpp, float32 input): each difference
+  rounded to float32, sums folded left to right in row-major order,
+  "/ 8" as "· 0.125", and Riley's squares, sum and root in float64
+  before one rounding to float32. The results are therefore
+  bit-identical to gdaldem's, which the acceptance harness checks cell
+  for cell on a real raster, not within a tolerance. Riley's float64
+  root makes it the slowest of the four: in BenchmarkRowWidth on
+  4094-cell rows with AVX2, about 1.7 ns/cell against 0.3–0.6 for the
+  others, on the Ryzen 9 3900X. A float32 sum would be cheaper
+  but disagrees with gdaldem in the last bit. Roughness uses Go's min
+  and max (a NaN anywhere gives NaN); the AVX2 kernel uses VMAXPS and
+  VMINPS as they are and repairs the difference once, rather than each
+  comparison.
 - **Conventions.** Conventions are gdaldem-compatible: compass bearings,
   gdaldem-style `ZFactor`, and positive cell sizes.
 - **Edges.** The one-cell border of the rasters passed in gets NaN and
@@ -927,13 +946,13 @@ err := terrain.SlopeTiled(ctx, dst, dem, terrain.SlopeOptions{CellSize: 30},
 
 STRATA-8 added `AddTiled`, `SubTiled`, `MulTiled`, `MinTiled`, `MaxTiled`,
 `ClampTiled`, `GradientTiled`, `SlopeTiled`, `AspectTiled` and
-`HillshadeTiled` over in-memory rasters (`CurvatureTiled` came later), and `MaskTiled` followed with
+`HillshadeTiled` over in-memory rasters (`CurvatureTiled` and `RuggednessTiled` came later), and `MaskTiled` followed with
 `Mask` (§18). They give the same bits as the plain functions for every
 `Options`. The terrain functions run the same kernels as one tile; the
 algebra functions stay direct to keep their zero allocations.
 
 The Chunked functions (`SlopeChunked`, `AspectChunked`,
-`HillshadeChunked`, `GradientChunked`, `CurvatureChunked`, `AddChunked`, `SubChunked`,
+`HillshadeChunked`, `GradientChunked`, `CurvatureChunked`, `RuggednessChunked`, `AddChunked`, `SubChunked`,
 `MulChunked`, `MinChunked`, `MaxChunked`, `MaskChunked`, `ClampChunked`)
 take sources and sinks instead of rasters and run with bounded memory
 (§27), through `exec.ProcessChunked`. Their sinks receive the bits the
@@ -1951,6 +1970,7 @@ strata/
 │   ├── aspect.go
 │   ├── hillshade.go
 │   ├── curvature.go
+│   ├── ruggedness.go
 │   └── stencil.go
 │
 ├── engine/                    public engine configuration
@@ -1962,8 +1982,8 @@ strata/
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
-│   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, mask.go,
-│   │                           simd_amd64.go, simd_arm64.go
+│   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, rugged.go,
+│   │                           mask.go, simd_amd64.go, simd_arm64.go
 │   ├── focalrow/              implemented (§53): focalrow.go (scalar, dispatch),
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── accum/                 implemented (§49): exact float32 Sum and Moments,

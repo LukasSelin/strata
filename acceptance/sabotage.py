@@ -253,6 +253,74 @@ def focal_leaky_nodata(d):
     m.tofile(p)
 
 
+# The ruggedness mutations also rewrite every form. check.py requires
+# gdaldem's bits exactly, so each of these must fail it, down to the
+# last two: a single ulp, and a float32 sum where gdaldem sums in float64.
+
+
+def _dem(d, stem):
+    return np.fromfile(os.path.join(d, f"{stem}.f32"), dtype="<f4").reshape(H, W)
+
+
+def _rewrite(d, op, f):
+    """Replace every form of op on every surface by f(stem, result)."""
+    for stem in STEMS:
+        for form in FORMS:
+            name = f"{stem}-{op}-{form}.f32"
+            write(d, name, f(stem, read(d, name)))
+
+
+def riley_wilson_swapped(d):
+    """Riley's TRI and Wilson's swapped - the two definitions mixed up."""
+    for stem in STEMS:
+        for form in FORMS:
+            ri = read(d, f"{stem}-ruggedness_tri-{form}.f32")
+            wi = read(d, f"{stem}-ruggedness_triwilson-{form}.f32")
+            write(d, f"{stem}-ruggedness_tri-{form}.f32", wi)
+            write(d, f"{stem}-ruggedness_triwilson-{form}.f32", ri)
+
+
+def tpi_sign(d):
+    """TPI as the neighbours' mean minus the centre."""
+    _rewrite(d, "ruggedness_tpi", lambda stem, a: -a)
+
+
+def roughness_without_centre(d):
+    """Roughness over the eight neighbours only, leaving out the centre."""
+    def f(stem, a):
+        z = _dem(d, stem)
+        win = [z[j : j + H - 2, i : i + W - 2] for j in range(3) for i in range(3)]
+        nb = win[:4] + win[5:]
+        out = a.copy()
+        out[1:-1, 1:-1] = np.max(nb, axis=0) - np.min(nb, axis=0)
+        return out
+    _rewrite(d, "ruggedness_roughness", f)
+
+
+def tri_one_ulp(d):
+    """One TRI cell of the hill one ulp too large."""
+    for form in FORMS:
+        name = f"hill-ruggedness_tri-{form}.f32"
+        a = read(d, name)
+        a[100, 100] = np.nextafter(a[100, 100], np.float32(np.inf))
+        write(d, name, a)
+
+
+def tri_float32_sum(d):
+    """Riley's squares summed in float32 rather than gdaldem's float64."""
+    def f(stem, a):
+        z = _dem(d, stem)
+        win = [z[j : j + H - 2, i : i + W - 2] for j in range(3) for i in range(3)]
+        e = win[4]
+        s = np.zeros(e.shape, np.float32)
+        for n in win[:4] + win[5:]:
+            s = s + (n - e) * (n - e)
+        out = a.copy()
+        out[1:-1, 1:-1] = np.sqrt(s)
+        return out
+    _rewrite(d, "ruggedness_tri", f)
+
+
 def focal_seam(d):
     """One tiled Gaussian cell wrong, as a halo bug at a seam would be:
     row 46 and column 74 are tile edges of the 37x23 tiling."""
@@ -282,6 +350,11 @@ MUTATIONS = [
     ("radius-2 validity eroded 3x3", erosion_3x3),
     ("focal NoData leaking in", focal_leaky_nodata),
     ("focal tile seam", focal_seam),
+    ("Riley and Wilson TRI swapped", riley_wilson_swapped),
+    ("TPI sign flipped", tpi_sign),
+    ("roughness without the centre", roughness_without_centre),
+    ("one TRI cell one ulp off", tri_one_ulp),
+    ("TRI summed in float32", tri_float32_sum),
 ]
 
 

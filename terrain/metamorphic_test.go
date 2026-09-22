@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/LukasSelin/strata/engine"
@@ -40,6 +41,14 @@ import (
 //     transposition reorders its sums and holds up to rounding. Scaling
 //     the cell sizes by a power of two scales it by the inverse power,
 //     exactly.
+//   - Ruggedness reads only the DEM's cells, and has no cell size or
+//     ZFactor. Adding an integer constant to a small integer DEM changes
+//     no result, TPI's included (every value it rounds is exact), and
+//     scaling by a power of two scales every result by it exactly.
+//     Negating the DEM leaves the TRIs and Roughness bitwise unchanged and
+//     negates TPI. Roughness is bitwise invariant under every symmetry;
+//     the others sum the neighbours in row-major order, so a symmetry
+//     reorders the sum and holds up to its rounding.
 //   - An output cell depends only on the DEM cells, Data and validity, in
 //     its 3×3 neighbourhood, and on nothing under invalid cells.
 //
@@ -49,18 +58,19 @@ import (
 
 // relOp is a terrain operation with its options.
 type relOp struct {
-	kind              int // 0 gradient, 1 slope, 2 aspect, 3 hillshade, 4 curvature
+	kind              int // 0 gradient, 1 slope, 2 aspect, 3 hillshade, 4 curvature, 5 ruggedness
 	cs, csy, z        float64
 	curv              CurvatureType
+	rug               RuggednessType
 	units             SlopeUnits
 	zeroFlat, trig    bool
 	azimuth, altitude float64
 }
 
 func (o relOp) String() string {
-	name := [...]string{"gradient", "slope", "aspect", "hillshade", "curvature"}[o.kind]
-	return fmt.Sprintf("%s cs %v csy %v z %v units %d zeroFlat %v trig %v az %v alt %v curv %v",
-		name, o.cs, o.csy, o.z, o.units, o.zeroFlat, o.trig, o.azimuth, o.altitude, o.curv)
+	name := [...]string{"gradient", "slope", "aspect", "hillshade", "curvature", "ruggedness"}[o.kind]
+	return fmt.Sprintf("%s cs %v csy %v z %v units %d zeroFlat %v trig %v az %v alt %v curv %v rug %d",
+		name, o.cs, o.csy, o.z, o.units, o.zeroFlat, o.trig, o.azimuth, o.altitude, o.curv, o.rug)
 }
 
 func (o relOp) outputs() int {
@@ -158,6 +168,16 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 		default:
 			err = CurvatureChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
+	case 5:
+		opts := RuggednessOptions{o.rug}
+		switch path {
+		case 0:
+			Ruggedness(outs[0], dem, opts)
+		case 1:
+			err = RuggednessTiled(ctx, outs[0], dem, opts, eopts)
+		default:
+			err = RuggednessChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
+		}
 	}
 	if err != nil {
 		panic(err) // a background context never fails
@@ -203,7 +223,7 @@ func relDEM(d fuzzdata.Source, w, h, values int, masked bool) raster.Float32Rast
 // TestTerrainRelations checks the same body with rapid instead.
 func FuzzTerrainRelations(f *testing.F) {
 	for rel := range 11 {
-		for kind := range 5 {
+		for kind := range 6 {
 			f.Add([]byte{byte(rel), byte(kind), 12, 7, 1, 2, 3, 4, 5})
 		}
 	}
@@ -218,7 +238,7 @@ func FuzzTerrainRelations(f *testing.F) {
 // own memory layout, so a relation also catches a halo or tile that reads
 // the wrong cells.
 func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
-	rel, kind := d.IntN(11), d.IntN(5)
+	rel, kind := d.IntN(11), d.IntN(6)
 	o := relOp{
 		kind:     kind,
 		cs:       float64(d.Range(1, 200)) / 4,
@@ -228,6 +248,7 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 		azimuth:  float64(d.Range(-720, 720)) / 2,
 		altitude: float64(d.Range(0, 180)) / 2,
 		curv:     CurvatureType(d.IntN(3)),
+		rug:      RuggednessType(d.IntN(4)),
 	}
 	if d.Bool() {
 		o.csy = float64(d.Range(1, 200)) / 4
@@ -273,7 +294,20 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 			so.cs *= s
 			so.csy *= s
 		}
+		if o.kind == 5 {
+			so = o // Ruggedness has no ZFactor or cell size
+		}
 		want := run(o, dem)
+		if o.kind == 5 {
+			// Ruggedness is in elevation units, and every rounding it does
+			// scales with a power of two (Riley's float64 sum by its
+			// square, which the root halves).
+			for _, out := range want {
+				for i := range out.Data {
+					out.Data[i] *= float32(s)
+				}
+			}
+		}
 		if o.kind == 4 && !byZ {
 			// Curvature is in 1/length: p and q are unchanged and r, s
 			// and t, so the result, scale by 1/s, exactly.
@@ -289,6 +323,21 @@ func terrainRelations(t rastertest.TB, d fuzzdata.Source) {
 		neg := rastertest.Compact(dem)
 		for i := range neg.Data {
 			neg.Data[i] = -neg.Data[i]
+		}
+		if o.kind == 5 {
+			// IEEE negation commutes with every operation Ruggedness does,
+			// and Go's max and min mirror each other. TPI's +0 stays +0,
+			// so it matches its negation by value, not by bits.
+			want := run(o, dem)
+			if o.rug == RuggednessTPI {
+				for _, out := range want {
+					for i := range out.Data {
+						out.Data[i] = -out.Data[i]
+					}
+				}
+			}
+			requireSameOutputs(t, id+": -DEM", run(o, neg), want, o.rug != RuggednessTPI)
+			break
 		}
 		no := o
 		if no.z == 0 {
@@ -430,7 +479,7 @@ func testDihedral(t rastertest.TB, d fuzzdata.Source, id string, o relOp, w, h i
 	t.Helper()
 	tr := rastertest.All()[d.Range(1, 7)]
 	mirror := tr == rastertest.Dihedral{FlipX: true}
-	exact := o.kind <= 1 || o.kind == 3 && mirror || o.kind == 4 && !tr.Swap
+	exact := o.kind <= 1 || o.kind == 3 && mirror || o.kind == 4 && !tr.Swap || o.kind == 5 && o.rug == RuggednessRoughness
 	values := moderateValues
 	if exact {
 		values = anyValues
@@ -499,6 +548,10 @@ func testDihedral(t rastertest.TB, d fuzzdata.Source, id string, o relOp, w, h i
 				if diff := math.Abs(float64(bv) - want); math.Min(diff, 360-diff) > 1e-4 {
 					fail(fmt.Sprintf("%v within 1e-4°", want))
 				}
+			case o.kind == 5:
+				if tol := ruggednessTol(o.rug, window(dem, u, v), av); math.Abs(float64(bv)-float64(av)) > tol {
+					fail(fmt.Sprintf("%v within %.3g", av, tol))
+				}
 			case o.kind == 4:
 				// The derivatives are the same float32 values, so only
 				// the formula's rounding differs, on each side.
@@ -539,13 +592,14 @@ func mapAspect(tr rastertest.Dihedral, a float64, trig bool) float64 {
 }
 
 // testDerived checks that Slope, Aspect and Hillshade are the documented
-// functions of Gradient's dx and dy, and Curvature the documented
-// function of the DEM, bit for bit, cell by cell, including validity.
+// functions of Gradient's dx and dy, and Curvature and Ruggedness the
+// documented functions of the DEM, bit for bit, cell by cell, including
+// validity.
 func testDerived(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
-	if o.kind == 4 {
-		testDerivedCurvature(t, id, o, dem, run)
+	if o.kind >= 4 {
+		testDerivedWindow(t, id, o, dem, run)
 		return
 	}
 	g := o
@@ -632,13 +686,18 @@ func derivedHillshade(gx, gy, c, bx, by float32) float32 {
 	return v
 }
 
-// testDerivedCurvature is testDerived for Curvature: validity is the 3×3
-// erosion of the DEM's, and valid cells are derivedCurvature's bits.
-func testDerivedCurvature(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
+// testDerivedWindow is testDerived for Curvature and Ruggedness: validity
+// is the 3×3 erosion of the DEM's, and valid cells are the bits of
+// derivedCurvature or derivedRuggedness.
+func testDerivedWindow(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
 	run func(relOp, raster.Float32Raster) []raster.Float32Raster) {
 	t.Helper()
 	out := run(o, dem)[0]
-	k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+	derive := func(z [9]float32) float32 { return derivedRuggedness(o.rug, z) }
+	if o.kind == 4 {
+		k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+		derive = func(z [9]float32) float32 { return derivedCurvature(o.curv, z, k.kp, k.kq, k.kr, k.kt, k.ks) }
+	}
 	for y := range dem.Height {
 		for x := range dem.Width {
 			interior := x > 0 && y > 0 && x < dem.Width-1 && y < dem.Height-1
@@ -661,13 +720,8 @@ func testDerivedCurvature(t rastertest.TB, id string, o relOp, dem raster.Float3
 			if !valid {
 				continue
 			}
-			var z [9]float32
-			for j := range 3 {
-				for i := range 3 {
-					z[j*3+i] = dem.Data[dem.Index(x+i-1, y+j-1)]
-				}
-			}
-			want := derivedCurvature(o.curv, z, k.kp, k.kq, k.kr, k.kt, k.ks)
+			z := window(dem, x, y)
+			want := derive(z)
 			if !rastertest.SameFloat(got, want) {
 				t.Fatalf("%s: cell (%d, %d) = %v (%#08x), from window %v %v (%#08x)",
 					id, x, y, got, math.Float32bits(got), z, want, math.Float32bits(want))
@@ -720,4 +774,72 @@ func derivedCurvature(c CurvatureType, z [9]float32, kp, kq, kr, kt, ks float32)
 		d := float32(w * sw)
 		return 0 - num/(d+d)
 	}
+}
+
+// window is the 3×3 window of dem centred on (x, y), in row-major order.
+func window(dem raster.Float32Raster, x, y int) [9]float32 {
+	var z [9]float32
+	for j := range 3 {
+		for i := range 3 {
+			z[j*3+i] = dem.Data[dem.Index(x+i-1, y+j-1)]
+		}
+	}
+	return z
+}
+
+// derivedRuggedness is Ruggedness's documented formula for window z,
+// written from the documentation and gdaldem's source rather than shared
+// with the kernels.
+func derivedRuggedness(r RuggednessType, z [9]float32) float32 {
+	c := z[4]
+	nb := [8]float32{z[0], z[1], z[2], z[3], z[5], z[6], z[7], z[8]}
+	switch r {
+	case RuggednessTRI:
+		var s float64
+		for _, v := range nb {
+			d := float64(v - c)
+			s += float64(d * d)
+		}
+		return float32(math.Sqrt(s))
+	case RuggednessTRIWilson:
+		s := float32(math.Abs(float64(nb[0] - c)))
+		for _, v := range nb[1:] {
+			s += float32(math.Abs(float64(v - c)))
+		}
+		return float32(s * 0.125)
+	case RuggednessTPI:
+		s := nb[0]
+		for _, v := range nb[1:] {
+			s += v
+		}
+		return c - float32(s*0.125)
+	default:
+		return slices.Max(z[:]) - slices.Min(z[:])
+	}
+}
+
+// ruggednessTol bounds how far a reordering of Ruggedness's sums can move
+// its result a for window z. Riley's float64 sum moves it only through
+// the final rounding to float32, by an ulp of a on each side. Wilson's
+// and TPI's float32 sums of eight terms round seven times each, every
+// time by at most half an ulp of a running total no larger than the sum
+// of the terms' magnitudes, and the result is an eighth of the sum.
+func ruggednessTol(r RuggednessType, z [9]float32, a float32) float64 {
+	const eps = 0x1p-24
+	abs := math.Abs(float64(a))
+	ulp := float64(math.Nextafter32(float32(abs), float32(math.Inf(1)))) - abs
+	if r == RuggednessTRI {
+		return 2 * ulp
+	}
+	var mag float64
+	for i, v := range z {
+		switch {
+		case i == 4:
+		case r == RuggednessTRIWilson:
+			mag += math.Abs(float64(v) - float64(z[4]))
+		default:
+			mag += math.Abs(float64(v))
+		}
+	}
+	return 2*7*eps*mag/8 + 2*ulp
 }

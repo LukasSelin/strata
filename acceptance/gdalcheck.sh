@@ -7,9 +7,10 @@
 # Example:
 #   ./gdalcheck.sh "C:/Users/you/Downloads/dem.tif" 0 6127 4096
 #
-# It extracts a window, runs gdaldem slope/aspect/hillshade on it, runs
-# the same three operations through strata's bounded-memory Chunked
-# path, and differences the results. Needs Docker, Go and numpy.
+# It extracts a window, runs gdaldem slope/aspect/hillshade and the four
+# ruggedness modes (TRI, TRI -alg Wilson, TPI, roughness) on it, runs the
+# same operations through strata's bounded-memory Chunked path, and
+# differences the results. Needs Docker, Go and numpy.
 set -euo pipefail
 
 SRC=${1:?usage: gdalcheck.sh <geotiff> [xoff yoff size]}
@@ -39,7 +40,11 @@ gdal_translate -q -ot Float32 -srcwin $XOFF $YOFF $SIZE $SIZE '/in/$SRC_NAME' de
 gdaldem slope     dem.tif gdal-slope.tif     -q
 gdaldem aspect    dem.tif gdal-aspect.tif    -q
 gdaldem hillshade dem.tif gdal-hillshade.tif -q
-for f in dem gdal-slope gdal-aspect; do
+gdaldem TRI       dem.tif gdal-tri.tif       -q
+gdaldem TRI       dem.tif gdal-triwilson.tif -q -alg Wilson
+gdaldem TPI       dem.tif gdal-tpi.tif       -q
+gdaldem roughness dem.tif gdal-roughness.tif -q
+for f in dem gdal-slope gdal-aspect gdal-tri gdal-triwilson gdal-tpi gdal-roughness; do
   gdal_translate -q -of ENVI -ot Float32 \$f.tif \$f.raw
 done
 gdal_translate -q -of ENVI -ot Byte gdal-hillshade.tif gdal-hillshade.raw
