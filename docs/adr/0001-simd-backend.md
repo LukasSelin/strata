@@ -194,8 +194,8 @@ gap versus the spike's NaN-only archsimd Clamp (567).
 - **CI** must test three configurations:
   - default,
   - `GOEXPERIMENT=simd`,
-  - `GOARCH=arm64` with `GOEXPERIMENT=simd` (build at minimum, run on arm64
-    hardware or emulation for STRATA-11).
+  - `GOARCH=arm64` with `GOEXPERIMENT=simd` (run on the arm64 macOS
+    runner since STRATA-11).
   Scalar-equivalence tests (§39) run in every configuration.
 - **Kernel-writing rules** for review:
   - write loops in BCE form: array-pointer loads over shrinking slices;
@@ -220,6 +220,21 @@ gap versus the spike's NaN-only archsimd Clamp (567).
   `FMIN`/`FMAX` against scalar rather than assuming x86 semantics. Default
   arm64 builds use scalar until the experiment graduates. SVE is out of scope
   (golang/go#79781).
+
+  *Outcome (2026-09-22, Go 1.27.0, Apple M-series):* landed in `internal/vec`,
+  `internal/stencil` and `internal/accum`. What the check found:
+  - NEON `FMIN`/`FMAX` already are Go's builtin `min`/`max`: NaN from either
+    operand, and −0 below +0. So `min4`/`max4` are the raw ops, with none of
+    `min8`/`max8`'s repairs. `vec.TestSIMDMinMaxEdgePairs` pins this over
+    every ordered pair of special values.
+  - The compiler does not fuse archsimd's `Mul`+`Add` into `VFMLA`.
+  - The arm64 API differs from amd64's in spelling. There is no `IsNaN`
+    (use `x.NotEqual(x)`), no `GetLo`/`GetHi` (use `ExtendLo2…` and
+    `HiToLo`), no variable `ShiftLeft` (use the signed `Shift`) and no
+    `MulWidenEven` (use `MulWidenLo`). `ClearAVXUpperBits` has no
+    counterpart and needs none.
+  - The equivalence tests became architecture-neutral (`simd_test.go`, one
+    per package), so a third backend only needs a small per-arch test file.
 - **Fusion (§29)** becomes a Go code-generation problem rather than an
   assembly one, which keeps it viable.
 - `internal/spike/simdbackend` kept the asm-vs-archsimd slope-row comparison
