@@ -29,6 +29,23 @@ func TestGridWindow(t *testing.T) {
 	mustPanic(t, "must be positive", func() { g.Window(0, 0, 0, 1) })
 }
 
+func TestCRSDescribe(t *testing.T) {
+	for code, want := range map[string]string{
+		"EPSG:25833":                  `"EPSG:25833" (https://epsg.io/25833)`,
+		"EPSG:4326":                   `"EPSG:4326" (https://epsg.io/4326)`,
+		"":                            `""`,
+		"EPSG:":                       `"EPSG:"`,
+		"EPSG:25833x":                 `"EPSG:25833x"`,
+		"epsg:25833":                  `"epsg:25833"`,
+		"urn:ogc:def:crs:EPSG::25833": `"urn:ogc:def:crs:EPSG::25833"`,
+		"ESRI:102003":                 `"ESRI:102003"`,
+	} {
+		if got := (CRS{Code: code}).Describe(); got != want {
+			t.Errorf("CRS{%q}.Describe() = %s, want %s", code, got, want)
+		}
+	}
+}
+
 func TestCRSMatches(t *testing.T) {
 	a, b, unknown := CRS{Code: "EPSG:25833"}, CRS{Code: "EPSG:4326"}, CRS{}
 	for _, c := range []struct {

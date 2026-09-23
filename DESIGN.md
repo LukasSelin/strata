@@ -1660,7 +1660,10 @@ format adapter), not part of execution.
    (`raster.CRS.Matches`): equal codes, or either code empty. Empty means
    unknown, and the caller vouches for it. Codes are compared as strings,
    so `"EPSG:25833"` and `"urn:ogc:def:crs:EPSG::25833"` do not match;
-   normalise codes at the IO boundary.
+   normalise codes at the IO boundary. The panic names both sides with
+   `raster.CRS.Describe`: the quoted code, and for `EPSG:<number>` a link
+   to its epsg.io page. The link is for the reader; nothing else is read
+   from the code.
 5. **Operations that take bare rasters cannot check.** `algebra`, `focal`,
    `terrain`, `transfer`, `reduce` and the engine see `Float32Raster`s and
    `engine.RasterSource`s, never grids (§9), so for them the contract
