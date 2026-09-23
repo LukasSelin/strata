@@ -562,18 +562,26 @@ func TestConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src, _ := f.Source(SourceOptions{CacheBytes: 3000})
-	var wg sync.WaitGroup
-	for g := range 8 {
-		wg.Go(func() {
-			rng := rand.New(rand.NewPCG(uint64(g), 7))
-			for range 50 {
-				x, y := rng.IntN(w), rng.IntN(h)
-				checkWindow(t, "concurrent", src, vals, w, x, y, 1+rng.IntN(w-x), 1+rng.IntN(h-y), false, 0)
-			}
-		})
+	// Block buffers are reused once released (see block), so readers
+	// that race an eviction are the case to catch: a buffer reused while
+	// one of them still copies from it would show up as wrong cells. A
+	// cache of about two blocks evicts constantly; none releases every
+	// block as soon as its reader is done.
+	for _, cacheBytes := range []int64{3000, -1} {
+		src, _ := f.Source(SourceOptions{CacheBytes: cacheBytes})
+		var wg sync.WaitGroup
+		for g := range 8 {
+			wg.Go(func() {
+				rng := rand.New(rand.NewPCG(uint64(g), 7))
+				for range 50 {
+					x, y := rng.IntN(w), rng.IntN(h)
+					checkWindow(t, fmt.Sprintf("concurrent, cache %d", cacheBytes), src, vals, w, x, y,
+						1+rng.IntN(w-x), 1+rng.IntN(h-y), false, 0)
+				}
+			})
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 // failingReader fails every ReadAt past a byte offset.

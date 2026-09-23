@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/bits"
 	"sync"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/lzw"
@@ -27,12 +28,73 @@ import (
 
 // block is one decoded tile or strip of one band: w×rows cells, row-major,
 // with their validity bits, or nil validity when every cell is valid.
+//
+// Its cells are in a buffer that is reused for another block once nobody
+// holds this one: the source's cache while it keeps the block, and each
+// reader while it copies from it (see cache). A block is born held once,
+// by whoever decoded it.
 type block struct {
 	vals  []float32
 	valid []uint64
 	w     int
 	rows  int
+	refs  atomic.Int32
 }
+
+// newBlock returns a block of w×rows cells, held once, whose values are
+// not cleared: the decoder writes every one.
+func newBlock(w, rows int) *block {
+	b := &block{w: w, rows: rows, vals: getVals(w * rows)}
+	b.refs.Store(1)
+	return b
+}
+
+func (b *block) hold() { b.refs.Add(1) }
+
+// release gives back one reference, and the cells' buffer with the last.
+func (b *block) release() {
+	switch n := b.refs.Add(-1); {
+	case n == 0:
+		putVals(b.vals)
+		b.vals = nil
+	case n < 0:
+		panic("cog: a block released more often than it was held")
+	}
+}
+
+// valsPool holds the cells' buffers of released blocks. The blocks of a
+// level are all one size but for a strip file's last strip, so a buffer
+// that is too small is simply left for the collector.
+var valsPool sync.Pool // of *[]float32
+
+func getVals(n int) []float32 {
+	var v []float32
+	if p, ok := valsPool.Get().(*[]float32); ok && cap(*p) >= n {
+		v = (*p)[:n]
+	} else {
+		v = make([]float32, n)
+	}
+	if poisonVals {
+		for i := range v {
+			v[i] = poison
+		}
+	}
+	return v
+}
+
+func putVals(v []float32) {
+	if cap(v) > 0 {
+		valsPool.Put(&v)
+	}
+}
+
+// poisonVals, which the tests set, fills every buffer a decoder is given
+// with poison, new or reused, so that a decoder that leaves a cell
+// unwritten reads as wrong rather than as the zero or stale value it
+// happens to find.
+var poisonVals bool
+
+var poison = math.Float32frombits(0x7fc0dead) // a NaN no file holds
 
 // size is the memory a block holds, for the cache's accounting.
 func (b *block) size() int64 {
@@ -137,13 +199,13 @@ func (nd noData) matches(v float64, format, bits int) bool {
 func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read func(off, n uint64) ([]byte, error)) (*block, error) {
 	rows := im.blockRows(by)
 	n := im.blockW * rows
-	b := &block{w: im.blockW, rows: rows}
 	off, count := im.offsets[idx], im.byteCounts[idx]
 	if count == 0 {
 		// An absent block, which GDAL writes as a sparse one (offset
 		// and count 0) for all-NoData tiles, and reads, as it reads
 		// any block of 0 bytes, as NoData, or as 0 without one.
-		b.vals = make([]float32, n)
+		b := newBlock(im.blockW, rows)
+		clear(b.vals)
 		if nd.set {
 			b.valid = make([]uint64, raster.MaskWords(n)) // all invalid
 		}
@@ -215,7 +277,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		data = append(data, make([]byte, want-len(data))...)
 	}
 	data = data[:want]
-	b.vals = make([]float32, n)
+	b := newBlock(im.blockW, rows)
 	isFloat32 := im.format == sampleFloat && im.bytes == 4
 	if isFloat32 && spb == 1 && im.predictor == predictorFloat {
 		// The common float COG: the predictor's byte planes go straight
@@ -226,11 +288,11 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		b.valid = float32Validity(b.vals, nd)
 		return b, nil
 	}
-	toLittleEndian(data, im, c.order, rowBytes)
 	first := 0
 	if im.planar == planarChunky {
 		first = band
 	}
+	toLittleEndian(data, im, c.order, rowBytes)
 	if im.bits == 1 {
 		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
 		if nd.set && anyEqual(b.vals, float32(nd.cmp)) {
@@ -266,6 +328,7 @@ func expandBits(vals []float32, data []byte, w, rowBytes, stride, first int) {
 	for i := range vals {
 		r, c := i/w, i%w
 		bit := c*stride + first
+		vals[i] = 0 // the buffer is reused, so every cell is written
 		if data[r*rowBytes+bit>>3]&(0x80>>uint(bit&7)) != 0 {
 			vals[i] = 255
 		}

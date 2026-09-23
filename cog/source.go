@@ -307,11 +307,12 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 	newSource := func(im *image, band int, nd noData) *Source {
 		s := &Source{f: f, im: im, level: opts.Level, band: band, nd: nd}
 		size := func(b *block) int64 { return b.size() }
+		hold, drop := (*block).hold, (*block).release
 		switch {
 		case opts.CacheBytes == 0:
-			s.cache = newCache[int](defaultCacheBytes(im), size)
+			s.cache = newCache[int](defaultCacheBytes(im), size).withHolds(hold, drop)
 		case opts.CacheBytes > 0:
-			s.cache = newCache[int](opts.CacheBytes, size)
+			s.cache = newCache[int](opts.CacheBytes, size).withHolds(hold, drop)
 		}
 		return s
 	}
@@ -406,12 +407,14 @@ func (s *Source) read(ctx context.Context, dst raster.Float32Raster, x, y int, v
 				return fmt.Errorf("cog: level %d, band %d, block (%d, %d): %w", s.level, s.band, bx, by, err)
 			}
 			s.copyBlock(dst, x, y, b, bx*im.blockW, by*im.blockH, values)
+			b.release()
 		}
 	}
 	return nil
 }
 
-// block returns the decoded block at (bx, by), through the cache.
+// block returns the decoded block at (bx, by), through the cache, held
+// once for the caller, who releases it.
 func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 	idx := s.im.blockIndex(bx, by, s.band)
 	var read func(off, n uint64) ([]byte, error) // nil: read into a scratch buffer
