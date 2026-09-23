@@ -300,7 +300,7 @@ func extremeLanes(dst, src []float32, step, k int, isMax, acc bool) int {
 // folds its rows in order, and dst holds a float32, as the scalar
 // kernels' accumulator does, so the bits do not change. Rows that do not
 // collide are read in one pass, as the extra loads and stores of dst
-// cost 5–20% there.
+// cost 4–19% there.
 const (
 	foldRows  = 7
 	foldChunk = 4096

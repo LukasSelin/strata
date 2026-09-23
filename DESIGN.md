@@ -27,7 +27,7 @@ Decisions recorded elsewhere and summarized here:
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
-Where things stand, as of 2026-09-22. Each section's own **Status** line is
+Where things stand, as of 2026-09-23. Each section's own **Status** line is
 the detailed record; this table only points at it.
 
 | Area | § | Status |
@@ -45,7 +45,7 @@ the detailed record; this table only points at it.
 | Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
 | Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | done |
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
-| `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; median, skip-invalid statistics and the 64 KiB-stride slowdown open |
+| `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; median, skip-invalid statistics and r = 3's residual 64 KiB-stride loss open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
@@ -1162,8 +1162,8 @@ where they barely scale the algebra ones.
 
 Convolution and resampling do, and both are now measured on AVX2 and
 NEON: convolution in §53 and benchmarks/focal/RESULTS.md, by radius
-(compute-bound except where a 64 KiB row stride causes cache set
-conflicts, which is not bandwidth), and resampling in §54 and
+(compute-bound at every radius and size, since the AVX2 column pass stopped
+colliding in L2 at 64 KiB row strides), and resampling in §54 and
 benchmarks/resample/RESULTS.md, where every method at every scale is
 compute-bound, asking at most 8 GB/s. Interpolation and point-cloud
 filtering should behave like the terrain kernels too, and are not
@@ -3406,32 +3406,46 @@ Every operation moves 8 bytes per cell whatever its radius: the other
 rows of the neighbourhood come from cache.
 
 **§28's prediction holds**, on AVX2 (the Zen 2 desktop, one pinned
-core) as on NEON (Apple M4), benchmarks/focal/RESULTS.md, with one
-exception that is not bandwidth. Figures are AVX2 at 4096², unmasked.
+core) as on NEON (Apple M4), benchmarks/focal/RESULTS.md, at every
+radius and size. Figures are AVX2 at 4096², unmasked.
 
-- Correlate costs what its products cost: 0.93, 1.88, 3.36 and 7.95 ns
-  per cell at r = 1, 2, 3 and 5, a flat 0.066–0.075 ns per product from
+- Correlate costs what its products cost: 0.96, 1.92, 3.44 and 7.98 ns
+  per cell at r = 1, 2, 3 and 5, a flat 0.066–0.077 ns per product from
   r = 2 (0.053–0.064 on NEON), so its throughput falls as (2r+1)² and its
-  memory demand with it, from 8.6 GB/s at r = 1 to 1.0 at r = 5.
-- The separable forms grow linearly: Gaussian 0.71 → 1.66 ns per cell
-  from r = 1 to 5, Mean 0.70 → 1.59, Min 0.80 → 2.38. At r = 5 separable
+  memory demand with it, from 8.3 GB/s at r = 1 to 1.0 at r = 5.
+- The separable forms grow linearly: Gaussian 0.75 → 1.65 ns per cell
+  from r = 1 to 5, Mean 0.71 → 1.58, Min 0.82 → 2.45. At r = 5 separable
   is 4.8× cheaper than the full kernel (6× on NEON).
-- The highest demand in the suite is 14.9 GB/s (Mean and Gaussian at
-  r = 1, 1024²), under a core's 22.
-- AVX2 is worth 3.0–5.4× over scalar, NEON 3.3–6.0×: more than the lanes
-  alone would give, because the scalar kernels accumulate through memory
-  a term at a time (the canonical order, bounds-check free) where the
-  lanes hold several accumulators in registers. Eight lanes give no more
-  than four; the M4's core is 1.2–2.5× faster in absolute terms.
-- **The exception: a 64 KiB row stride.** At 16384², and not at 8192²,
-  12288², 16320² or 16448², Gaussian, Mean and Min at r = 5 run at
-  42–56% of their 4096² speed on AVX2 (Gaussian 602 → 252 M cells/s),
-  moving about 2 GB/s; r = 3 loses 6–18% and r ≤ 2 at most 7%. Scalar and
-  NEON do not show it. `stratabench` labels those rows
-  memory-bandwidth-bound by its rule; they are not. It is consistent with
-  L2 set conflicts on Zen 2 (8-way, sets repeating every 64 KiB): a
-  column pass over 2r+1 rows 64 KiB apart holds them all in one set.
-  Any raster whose row is a multiple of 64 KiB is exposed.
+- The highest demand in the suite is 15.1 GB/s (Mean at r = 1, 1024²),
+  under a core's 22.
+- AVX2 is worth 2.9–5.5× over scalar where the scalar numbers are
+  stable, NEON 3.3–6.0×: more than the lanes alone would give, because
+  the scalar kernels accumulate through memory a term at a time (the
+  canonical order, bounds-check free) where the lanes hold several
+  accumulators in registers. Eight lanes give no more than four; the
+  M4's core is 1.2–2.6× faster in absolute terms. Scalar Correlate and
+  Mean are not stable: the same source ran 11–43% slower after
+  unrelated commits moved `internal/focalrow`'s functions by 32 bytes,
+  which puts their ratios up to 7.5× in the current run.
+- **A 64 KiB row stride, fixed.** At 16384², and not at 8192², 12288²,
+  16320² or 16448², Gaussian, Mean and Min at r = 5 ran at 42–56% of
+  their 4096² speed (Gaussian 602 → 252 M cells/s). Timing the column
+  pass with the stride varied alone puts the cause in Zen 2's L2 (512
+  KiB, 8-way, sets repeating every 64 KiB): the loss repeats every
+  64 KiB of stride, rows a line or two apart modulo 64 KiB lose too,
+  strides that are multiples of 4 KiB but not 64 KiB do not (ruling out
+  the L1 and 4K aliasing), and it starts between 7 and 9 rows, at the 8
+  ways; no counters were read. Narrow windows of wide rasters, as Tiled
+  hands kernels, are exposed as much as whole rasters. The AVX2 column
+  passes, and Correlate's 2-D pass, now fold rows that collide (more
+  than seven within 1 KiB of one another modulo 64 KiB) a group of at
+  most seven at a time over chunks of 4096 cells, accumulating through
+  the destination row in the scalar kernels' per-cell order, so no bit
+  changes (`TestAliasedStride`). Those rows now run at 86–93% of their
+  4096² speed, 3–10% short of 16320²; other strides keep the single
+  pass, which the fold would slow by 4–19%. r = 3 (7 rows, under the
+  threshold) still loses about 20% at 16384², and folding does not
+  recover it.
 
 So workers should scale these operations as they scale Slope (§26), and
 further, since they ask for less bandwidth per core; that is not
@@ -3441,9 +3455,11 @@ Status: done: `focal` (Correlate, Convolve, CorrelateSeparable,
 Gaussian, Mean, Min, Max, plain, Tiled and Chunked), `internal/focalrow`
 (scalar, AVX2, NEON), the §23 matrix entries, `benchmarks/focal` with
 AVX2 (Zen 2) and NEON (Apple M4) runs, and the acceptance checks. The
-`chunkJob.spanSize` fix is in. Open: the 64 KiB-stride slowdown of the
-SIMD column pass at r ≥ 3 (block the pass across the width, or offset
-the rows it holds, and confirm the cause with counters); a focal median
+`chunkJob.spanSize` fix is in, and so is the fold of the AVX2 column
+pass at 64 KiB-aliased strides (r = 5 now within 3–10% of neighbouring
+strides, r = 8 within 7–21%). Open: r = 3's residual loss of about 20% at a 64 KiB stride,
+whose cause folding does not reach, and L2 counters to confirm the set
+conflicts directly (uProf, or an elevated `wpr`); a focal median
 (sorting networks up to 5×5, a selection algorithm beyond); statistics over valid cells only, with the
 interface extension above; van Herk/Gil-Werman for Min and Max at large
 radii; rectangular and per-axis radii, whose erosion would need to
