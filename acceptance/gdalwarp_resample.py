@@ -25,7 +25,11 @@ records as gdalwarp's own departures from its definitions:
     overhang the source: the values are not compared (nor, for Lanczos,
     whose half-valid window depends on the stretch, validity). The 1.25
     grids are laid out so the two agree, and are compared in full;
-  * Lanczos downsampling by an odd integer factor (none in these cases).
+  * Lanczos downsampling by an odd integer factor (none in these cases);
+  * from GDAL 3.13.1, Lanczos's half-valid rule, which gdalwarp dropped
+    (OSGeo/gdal commit c9507793, issue #14560): cells the reference
+    invalidates only by that rule, and gdalwarp keeps, are counted as
+    "half-valid". Before 3.13.1 they must agree like any other cell.
 
 Needs GDAL's Python bindings (osgeo), not numpy.
 
@@ -43,6 +47,9 @@ from osgeo import gdal
 import check_resample as ref
 
 gdal.UseExceptions()
+
+# The first GDAL without Lanczos's half-valid rule (DESIGN.md §54).
+NO_HALF_VALID = int(gdal.VersionInfo("VERSION_NUM")) >= 3130100
 
 ALG = {"Nearest": "near", "Bilinear": "bilinear", "Cubic": "cubic", "Lanczos": "lanczos", "Average": "average"}
 
@@ -115,8 +122,13 @@ def main():
         mask = ref.load_mask(os.path.join(d, case["out_mask"]), nd)
         theirs = warp(case, src, valid, fill)
         tols = ref.reference(case, src, valid)
+        # The cells only the half-valid rule invalidates, which gdalwarp
+        # keeps from 3.13.1.
+        half = None
+        if NO_HALF_VALID and case["method"] == "Lanczos" and case.get("src_mask"):
+            half = ref.reference(case, src, valid, half_valid=False)
         differs, wx, wy = pixel_stretch(case)
-        bad_valid = bad_val = excluded = 0
+        bad_valid = bad_val = excluded = halfvalid = 0
         worst = 0.0
         for r in range(dg["height"]):
             for c in range(dg["width"]):
@@ -127,6 +139,9 @@ def main():
                 gv = theirs[i] != fill
                 if differs and case["method"] == "Lanczos":
                     excluded += 1
+                    continue
+                if gv and not mask[i] and half and tols[r][c] is None and half[r][c] is not None:
+                    halfvalid += 1
                     continue
                 if gv != mask[i]:
                     bad_valid += 1
@@ -150,11 +165,12 @@ def main():
                 "nothing compared" if case["method"] == "Lanczos" else
                 "validity %s, values not compared" % ("exact" if bad_valid == 0 else "%d cells differ" % bad_valid))
         else:
-            line = "%-5s %-40s validity %s, values %s%s" % (
+            line = "%-5s %-40s validity %s, values %s%s%s" % (
                 "ok" if ok else "FAIL", case["name"],
                 "exact" if bad_valid == 0 else "%d cells differ" % bad_valid,
                 "within tolerance" if bad_val == 0 else "%d cells out (worst %.3g x tolerance)" % (bad_val, worst),
-                ", %d edge cells excluded" % excluded if excluded else "")
+                ", %d edge cells excluded" % excluded if excluded else "",
+                ", %d half-valid cells gdalwarp keeps" % halfvalid if halfvalid else "")
         print(line)
         if not ok:
             failures.append(line)
