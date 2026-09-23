@@ -1,8 +1,10 @@
-// Command cogread reads the GeoTIFFs that cogmake.py wrote through
-// strata's cog package, so that cogcompare.py can difference them
-// against GDAL's reading of the same files.
+// Command cogread reads the GeoTIFFs that cogmake.py wrote, or the
+// corpus cogcorpus.py recorded, through strata's cog package, so that
+// cogcompare.py can difference them against GDAL's reading of the same
+// files.
 //
 //	go run ./cog -dir out-cog
+//	go run ./cog -dir out-corpus -src corpus/files
 //
 // For every file in manifest.json, every band and every level, it writes
 // <case>.b<band>.l<level>.strata.f32 (little-endian float32) and
@@ -10,7 +12,9 @@
 // CRS it found in strata.json. It reads through Source.ReadWindow in
 // windows of 100×77 cells, a size that lines up with none of the files'
 // blocks, so blocks are cut at every offset and shared through the cache.
-// A file cog refuses is recorded with its error, not skipped silently.
+// A level over 2²⁴ cells is read over one window of it, and at most 16
+// bands, by the same rule as cogtruth.py. A file cog refuses is recorded
+// with its error, not skipped silently, and so is a panic.
 //
 //	go run ./cog -dir out-cog -url http://127.0.0.1:8080 -workers 8
 //
@@ -37,20 +41,40 @@ import (
 )
 
 var (
-	dir     = flag.String("dir", "out-cog", "directory holding manifest.json and the files")
+	dir     = flag.String("dir", "out-cog", "directory holding manifest.json and the results")
+	src     = flag.String("src", "", "directory the manifest's paths are relative to (default: -dir, as <name>.tif)")
 	baseURL = flag.String("url", "", "read <url>/<case>.tif through cog.HTTPReaderAt instead of the local files")
 	workers = flag.Int("workers", 1, "goroutines reading windows of one source at once")
 )
 
+// The window rule of cogtruth.py: a level over maxCells cells is compared
+// over at most windowSide² cells starting a third of the way in, and at
+// most maxBands bands are compared.
+const (
+	maxCells   = 1 << 24
+	windowSide = 4096
+	maxBands   = 16
+)
+
+func levelWindow(w, h int) [4]int {
+	if w*h <= maxCells {
+		return [4]int{0, 0, w, h}
+	}
+	x, y := w/3, h/3
+	return [4]int{x, y, min(w-x, windowSide), min(h-y, windowSide)}
+}
+
 type manifest struct {
 	Files []struct {
 		Name string `json:"name"`
+		Path string `json:"path"`
 	} `json:"files"`
 }
 
 type level struct {
 	W, H int
 	GT   [6]float64
+	Win  [4]int
 }
 
 type result struct {
@@ -90,7 +114,11 @@ func run() error {
 	}
 	var results []result
 	for _, f := range m.Files {
-		r := readFile(f.Name)
+		path := filepath.Join(*dir, f.Name+".tif")
+		if f.Path != "" {
+			path = filepath.Join(*src, filepath.FromSlash(f.Path))
+		}
+		r := readFile(f.Name, path)
 		if r.Error != "" {
 			fmt.Printf("  %-48s refused: %s\n", f.Name, r.Error)
 		}
@@ -104,12 +132,17 @@ func run() error {
 	return os.WriteFile(filepath.Join(*dir, "strata.json"), out, 0o600)
 }
 
-func readFile(name string) (r result) {
+func readFile(name, path string) (r result) {
 	r.Name = name
 	fail := func(err error) result {
 		r.Error = err.Error()
 		return r
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			r.Error = fmt.Sprintf("panic: %v", p)
+		}
+	}()
 	var ra io.ReaderAt
 	if *baseURL != "" {
 		hr, err := cog.NewHTTPReaderAt(context.Background(), strings.TrimSuffix(*baseURL, "/")+"/"+name+".tif", cog.HTTPOptions{})
@@ -123,7 +156,7 @@ func readFile(name string) (r result) {
 		}()
 		ra = hr
 	} else {
-		fh, err := os.Open(filepath.Join(*dir, name+".tif"))
+		fh, err := os.Open(path)
 		if err != nil {
 			return fail(err)
 		}
@@ -137,16 +170,20 @@ func readFile(name string) (r result) {
 	r.Bands = file.Bands()
 	for lvl := range file.Levels() {
 		g := file.Grid(lvl)
+		win := levelWindow(g.Width, g.Height)
 		r.Levels = append(r.Levels, level{W: g.Width, H: g.Height,
-			GT: [6]float64{g.OriginX, g.ResolutionX, 0, g.OriginY, 0, g.ResolutionY}})
+			GT:  [6]float64{g.OriginX, g.ResolutionX, 0, g.OriginY, 0, g.ResolutionY},
+			Win: win})
 		r.EPSG = g.CRS.Code
-		for band := range file.Bands() {
+		for band := range min(file.Bands(), maxBands) {
 			src, err := file.Source(cog.SourceOptions{Band: band, Level: lvl})
 			if err != nil {
 				return fail(err)
 			}
-			r.Masked = src.Masked()
-			vals, mask, err := readAll(src)
+			if lvl == 0 && band == 0 {
+				r.Masked = src.Masked()
+			}
+			vals, mask, err := readAll(src, win)
 			if err != nil {
 				return fail(err)
 			}
@@ -162,11 +199,11 @@ func readFile(name string) (r result) {
 	return r
 }
 
-// readAll reads the whole source in 100×77 windows, -workers of them at
-// once, and returns its cells as little-endian float32 bytes and its
-// validity as one byte per cell.
-func readAll(src *cog.Source) (vals, mask []byte, err error) {
-	w, h := src.Size()
+// readAll reads the region area (x, y, width, height) of the source in
+// 100×77 windows, -workers of them at once, and returns its cells as
+// little-endian float32 bytes and its validity as one byte per cell.
+func readAll(src *cog.Source, area [4]int) (vals, mask []byte, err error) {
+	x0, y0, w, h := area[0], area[1], area[2], area[3]
 	vals, mask = make([]byte, 4*w*h), make([]byte, w*h)
 	const ww, wh = 100, 77
 	type window struct{ x, y int }
@@ -182,7 +219,7 @@ func readAll(src *cog.Source) (vals, mask []byte, err error) {
 			buf.Valid = raster.NewMask(ww * wh)
 			for wd := range todo {
 				win := buf.Window(0, 0, min(ww, w-wd.x), min(wh, h-wd.y))
-				if err := src.ReadWindow(context.Background(), win, wd.x, wd.y); err != nil {
+				if err := src.ReadWindow(context.Background(), win, x0+wd.x, y0+wd.y); err != nil {
 					once.Do(func() { first = err })
 					continue
 				}

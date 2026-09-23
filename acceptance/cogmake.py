@@ -7,14 +7,12 @@ truth that strata's cog reader is judged against:
 
   <case>.tif                     the file, written by gdal.Translate
   <case>.b<band>.l<level>.f32    GDAL's cells converted to float32 by GDAL
-                                 (ReadRaster with buf_type=Float32)
-  <case>.b<band>.l<level>.mask   GDAL's mask band: 255 valid, 0 invalid
-  manifest.json                  per file: bands, sizes per level,
-                                 geotransform per level, EPSG code, NoData
+  <case>.b<band>.l<level>.mask   GDAL's mask band
+  manifest.json                  per file: bands, sizes and geotransform
+                                 per level, EPSG code, NoData
 
-Levels are the full resolution and then each overview in GDAL's order.
-Every value here is GDAL's, read through its public API; nothing is
-computed from strata's code or conventions.
+cogtruth.py records the reading. Every value is GDAL's, read through its
+public API; nothing is computed from strata's code or conventions.
 
 Usage:  python3 cogmake.py <outdir> [source.tif]
 
@@ -29,6 +27,8 @@ import sys
 
 import numpy as np
 from osgeo import gdal, osr
+
+from cogtruth import record
 
 gdal.UseExceptions()
 
@@ -163,34 +163,10 @@ add("gtiff-Float64-huge", typed("Float64", scale=1e290), "GTiff", ["TILED=YES"])
 add("gtiff-Float32-point", typed("Float32"), "GTiff", ["TILED=YES"],
     metadata={"AREA_OR_POINT": "Point"})
 
-manifest = []
-for name in cases:
-    path = os.path.join(OUT, name + ".tif")
-    ds = gdal.Open(path)
-    b1 = ds.GetRasterBand(1)
-    levels = 1 + b1.GetOverviewCount()
-    srs = ds.GetSpatialRef()
-    epsg = None
-    if srs is not None:
-        srs.AutoIdentifyEPSG()
-        code = srs.GetAuthorityCode(None)
-        epsg = int(code) if code else None
-    entry = {"name": name, "bands": ds.RasterCount, "levels": [], "epsg": epsg,
-             "nodata": b1.GetNoDataValue(), "type": gdal.GetDataTypeName(b1.DataType)}
-    for lvl in range(levels):
-        # An overview's geotransform, as GDAL reports it when the
-        # overview is opened as a dataset of its own.
-        lds = ds if lvl == 0 else gdal.OpenEx(path, open_options=[f"OVERVIEW_LEVEL={lvl - 1}"])
-        entry["levels"].append({"w": lds.RasterXSize, "h": lds.RasterYSize,
-                                "gt": list(lds.GetGeoTransform())})
-        for k in range(ds.RasterCount):
-            band = lds.GetRasterBand(k + 1)
-            raw = band.ReadRaster(buf_type=gdal.GDT_Float32)
-            with open(os.path.join(OUT, f"{name}.b{k}.l{lvl}.f32"), "wb") as f:
-                f.write(np.frombuffer(raw, dtype=np.float32).astype("<f4").tobytes())
-            mask = band.GetMaskBand().ReadAsArray().astype(np.uint8)
-            mask.tofile(os.path.join(OUT, f"{name}.b{k}.l{lvl}.mask"))
-    manifest.append(entry)
+manifest = [record(os.path.join(OUT, name + ".tif"), name, OUT) for name in cases]
+for e in manifest:
+    if "gdal_error" in e:
+        sys.exit(f"GDAL cannot read back its own {e['name']}: {e['gdal_error']}")
 
 with open(os.path.join(OUT, "manifest.json"), "w") as f:
     json.dump({"gdal": gdal.__version__, "files": manifest}, f, indent=1)

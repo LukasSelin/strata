@@ -56,18 +56,20 @@ func TestFloatPredictorRow(t *testing.T) {
 
 // TestFloat32FastPath checks copyFloat32 and float32Validity against
 // convert, the general path, for every stride, band and kind of NoData,
-// on samples that include NaN, ±0, ±Inf, subnormals and the NoData
-// values themselves.
+// on samples that include NaN, ±0, ±Inf, subnormals, the NoData values
+// themselves and their neighbours to either side of ARE_REAL_EQUAL's
+// tolerance.
 func TestFloat32FastPath(t *testing.T) {
 	special := []float32{0, float32(math.Copysign(0, -1)), -9999, 1, float32(math.NaN()),
 		float32(math.Inf(1)), float32(math.Inf(-1)), math.SmallestNonzeroFloat32, math.MaxFloat32}
 	rng := rand.New(rand.NewPCG(5, 6))
 	nds := []noData{
 		{},
-		prepareNoData(-9999, true, sampleFloat, 4),
-		prepareNoData(0, true, sampleFloat, 4),
-		prepareNoData(math.NaN(), true, sampleFloat, 4),
-		prepareNoData(0.1, true, sampleFloat, 4), // rounds to float32
+		prepareNoData(-9999, true, sampleFloat, 32),
+		prepareNoData(0, true, sampleFloat, 32),
+		prepareNoData(math.NaN(), true, sampleFloat, 32),
+		prepareNoData(0.1, true, sampleFloat, 32), // rounds to float32
+		prepareNoData(math.MaxFloat32, true, sampleFloat, 32),
 	}
 	for _, stride := range []int{1, 3} {
 		for _, cells := range []int{1, 63, 64, 65, 200} {
@@ -80,15 +82,19 @@ func TestFloat32FastPath(t *testing.T) {
 				if rng.IntN(7) == 0 {
 					v = float32(0.1)
 				}
+				if rng.IntN(3) == 0 { // up to 12 ulps from a NoData
+					v = []float32{-9999, 0.1, math.MaxFloat32}[rng.IntN(3)]
+					v = math.Float32frombits(math.Float32bits(v) + uint32(rng.IntN(25)) - 12) // #nosec G115 -- ulp steps, wrapping as uint32
+				}
 				binary.LittleEndian.PutUint32(data[i:], math.Float32bits(v))
 			}
 			for first := range stride {
 				for _, nd := range nds {
 					want := make([]float32, cells)
 					var wantValid []uint64
-					if convert(want, data, sampleFloat, 4, stride, first, nd, nil) {
+					if convert(want, data, sampleFloat, 32, stride, first, nd, nil) {
 						wantValid = make([]uint64, raster.MaskWords(cells))
-						convert(want, data, sampleFloat, 4, stride, first, nd, wantValid)
+						convert(want, data, sampleFloat, 32, stride, first, nd, wantValid)
 					}
 					got := make([]float32, cells)
 					copyFloat32(got, data, stride, first)
@@ -176,7 +182,7 @@ func BenchmarkFloat32Validity(b *testing.B) {
 	for i := 0; i < len(vals); i += 997 {
 		vals[i] = 65535
 	}
-	nd := prepareNoData(65535, true, sampleFloat, 4)
+	nd := prepareNoData(65535, true, sampleFloat, 32)
 	b.SetBytes(int64(4 * len(vals)))
 	for b.Loop() {
 		float32Validity(vals, nd)

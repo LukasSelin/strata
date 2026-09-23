@@ -120,3 +120,32 @@ passed.
   scale/offset metadata are not read.
 - Later adapters follow the same pattern: a module in the repository, a
   wrapped library where one fits, and an outside tool as the judge.
+
+## Addendum, 2026-09-23: files GDAL did not write
+
+The 98 files above were all written by GDAL, so they could not show how
+the reader fares with other writers. `acceptance/cogcorpus.sh` runs the
+same comparison over a corpus of GeoTIFFs from libtiff, tiffcp,
+rasterio and rio-cogeo, ERDAS, PCI, Intergraph and USGS software, GDAL's
+own deliberately odd test files, and Landsat, Sentinel-2, Copernicus,
+NASA, USGS, JAXA and ESA products (`acceptance/README.md`, "Reading
+GeoTIFFs other software wrote"). It changed three decisions above:
+
+- **Internal masks are read.** A transparency-mask IFD now gives its
+  level's validity, as GDAL's internal mask does, because rio-cogeo and
+  GDAL write them for masked COGs and ignoring one reads masked cells as
+  valid.
+- **NoData compares as GDAL's mask band compares it, not exactly.**
+  GDAL truncates an integer NoData, ignores one outside the type's range,
+  and matches floats within `ARE_REAL_EQUAL`'s 2·FLT_EPSILON·|a+b|. The
+  first draft compared exactly in the sample type, and its unit test
+  encoded that belief, as the first draft's float64 overflow test had
+  encoded another. The corpus found it through a byte file with NoData
+  12.5; GDAL's source gave the rest, and generated files confirm each
+  rule.
+- **The CRS is named more cautiously.** An EPSG code is reported only
+  when no other key or citation redefines it, and deprecated codes as
+  their replacements, from a table generated from PROJ's database
+  (`cog/epsg_gen.py`). Where GDAL identifies a redefined CRS with a code
+  through PROJ, cog reports none; the corpus counts those files
+  separately rather than failing them.
