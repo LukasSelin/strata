@@ -1618,8 +1618,11 @@ GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
 on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
 Go's inflate, is most of the gap), yet slope over a COG still beats
 `gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Open: writing (a COG sink), internal masks, and a default cache
-that scales with the file's block rows for many workers.
+workers. Since then the default block cache holds 8 rows of blocks
+(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
+read allocates about its cache rather than its size, and 8- and 16-bit
+integers convert without a float64 detour (UInt16 reads 1.4–1.9×
+faster). Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 

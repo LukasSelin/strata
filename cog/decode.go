@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/bits"
 	"sync"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/lzw"
@@ -27,12 +28,73 @@ import (
 
 // block is one decoded tile or strip of one band: w×rows cells, row-major,
 // with their validity bits, or nil validity when every cell is valid.
+//
+// Its cells are in a buffer that is reused for another block once nobody
+// holds this one: the source's cache while it keeps the block, and each
+// reader while it copies from it (see cache). A block is born held once,
+// by whoever decoded it.
 type block struct {
 	vals  []float32
 	valid []uint64
 	w     int
 	rows  int
+	refs  atomic.Int32
 }
+
+// newBlock returns a block of w×rows cells, held once, whose values are
+// not cleared: the decoder writes every one.
+func newBlock(w, rows int) *block {
+	b := &block{w: w, rows: rows, vals: getVals(w * rows)}
+	b.refs.Store(1)
+	return b
+}
+
+func (b *block) hold() { b.refs.Add(1) }
+
+// release gives back one reference, and the cells' buffer with the last.
+func (b *block) release() {
+	switch n := b.refs.Add(-1); {
+	case n == 0:
+		putVals(b.vals)
+		b.vals = nil
+	case n < 0:
+		panic("cog: a block released more often than it was held")
+	}
+}
+
+// valsPool holds the cells' buffers of released blocks. The blocks of a
+// level are all one size but for a strip file's last strip, so a buffer
+// that is too small is simply left for the collector.
+var valsPool sync.Pool // of *[]float32
+
+func getVals(n int) []float32 {
+	var v []float32
+	if p, ok := valsPool.Get().(*[]float32); ok && cap(*p) >= n {
+		v = (*p)[:n]
+	} else {
+		v = make([]float32, n)
+	}
+	if poisonVals {
+		for i := range v {
+			v[i] = poison
+		}
+	}
+	return v
+}
+
+func putVals(v []float32) {
+	if cap(v) > 0 {
+		valsPool.Put(&v)
+	}
+}
+
+// poisonVals, which the tests set, fills every buffer a decoder is given
+// with poison, new or reused, so that a decoder that leaves a cell
+// unwritten reads as wrong rather than as the zero or stale value it
+// happens to find.
+var poisonVals bool
+
+var poison = math.Float32frombits(0x7fc0dead) // a NaN no file holds
 
 // size is the memory a block holds, for the cache's accounting.
 func (b *block) size() int64 {
@@ -137,13 +199,13 @@ func (nd noData) matches(v float64, format, bits int) bool {
 func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read func(off, n uint64) ([]byte, error)) (*block, error) {
 	rows := im.blockRows(by)
 	n := im.blockW * rows
-	b := &block{w: im.blockW, rows: rows}
 	off, count := im.offsets[idx], im.byteCounts[idx]
 	if count == 0 {
 		// An absent block, which GDAL writes as a sparse one (offset
 		// and count 0) for all-NoData tiles, and reads, as it reads
 		// any block of 0 bytes, as NoData, or as 0 without one.
-		b.vals = make([]float32, n)
+		b := newBlock(im.blockW, rows)
+		clear(b.vals)
 		if nd.set {
 			b.valid = make([]uint64, raster.MaskWords(n)) // all invalid
 		}
@@ -215,7 +277,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		data = append(data, make([]byte, want-len(data))...)
 	}
 	data = data[:want]
-	b.vals = make([]float32, n)
+	b := newBlock(im.blockW, rows)
 	isFloat32 := im.format == sampleFloat && im.bytes == 4
 	if isFloat32 && spb == 1 && im.predictor == predictorFloat {
 		// The common float COG: the predictor's byte planes go straight
@@ -226,11 +288,29 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		b.valid = float32Validity(b.vals, nd)
 		return b, nil
 	}
-	toLittleEndian(data, im, c.order, rowBytes)
 	first := 0
 	if im.planar == planarChunky {
 		first = band
 	}
+	if im.format != sampleFloat && (im.bits == 8 || im.bits == 16) {
+		// 8- and 16-bit integers are exact in float32, and their NoData
+		// is an integer, so neither needs convert's float64 detour.
+		signed := im.format == sampleInt
+		if spb == 1 && (im.bits == 8 || c.order == binary.LittleEndian) {
+			// One band in native order: the horizontal predictor is
+			// undone as the samples are written, in one pass per row.
+			pred := im.predictor == predictorHorizontal
+			for r := range rows {
+				intRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes], im.bits, signed, pred)
+			}
+		} else {
+			toLittleEndian(data, im, c.order, rowBytes)
+			convertInts(b.vals, data, im.bits, signed, spb, first)
+		}
+		b.valid = exactValidity(b.vals, nd)
+		return b, nil
+	}
+	toLittleEndian(data, im, c.order, rowBytes)
 	if im.bits == 1 {
 		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
 		if nd.set && anyEqual(b.vals, float32(nd.cmp)) {
@@ -266,6 +346,7 @@ func expandBits(vals []float32, data []byte, w, rowBytes, stride, first int) {
 	for i := range vals {
 		r, c := i/w, i%w
 		bit := c*stride + first
+		vals[i] = 0 // the buffer is reused, so every cell is written
 		if data[r*rowBytes+bit>>3]&(0x80>>uint(bit&7)) != 0 {
 			vals[i] = 255
 		}
@@ -687,6 +768,105 @@ func notNaNWord(chunk []float32) uint64 {
 		word |= uint64((0x7f800000-m)>>31^1) << (uint(j) & 63)
 	}
 	return word
+}
+
+// intRow writes one row of single-band little-endian integer samples of
+// the given width and signedness to vals, undoing horizontal differencing
+// first if pred: each sample is then the wrapping sum of those before it.
+func intRow(vals []float32, row []byte, bits int, signed, pred bool) {
+	le := binary.LittleEndian
+	switch {
+	case bits == 8:
+		row = row[:len(vals)]
+		var acc byte
+		for i, v := range row {
+			if pred {
+				acc += v
+			} else {
+				acc = v
+			}
+			if signed {
+				vals[i] = float32(int8(acc)) // #nosec G115 -- reinterpreting the bits is the point
+			} else {
+				vals[i] = float32(acc)
+			}
+		}
+	case pred:
+		row = row[:2*len(vals)]
+		var acc uint16
+		if signed {
+			for i := range vals {
+				acc += le.Uint16(row[2*i:])
+				vals[i] = float32(int16(acc)) // #nosec G115 -- as above
+			}
+			return
+		}
+		for i := range vals {
+			acc += le.Uint16(row[2*i:])
+			vals[i] = float32(acc)
+		}
+	default:
+		row = row[:2*len(vals)]
+		if signed {
+			for i := range vals {
+				vals[i] = float32(int16(le.Uint16(row[2*i:]))) // #nosec G115 -- as above
+			}
+			return
+		}
+		for i := range vals {
+			vals[i] = float32(le.Uint16(row[2*i:]))
+		}
+	}
+}
+
+// convertInts writes every stride-th little-endian integer sample of
+// data, from the first-th, into vals: the general case of intRow, for
+// several bands and any byte order, after toLittleEndian.
+func convertInts(vals []float32, data []byte, bits int, signed bool, stride, first int) {
+	le := binary.LittleEndian
+	size := bits / 8
+	step, p := size*stride, first*size
+	for i := range vals {
+		s := data[p:]
+		p += step
+		switch {
+		case size == 1 && signed:
+			vals[i] = float32(int8(s[0])) // #nosec G115 -- reinterpreting the bits is the point
+		case size == 1:
+			vals[i] = float32(s[0])
+		case signed:
+			vals[i] = float32(int16(le.Uint16(s))) // #nosec G115 -- as above
+		default:
+			vals[i] = float32(le.Uint16(s))
+		}
+	}
+}
+
+// exactValidity is the NoData test for integer samples of at most 16
+// bits, made on their float32 values, which hold them exactly: NoData is
+// an integer in the type's range (prepareNoData), so it is exact too, and
+// a cell is NoData if and only if its value equals it. It returns nil if
+// every cell is valid.
+func exactValidity(vals []float32, nd noData) []uint64 {
+	if !nd.set {
+		return nil
+	}
+	want, care := math.Float32bits(float32(nd.cmp)), ^uint32(0)
+	if nd.cmp == 0 {
+		want, care = 0, 0x7fffffff // -0, from truncating -0.5, is 0
+	}
+	valid := make([]uint64, raster.MaskWords(len(vals)))
+	all := true
+	for k := range valid {
+		chunk := vals[k*64 : min(k*64+64, len(vals))]
+		word := notEqualWord(chunk, want, care)
+		valid[k] = word
+		all = all && word == ^uint64(0)>>(64-uint(len(chunk)))
+	}
+	if all {
+		return nil
+	}
+	return valid
 }
 
 // convert writes every stride-th little-endian sample of data, from the
