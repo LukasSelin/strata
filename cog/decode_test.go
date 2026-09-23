@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/LukasSelin/strata/cog/internal/kern"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -162,7 +163,7 @@ func TestFloatPredictorRow32(t *testing.T) {
 		want := make([]float32, n)
 		copyFloat32(want, ref, 1, 0)
 		got := make([]float32, n)
-		floatPredictorRow32(got, slices.Clone(row))
+		kern.PlanesRow(got, slices.Clone(row))
 		for i := range got {
 			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 				t.Fatalf("%d samples: sample %d has bits %08x, want %08x",
