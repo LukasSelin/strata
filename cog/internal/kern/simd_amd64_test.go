@@ -101,3 +101,22 @@ func TestWordAVX2(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyRowAVX2(t *testing.T) {
+	needAVX2(t)
+	rng := rand.New(rand.NewPCG(23, 24))
+	for _, n := range []int{1, 7, 8, 9, 64, 100, 512, 701} {
+		row := make([]byte, 4*n)
+		for i := range row {
+			row[i] = byte(rng.Uint32())
+		}
+		want, got := make([]float32, n), make([]float32, n)
+		scalarCopyRow(want, row)
+		copyRowAVX2(got, row)
+		for i := range want {
+			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+				t.Fatalf("%d samples: sample %d has bits %08x, want %08x", n, i, math.Float32bits(got[i]), math.Float32bits(want[i]))
+			}
+		}
+	}
+}

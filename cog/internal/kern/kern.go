@@ -34,6 +34,7 @@ var (
 	planesRow = scalarPlanesRow
 	uint16Row = scalarUint16Row
 	word64    = scalarWord
+	copyRow   = scalarCopyRow
 )
 
 // kernelSet is one backend's kernels.
@@ -41,9 +42,10 @@ type kernelSet struct {
 	planesRow func(vals []float32, row []byte)
 	uint16Row func(vals []float32, row []byte, signed, pred bool)
 	word64    func(chunk []float32, mode int, want, care, lo uint32, span uint64) uint64
+	copyRow   func(vals []float32, row []byte)
 }
 
-var scalarKernels = kernelSet{planesRow: scalarPlanesRow, uint16Row: scalarUint16Row, word64: scalarWord}
+var scalarKernels = kernelSet{planesRow: scalarPlanesRow, uint16Row: scalarUint16Row, word64: scalarWord, copyRow: scalarCopyRow}
 
 // simdKernels is the SIMD set, or nil when this build or CPU has none.
 var (
@@ -53,7 +55,7 @@ var (
 )
 
 func (k *kernelSet) install() {
-	planesRow, uint16Row, word64 = k.planesRow, k.uint16Row, k.word64
+	planesRow, uint16Row, word64, copyRow = k.planesRow, k.uint16Row, k.word64, k.copyRow
 }
 
 // Backend returns the kernel set in use: "scalar", or the SIMD set's name.
@@ -97,6 +99,15 @@ func Uint16Row(vals []float32, row []byte, signed, pred bool) {
 	uint16Row(vals, row[:2*len(vals)], signed, pred)
 }
 
+// CopyRow writes one row of single-band little-endian float32 samples,
+// stored without a predictor, to vals, bit for bit.
+func CopyRow(vals []float32, row []byte) {
+	if len(row) < 4*len(vals) {
+		panic(fmt.Sprintf("kern: CopyRow: %d bytes for %d samples", len(row), len(vals)))
+	}
+	copyRow(vals, row[:4*len(vals)])
+}
+
 // Word returns the validity bits of chunk, at most 64 cells, under the
 // NoData test mode with its parameters: bit j is set where chunk[j] is
 // not NoData.
@@ -108,6 +119,13 @@ func Word(chunk []float32, mode int, want, care, lo uint32, span uint64) uint64 
 		return word64(chunk, mode, want, care, lo, span)
 	}
 	return scalarWord(chunk, mode, want, care, lo, span)
+}
+
+func scalarCopyRow(vals []float32, row []byte) {
+	row = row[:4*len(vals)]
+	for i := range vals {
+		vals[i] = math.Float32frombits(uint32(row[4*i]) | uint32(row[4*i+1])<<8 | uint32(row[4*i+2])<<16 | uint32(row[4*i+3])<<24)
+	}
 }
 
 func scalarPlanesRow(vals []float32, row []byte) {
