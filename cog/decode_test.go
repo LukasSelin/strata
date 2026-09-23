@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/LukasSelin/strata/cog/internal/kern"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -162,7 +163,7 @@ func TestFloatPredictorRow32(t *testing.T) {
 		want := make([]float32, n)
 		copyFloat32(want, ref, 1, 0)
 		got := make([]float32, n)
-		floatPredictorRow32(got, slices.Clone(row))
+		kern.PlanesRow(got, slices.Clone(row))
 		for i := range got {
 			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 				t.Fatalf("%d samples: sample %d has bits %08x, want %08x",
@@ -288,6 +289,43 @@ func TestIntFastPath(t *testing.T) {
 					if gotValid := exactValidity(got, nd); !slices.Equal(gotValid, wantValid) {
 						t.Fatalf("%s, %d cells, pred %v, NoData %v: validity %x, want %x",
 							st.name, n, pred, v, gotValid, wantValid)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestValidatorRows checks that validity built a row at a time is the
+// validity float32Validity and exactValidity build from the whole block,
+// for widths that do and do not divide into words.
+func TestValidatorRows(t *testing.T) {
+	rng := rand.New(rand.NewPCG(15, 16))
+	for _, w := range []int{1, 37, 64, 100, 128, 512} {
+		for _, rows := range []int{1, 3, 8} {
+			n := w * rows
+			vals := make([]float32, n)
+			for i := range vals {
+				vals[i] = []float32{0, float32(math.Copysign(0, -1)), -9999, 12, 0.1, float32(math.NaN()),
+					float32(math.Inf(1)), float32(i%7) + 0.5}[rng.IntN(8)]
+			}
+			for _, v := range []float64{-9999, 0, 12, 0.1, math.NaN()} {
+				fnd := prepareNoData(v, true, sampleFloat, 32)
+				ind := prepareNoData(v, true, sampleInt, 16)
+				for _, c := range []struct {
+					name string
+					test nodataTest
+					want []uint64
+				}{
+					{"float32", float32Test(fnd), float32Validity(vals, fnd)},
+					{"int16", intTest(ind), exactValidity(vals, ind)},
+				} {
+					val := newValidator(c.test, n)
+					for r := range rows {
+						val.upto(vals, (r+1)*w)
+					}
+					if got := val.finish(vals); !slices.Equal(got, c.want) {
+						t.Fatalf("%s, %d×%d, NoData %v: %x, want %x", c.name, w, rows, v, got, c.want)
 					}
 				}
 			}

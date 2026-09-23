@@ -593,7 +593,9 @@ func fastBlock(r *bitReader, out []byte, op, limit int, t *inflater) (int, bool,
 	litlen, dist := &t.litlen, &t.dist
 	fastOut := limit - 258 - 8
 	le := binary.LittleEndian
-	defer func() { r.pos, r.bb, r.nb = pos, bb, nb }()
+	// Length and capacity the same, so bounds checks keep one of them
+	// in a register rather than both on the stack.
+	out = out[:limit:limit]
 	for pos+8 <= len(src) && op < fastOut {
 		bb |= le.Uint64(src[pos:]) << nb
 		pos += int(63-nb) >> 3
@@ -609,20 +611,30 @@ func fastBlock(r *bitReader, out []byte, op, limit int, t *inflater) (int, bool,
 		if e&0xf00 == kindLiteral<<8 {
 			out[op] = byte(e >> 16) // #nosec G115 -- a literal entry holds a byte
 			op++
-			// At least 41 bits are left: a second literal fits.
+			// At least 41 bits are left: two more literals from the
+			// primary table, 11 bits each, fit.
 			e = litlen[bb&litlenMask]
 			if e&0xf00 == kindLiteral<<8 {
 				bb >>= e & 31
 				nb -= uint(e & 31)
 				out[op] = byte(e >> 16) // #nosec G115 -- a literal entry holds a byte
 				op++
+				e = litlen[bb&litlenMask]
+				if e&0xf00 == kindLiteral<<8 {
+					bb >>= e & 31
+					nb -= uint(e & 31)
+					out[op] = byte(e >> 16) // #nosec G115 -- a literal entry holds a byte
+					op++
+				}
 			}
 			continue
 		}
-		switch e >> 8 & 0xf {
-		case kindEnd:
-			return op, true, nil
-		case kindInvalid:
+		if e&0xf00 != kindLength<<8 {
+			if e&0xf00 == kindEnd<<8 {
+				r.pos, r.bb, r.nb = pos, bb, nb
+				return op, true, nil
+			}
+			r.pos, r.bb, r.nb = pos, bb, nb
 			return op, false, errInflateCorrupt
 		}
 		n := uint(e >> 12 & 0xf)
@@ -638,21 +650,24 @@ func fastBlock(r *bitReader, out []byte, op, limit int, t *inflater) (int, bool,
 		}
 		bb >>= e & 31
 		nb -= uint(e & 31)
-		if e>>8&0xf != kindDist {
-			return op, false, errInflateCorrupt
-		}
+		// An invalid entry's value and extra bits are 0, so a distance
+		// of 0 is a corrupt code, and one past the output is corrupt too:
+		// one unsigned compare checks both.
 		n = uint(e >> 12 & 0xf)
 		distance := int(e>>16) + int(bb&(1<<n-1)) // #nosec G115 -- at most 13 bits
 		bb >>= n
 		nb -= n
-		if distance > op {
+		if uint(distance-1) >= uint(op) { // #nosec G115 -- distance-1 >= -1, op >= 0
+			r.pos, r.bb, r.nb = pos, bb, nb
 			return op, false, errInflateCorrupt
 		}
 		switch {
 		case distance >= 8:
 			// The source is at least eight bytes behind, so each word
-			// it reads has been written.
-			for i := 0; i < length; i += 8 {
+			// it reads has been written. Most matches are at most eight
+			// bytes, so the first word is copied before any loop.
+			le.PutUint64(out[op:], le.Uint64(out[op-distance:]))
+			for i := 8; i < length; i += 8 {
 				le.PutUint64(out[op+i:], le.Uint64(out[op-distance+i:]))
 			}
 		case distance == 1:
@@ -668,5 +683,6 @@ func fastBlock(r *bitReader, out []byte, op, limit int, t *inflater) (int, bool,
 		}
 		op += length
 	}
+	r.pos, r.bb, r.nb = pos, bb, nb
 	return op, false, nil
 }
