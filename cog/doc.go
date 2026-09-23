@@ -15,7 +15,34 @@
 // A Source is an engine.RasterSource, so every Chunked entry point runs
 // over it in memory bounded by the tile size, not the file. It reads from
 // an io.ReaderAt, which may be a local file or anything else that serves
-// byte ranges.
+// byte ranges, such as an HTTPReaderAt.
+//
+// # Reading over HTTP
+//
+// NewHTTPReaderAt reads a COG straight from a URL, on S3, GCS or any
+// HTTPS server, public or presigned, with range requests and the
+// standard library only:
+//
+//	r, err := cog.NewHTTPReaderAt(ctx, "https://bucket.s3.amazonaws.com/dem.tif", cog.HTTPOptions{})
+//	...
+//	file, err := cog.Open(r)
+//
+// It fetches the first 64 KiB when it is created. GDAL writes every IFD
+// of a COG, and the tile offsets they hold, at the start of the file, so
+// Open is served from that block. After that, each block a Source
+// decodes is one range request: the cache means a block is fetched once
+// per Source, not once per window. A Source reads one band, so each band
+// of a pixel-interleaved file fetches the block again. Requests must be
+// answered 206 with exactly the range asked for. Transient failures
+// (transport errors, truncated bodies, 429, 5xx) are retried with
+// backoff, a bounded number of times, and at most
+// HTTPOptions.MaxConcurrent requests are in flight. With a strong ETag,
+// every request carries If-Match, so a file replaced while it is read
+// fails with ErrObjectChanged rather than mixing two versions. Errors are
+// *HTTPError, naming the URL (without its query string, which in a
+// presigned URL is a credential) and the bytes asked for.
+// acceptance/coghttpcheck.sh reads all of acceptance/cogcheck.sh's files
+// through it, from nginx, and GDAL finds them identical.
 //
 // # What it reads
 //

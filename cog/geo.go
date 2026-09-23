@@ -212,7 +212,7 @@ func epsg(keys geoKeySet) uint64 {
 			return 0
 		}
 		for _, key := range []uint64{keyCitation, keyProjCitation} {
-			if name, ok := citationUnits(keys.ascii[key]); ok && !(unit == unitMetre && isMetre(name)) {
+			if name, ok := citationUnits(keys.ascii[key]); ok && (unit != unitMetre || !isMetre(name)) {
 				return 0
 			}
 		}
