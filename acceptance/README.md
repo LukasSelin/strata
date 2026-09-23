@@ -321,10 +321,12 @@ caught  sparse block valid      sparse blocks read as valid zeros
 8/8 sabotages caught
 ```
 
-What it does not cover: files GDAL did not write, which "Reading
-GeoTIFFs other software wrote" below takes on; compressions the reader
-refuses (JPEG, WebP, LERC); and decode speed, which nothing here
-measures yet.
+What it does not cover:
+- files GDAL did not write, which "Reading GeoTIFFs other software
+  wrote" below takes on;
+- compressions the reader refuses (JPEG, WebP, LERC);
+- decode speed, which [`benchmarks/cog/`](../benchmarks/cog/RESULTS.md)
+  measures against GDAL.
 
 ### Over HTTP: coghttpcheck.sh
 
