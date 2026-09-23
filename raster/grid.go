@@ -1,6 +1,10 @@
 package raster
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // CRS identifies a coordinate reference system. It is a label: the engine
 // carries it along with a Grid but never interprets or transforms it.
@@ -16,6 +20,22 @@ type CRS struct {
 // compared as strings, so two codes naming the same system do not match.
 func (c CRS) Matches(o CRS) bool {
 	return c.Code == "" || o.Code == "" || c.Code == o.Code
+}
+
+// Describe quotes c's code for a message, with a link to its epsg.io page
+// when the code is spelled as cog spells one, EPSG:<number>:
+//
+//	"EPSG:25833" (https://epsg.io/25833)
+//
+// An operation that panics because two CRSs do not match names both
+// sides this way. The link is for the reader only: nothing else is read
+// from the code (DESIGN.md §36).
+func (c CRS) Describe() string {
+	n, ok := strings.CutPrefix(c.Code, "EPSG:")
+	if !ok || n == "" || strings.Trim(n, "0123456789") != "" {
+		return strconv.Quote(c.Code)
+	}
+	return fmt.Sprintf("%q (https://epsg.io/%s)", c.Code, n)
 }
 
 // Grid is the spatial metadata of a raster, kept separate from its cell
