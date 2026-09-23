@@ -326,12 +326,12 @@ func TestGeoreferencing(t *testing.T) {
 }
 
 // TestOverviews builds a COG-shaped file: the full image, a mask, and two
-// overviews, and checks that the mask is skipped and each level reads
-// its own cells on a grid scaled as GDAL scales it.
+// overviews, and checks that the mask is not taken for a level and each
+// level reads its own cells on a grid scaled as GDAL scales it. The mask
+// has no holes here; TestMasks reads masks.
 func TestOverviews(t *testing.T) {
 	full := grid16(append(scaleTiepoint(10, 10, 1000, 2000), geoTags(modelProjected, 1, 3006))...)
-	mask := grid16()
-	mask.format, mask.size, mask.subfile = sampleUint, 1, subfileMask
+	mask := maskOf(full, 8, func(int, int) bool { return false })
 	ov1 := halve(full)
 	ov1.subfile = subfileReduced
 	ov2 := halve(ov1)
@@ -419,11 +419,30 @@ func TestSparse(t *testing.T) {
 	}
 }
 
-// TestNoDataNative checks that NoData compares in the sample type: a
-// value inexact in float32 matches float32 cells holding its rounding,
-// NaN matches any NaN, and a fractional or out-of-range NoData matches
-// no integer cell.
-func TestNoDataNative(t *testing.T) {
+// TestNoDataGDAL checks that cells compare with NoData as GDAL's NoData
+// mask compares them (gcore/gdalnodatamaskband.cpp), which
+// acceptance/corpus's generated-gdal/*nodata* files confirm:
+//
+//   - integers: a NoData value outside the type's range is none at all
+//     (not Masked), and one inside it is truncated toward zero;
+//   - floats: equal within ARE_REAL_EQUAL's 2·FLT_EPSILON·|a+b|, which
+//     is four float32 ulps either side of -9999 and 2^30 float64 ulps,
+//     computed in float32 for float32 samples, so that a sum that
+//     overflows makes every such value equal;
+//   - a float32 NoData is first rounded to float32, a value just past
+//     MaxFloat32 onto it and one beyond float32's range to Inf.
+//
+// The first version of this test expected exact comparison in the
+// sample type, fractional integer NoData matching nothing, and 1e39 on
+// float32 matching nothing. GDAL does none of those.
+func TestNoDataGDAL(t *testing.T) {
+	f32ulps := func(v float32, n int32) float64 {
+		return float64(math.Float32frombits(uint32(int32(math.Float32bits(v)) + n)))
+	}
+	f64ulps := func(v float64, n int64) float64 {
+		return math.Float64frombits(uint64(int64(math.Float64bits(v)) + n))
+	}
+	f32, f64 := sampleType{"f32", sampleFloat, 4}, sampleType{"f64", sampleFloat, 8}
 	cases := []struct {
 		nd     string
 		st     sampleType
@@ -431,17 +450,25 @@ func TestNoDataNative(t *testing.T) {
 		valid  []bool
 		masked bool
 	}{
-		{"1e-9", sampleType{"f32", sampleFloat, 4}, []float64{float64(float32(1e-9)), 1e-9 * 2}, []bool{false, true}, true},
-		{"1e-9", sampleType{"f64", sampleFloat, 8}, []float64{float64(float32(1e-9)), 1e-9}, []bool{true, false}, true},
-		{"nan", sampleType{"f32", sampleFloat, 4}, []float64{math.NaN(), 1}, []bool{false, true}, true},
+		{"1e-9", f32, []float64{float64(float32(1e-9)), 1e-9 * 2}, []bool{false, true}, true},
+		{"1e-9", f64, []float64{float64(float32(1e-9)), 1e-9, 1.000001e-9}, []bool{false, false, true}, true},
+		{"nan", f32, []float64{math.NaN(), 1}, []bool{false, true}, true},
 		{"nan", sampleType{"i16", sampleInt, 2}, []float64{0, 1}, []bool{true, true}, false},
-		{"2.5", sampleType{"u8", sampleUint, 1}, []float64{2, 3}, []bool{true, true}, true},
-		{"300", sampleType{"u8", sampleUint, 1}, []float64{255, 44}, []bool{true, true}, true},
+		{"2.5", sampleType{"u8", sampleUint, 1}, []float64{2, 3}, []bool{false, true}, true},
+		{"-3.7", sampleType{"i16", sampleInt, 2}, []float64{-3, -4}, []bool{false, true}, true},
+		{"300", sampleType{"u8", sampleUint, 1}, []float64{255, 44}, []bool{true, true}, false},
 		{"-1", sampleType{"i8", sampleInt, 1}, []float64{-1, 255 - 256 + 1}, []bool{false, true}, true},
-		{"1e39", sampleType{"f32", sampleFloat, 4}, []float64{math.Inf(1), 1}, []bool{true, true}, false},
+		{"1e39", f32, []float64{math.Inf(1), 1, math.MaxFloat32}, []bool{false, true, true}, true},
+		// Near MaxFloat32, a+b overflows float32 to Inf, and ARE_REAL_EQUAL
+		// then holds for any value whose sum with NoData overflows.
+		{"3.4028234663852886e+38", f32, []float64{math.MaxFloat32, 3e38, 1e30}, []bool{false, false, true}, true},
+		{"-9999", f32, []float64{f32ulps(-9999, 4), f32ulps(-9999, -4), f32ulps(-9999, 5), f32ulps(-9999, -5)},
+			[]bool{false, false, true, true}, true},
+		{"-9999", f64, []float64{f64ulps(-9999, 1<<30), f64ulps(-9999, -1<<30), f64ulps(-9999, 1<<32)},
+			[]bool{false, false, true}, true},
 	}
 	for _, c := range cases {
-		sp := imageSpec{w: 2, h: 1, bands: 1, format: c.st.format, size: c.st.size, blockH: 1,
+		sp := imageSpec{w: len(c.vals), h: 1, bands: 1, format: c.st.format, size: c.st.size, blockH: 1,
 			planar: planarChunky, compression: compressionNone, vals: [][]float64{c.vals},
 			extra: []tagValue{{tag: tagGDALNoData, typ: typeASCII, str: c.nd}}}
 		f, err := Open(bytes.NewReader(fileSpec{order: binary.LittleEndian, images: []imageSpec{sp}}.write()))
@@ -452,8 +479,8 @@ func TestNoDataNative(t *testing.T) {
 		if src.Masked() != c.masked {
 			t.Errorf("NoData %s on %s: Masked %v", c.nd, c.st.name, src.Masked())
 		}
-		dst := raster.NewFloat32(2, 1, make([]float32, 2))
-		dst.Valid = raster.NewMask(2)
+		dst := raster.NewFloat32(len(c.vals), 1, make([]float32, len(c.vals)))
+		dst.Valid = raster.NewMask(len(c.vals))
 		if err := src.ReadWindow(context.Background(), dst, 0, 0); err != nil {
 			t.Fatal(err)
 		}

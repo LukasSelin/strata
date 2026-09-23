@@ -123,6 +123,41 @@ func TestSIMDMatchesScalar(t *testing.T) {
 	}
 }
 
+// TestAliasedStride runs every operation on windows of a raster 16384
+// cells wide, whose rows are 64 KiB apart. There the AVX2 column passes
+// over more than seven rows fold them a group at a time over chunks of
+// the row (internal/focalrow, DESIGN.md §53), which must not change a
+// bit: both backends, plain and Tiled, must match the per-cell
+// definition, on a window narrower than a chunk and one wider.
+func TestAliasedStride(t *testing.T) {
+	const stride = 16384
+	defer focalrow.UseScalar(false)
+	d := fuzzdata.New([]byte("TestAliasedStride"))
+	for kind := range numKinds {
+		for _, r := range []int{3, 4, 5, focal.MaxRadius} {
+			for _, w := range []int{100, 4096 + 2*r + 37} {
+				h, masked := 2*r+4, w == 100
+				s := newSpec(d, kind, r, floatWeights)
+				parent := newSrc(d, stride, h, anyValues, masked)
+				if parent.Stride != stride {
+					parent = rastertest.Compact(parent)
+				}
+				src := parent.Window(5, 0, w, h)
+				for _, scalar := range []bool{false, true} {
+					focalrow.UseScalar(scalar)
+					for path, opts := range []engine.Options{{}, {TileWidth: 1000, TileHeight: 3, Workers: 2}} {
+						dst := rastertest.Output(d, w, h, masked, true)
+						if err := s.run(path, opts, dst, src); err != nil {
+							t.Fatal(err)
+						}
+						requireNaive(t, fmt.Sprintf("width %d path %d on %s", w, path, focalrow.Backend()), s, dst, src)
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestHandComputed checks small cases worked on paper, including the
 // orientation of the weights and Convolve's rotation.
 func TestHandComputed(t *testing.T) {

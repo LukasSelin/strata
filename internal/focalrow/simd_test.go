@@ -106,3 +106,41 @@ func TestSIMDMinMaxEdgePairs(t *testing.T) {
 		}
 	}
 }
+
+// TestSIMDFoldedRowsMatchScalar is TestSIMDRowsMatchScalar at strides
+// whose rows collide in Zen 2's L2 (16384 cells, and 16400, a cache line
+// apart modulo 64 KiB), where the AVX2 column passes over more than
+// seven rows fold them a group at a time over chunks of 4096 cells: at
+// lengths short of a chunk, on its boundary, over several with a partial
+// last chunk, and with a tail after it. On NEON it is one more set of
+// lengths and strides.
+func TestSIMDFoldedRowsMatchScalar(t *testing.T) {
+	requireSIMD(t)
+	defer UseScalar(false)
+	rng := rand.New(rand.NewPCG(7, 8))
+	for _, kind := range []int{kCorrelateRow, kColumnCorrelate, kColumnSum, kColumnMin, kColumnMax} {
+		for k := 7; k <= 17; k += 2 {
+			for _, n := range []int{1000, 4095, 4096, 4097, 4096 + 40, 2*4096 + 1007} {
+				for _, stride := range []int{16384, 16400} {
+					_, cells, _ := shape(kind, n, k)
+					src, stride, w := operands(rng, kind, n, k, stride-cells, 3, 0.05, 0)
+					want := make([]float32, n+2)
+					want[n], want[n+1] = 7, 7
+					UseScalar(true)
+					call(kind, want[:n], src, stride, w, k)
+					repoison(kind, n, k, stride, src, 1e30)
+					got := make([]float32, n+2)
+					got[n], got[n+1] = 7, 7
+					UseScalar(false)
+					call(kind, got[:n], src, stride, w, k)
+					for i := range want {
+						if !sameBits(got[i], want[i]) {
+							t.Fatalf("%s n=%d k=%d stride=%d: cell %d = %v on %s, want %v",
+								kernelNames[kind], n, k, stride, i, got[i], Backend(), want[i])
+						}
+					}
+				}
+			}
+		}
+	}
+}

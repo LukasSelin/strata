@@ -2,9 +2,11 @@ package cog
 
 import (
 	"bytes"
+	"compress/lzw"
 	"compress/zlib"
 	"encoding/binary"
 	"math"
+	"math/bits"
 	"slices"
 	"sync"
 
@@ -22,16 +24,24 @@ import (
 // native values per band, row-major.
 type imageSpec struct {
 	w, h, bands    int
-	format, size   int // sampleUint/Int/Float; bytes per sample
+	format, size   int // sampleUint/Int/Float; bytes per sample, 0 for 1-bit
 	tiled          bool
 	blockW, blockH int // tile size, or blockH rows per strip
 	planar         int
-	compression    uint64
+	compression    uint64 // compressionLZW is written old-style: see compress
 	predictor      int
 	vals           [][]float64
 	sparse         func(block int) bool // blocks written as offset 0, count 0
 	subfile        uint64
 	extra          []tagValue // georeferencing, NoData, anything else
+	// cropTiles writes the last row of tiles only down to the image's
+	// last row, as some writers do.
+	cropTiles bool
+	// lsbFirst writes FillOrder 2: every stored byte's bits reversed.
+	lsbFirst bool
+	// edit, if set, changes the finished list of tags before they are
+	// written, to build the odd files other writers make.
+	edit func([]tagValue) []tagValue
 }
 
 // tagValue is one entry to write: uints for integer types, floats for
@@ -55,6 +65,9 @@ type fileSpec struct {
 	order  order
 	big    bool
 	images []imageSpec
+	// subIFDs is how many of the images after the first are written as
+	// the first image's SubIFDs rather than in the IFD chain.
+	subIFDs int
 }
 
 // blocks encodes an image's blocks, in TIFF order: row-major within a
@@ -83,6 +96,9 @@ func (sp imageSpec) blocks(order binary.ByteOrder) [][]byte {
 					continue
 				}
 				rowBytes := bw * spb * sp.size
+				if sp.size == 0 {
+					rowBytes = (bw*spb + 7) / 8 // 1-bit rows start on a byte
+				}
 				raw := make([]byte, rowBytes*rows)
 				for r := range rows {
 					row := raw[r*rowBytes : (r+1)*rowBytes]
@@ -97,12 +113,30 @@ func (sp imageSpec) blocks(order binary.ByteOrder) [][]byte {
 							if x < sp.w && y < sp.h {
 								v = sp.vals[band][y*sp.w+x]
 							}
+							if sp.size == 0 {
+								if v != 0 {
+									bit := c*spb + s
+									row[bit/8] |= 0x80 >> (bit % 8)
+								}
+								continue
+							}
 							putSample(row[(c*spb+s)*sp.size:], v, sp.format, sp.size)
 						}
 					}
-					encodeRow(row, sp, spb, order)
+					if sp.size > 0 {
+						encodeRow(row, sp, spb, order)
+					}
 				}
-				out = append(out, compress(raw, sp.compression))
+				if sp.cropTiles && sp.tiled && (by+1)*bh > sp.h {
+					raw = raw[:rowBytes*(sp.h-by*bh)]
+				}
+				enc := compress(raw, sp.compression)
+				if sp.lsbFirst {
+					for i, b := range enc {
+						enc[i] = bits.Reverse8(b)
+					}
+				}
+				out = append(out, enc)
 			}
 		}
 	}
@@ -171,8 +205,17 @@ func encodeRow(row []byte, sp imageSpec, stride int, order binary.ByteOrder) {
 	}
 }
 
+// compress encodes raw. LZW is written in libtiff's old style, least
+// significant bit first, which compress/lzw writes; the TIFF 6 style
+// has no encoder in the standard library.
 func compress(raw []byte, scheme uint64) []byte {
 	switch scheme {
+	case compressionLZW:
+		var b bytes.Buffer
+		w := lzw.NewWriter(&b, lzw.LSB, 8)
+		_, _ = w.Write(raw)
+		_ = w.Close()
+		return b.Bytes()
 	case compressionDeflate, compressionDeflate2:
 		var b bytes.Buffer
 		w := zlib.NewWriter(&b)
@@ -267,10 +310,14 @@ func (fs fileSpec) write() []byte {
 			}
 			return s
 		}
+		bits := 8 * sp.size
+		if sp.size == 0 {
+			bits = 1
+		}
 		t := []tagValue{
 			{tag: tagImageWidth, typ: typeLong, uints: []uint64{uint64(sp.w)}},
 			{tag: tagImageLength, typ: typeLong, uints: []uint64{uint64(sp.h)}},
-			{tag: tagBitsPerSample, typ: typeShort, uints: perSample(8 * sp.size)},
+			{tag: tagBitsPerSample, typ: typeShort, uints: perSample(bits)},
 			{tag: tagCompression, typ: typeShort, uints: []uint64{sp.compression}},
 			{tag: 262, typ: typeShort, uints: []uint64{1}}, // BlackIsZero
 			{tag: tagSamplesPerPixel, typ: typeShort, uints: []uint64{uint64(sp.bands)}},
@@ -279,6 +326,9 @@ func (fs fileSpec) write() []byte {
 		}
 		if sp.subfile != 0 {
 			t = append(t, tagValue{tag: tagNewSubfileType, typ: typeLong, uints: []uint64{sp.subfile}})
+		}
+		if sp.lsbFirst {
+			t = append(t, tagValue{tag: tagFillOrder, typ: typeShort, uints: []uint64{2}})
 		}
 		if sp.predictor != 0 {
 			t = append(t, tagValue{tag: tagPredictor, typ: typeShort, uints: []uint64{uint64(sp.predictor)}})
@@ -296,15 +346,32 @@ func (fs fileSpec) write() []byte {
 				tagValue{tag: tagStripByteCounts, typ: offType, uints: counts})
 		}
 		t = append(t, sp.extra...)
-		slices.SortFunc(t, func(a, b tagValue) int { return int(a.tag) - int(b.tag) })
+		if sp.edit != nil {
+			t = sp.edit(t)
+		}
 		tags[i] = t
 	}
+
+	// SubIFDs go first, unchained, so that the first IFD can point at
+	// them.
+	var subOffs []uint64
+	for _, t := range tags[1 : 1+fs.subIFDs] {
+		if len(buf)%2 == 1 {
+			buf = append(buf, 0)
+		}
+		subOffs = append(subOffs, uint64(len(buf)))
+		buf, _ = fs.writeIFD(buf, t)
+	}
+	if fs.subIFDs > 0 {
+		tags[0] = append(tags[0], tagValue{tag: tagSubIFDs, typ: offType, uints: subOffs})
+	}
+	chain := append([][]tagValue{tags[0]}, tags[1+fs.subIFDs:]...)
 
 	patch := 4 // where the previous IFD's next pointer goes
 	if fs.big {
 		patch = 8
 	}
-	for _, t := range tags {
+	for _, t := range chain {
 		if len(buf)%2 == 1 {
 			buf = append(buf, 0) // IFDs start on a word boundary
 		}
@@ -323,6 +390,8 @@ func (fs fileSpec) write() []byte {
 // values that do not fit in its entries, and returns the buffer and
 // where the next pointer is.
 func (fs fileSpec) writeIFD(buf []byte, tags []tagValue) ([]byte, int) {
+	tags = slices.Clone(tags)
+	slices.SortStableFunc(tags, func(a, b tagValue) int { return int(a.tag) - int(b.tag) })
 	o := fs.order
 	countSize, entrySize, field := 2, 12, 4
 	if fs.big {
@@ -387,7 +456,7 @@ func encodeValue(o order, t tagValue) ([]byte, int) {
 			b = o.AppendUint16(b, uint16(u))
 		case typeLong:
 			b = o.AppendUint32(b, uint32(u))
-		case typeLong8:
+		case typeLong8, typeSLong8:
 			b = o.AppendUint64(b, u)
 		}
 	}

@@ -2,3 +2,5 @@ out/
 out-simd/
 out-gdal/
 out-cog/
+out-corpus/
+corpus/files/

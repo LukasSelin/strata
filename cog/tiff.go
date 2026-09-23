@@ -121,21 +121,22 @@ func readHeader(r io.ReaderAt) (*container, uint64, error) {
 	}
 }
 
-// readIFDs reads the chain of IFDs starting at off.
+// readIFDs reads the chain of IFDs starting at off. Only the first IFD
+// must be readable. The chain stops quietly where it loops, grows past
+// maxIFDs or reaches an IFD that cannot be read, as libtiff's does: the
+// first image is still there, and what follows is at most overviews,
+// which GDAL does not see either.
 func (c *container) readIFDs(off uint64) ([]rawIFD, error) {
 	var ifds []rawIFD
 	seen := map[uint64]bool{}
-	for off != 0 {
-		if seen[off] {
-			return nil, fmt.Errorf("IFD %d at offset %d: the IFD chain loops", len(ifds), off)
-		}
-		if len(ifds) == maxIFDs {
-			return nil, fmt.Errorf("more than %d IFDs", maxIFDs)
-		}
+	for off != 0 && !seen[off] && len(ifds) < maxIFDs {
 		seen[off] = true
 		ifd, next, err := c.readIFD(off)
 		if err != nil {
-			return nil, fmt.Errorf("IFD %d at offset %d: %w", len(ifds), off, err)
+			if len(ifds) == 0 {
+				return nil, fmt.Errorf("IFD 0 at offset %d: %w", off, err)
+			}
+			break
 		}
 		ifds = append(ifds, ifd)
 		off = next
@@ -217,7 +218,8 @@ func (c *container) bytes(e entry) ([]byte, error) {
 }
 
 // uints returns an entry's values as unsigned integers. It accepts the
-// integer types only.
+// integer types only, the signed ones when no value is negative: some
+// writers store offsets as SLONG8, which libtiff accepts.
 func (c *container) uints(e entry) ([]uint64, error) {
 	b, err := c.bytes(e)
 	if err != nil {
@@ -234,6 +236,22 @@ func (c *container) uints(e entry) ([]uint64, error) {
 			v[i] = uint64(c.order.Uint32(b[4*i:]))
 		case typeLong8, typeIFD8:
 			v[i] = c.order.Uint64(b[8*i:])
+		case typeSByte, typeSShort, typeSLong, typeSLong8:
+			var x int64
+			switch e.typ {
+			case typeSByte:
+				x = int64(int8(b[i])) // #nosec G115 -- reinterpreting the bits is the point
+			case typeSShort:
+				x = int64(int16(c.order.Uint16(b[2*i:]))) // #nosec G115 -- as above
+			case typeSLong:
+				x = int64(int32(c.order.Uint32(b[4*i:]))) // #nosec G115 -- as above
+			default:
+				x = int64(c.order.Uint64(b[8*i:])) // #nosec G115 -- as above
+			}
+			if x < 0 {
+				return nil, fmt.Errorf("tag %d: a negative value %d", e.tag, x)
+			}
+			v[i] = uint64(x)
 		default:
 			return nil, fmt.Errorf("tag %d: type %d is not an unsigned integer type", e.tag, e.typ)
 		}
