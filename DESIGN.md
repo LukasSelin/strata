@@ -16,6 +16,7 @@ well.
 Decisions recorded elsewhere and summarized here:
 
 - [ADR 0001](docs/adr/0001-simd-backend.md): SIMD backend technology (STRATA-2).
+- [ADR 0002](docs/adr/0002-cog-adapter.md): the first format adapter, GeoTIFF/COG: its own module, its own parser, GDAL as the judge (§34, §35).
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
@@ -24,7 +25,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
-- [acceptance/README.md](acceptance/README.md): black-box checks against numpy and `gdaldem`, the outside correctness oracle (§39).
+- [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
 Where things stand, as of 2026-09-23. Each section's own **Status** line is
@@ -51,7 +52,8 @@ the detailed record; this table only points at it.
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
-| Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
+| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files; writing, HTTP range reads open |
+| Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode and mosaics open |
 | Publishing: module path, README, CI | §42 | done |
@@ -909,7 +911,7 @@ run over them (§25, §27).
 
 Later sources and sinks are adapters (§34): Zarr, GeoTIFF, COG, LAS/LAZ,
 object storage, generated data. This keeps computation independent from
-storage.
+storage. The first, a GeoTIFF/COG source, is the `cog` module (§34).
 
 ## 25. Execution Engine
 
@@ -1577,15 +1579,43 @@ values into `float32` plus validity at the boundary (§9, §31).
 - An adapter that needs cgo — GDAL, which would give access to its
   format ecosystem — lives in its own module, so the core stays cgo-free.
   GDAL is a data source, not a foundation.
-- Candidate adapters: GeoTIFF, COG, Zarr, NetCDF, LAS/LAZ. Whether they
-  live under `io/` in this repository or in their own modules is decided
-  with the first one (v0.5/v0.6).
+- Candidate adapters: GeoTIFF, COG, Zarr, NetCDF, LAS/LAZ.
+- **Each adapter is a Go module of its own, in this repository**
+  (`cog/`, like `acceptance/` and `lint/`), decided with the first one
+  ([ADR 0002](docs/adr/0002-cog-adapter.md)). The core's go.mod stays
+  free of format libraries, and an adapter reaches strata only through
+  its public API, so a gap in the source and sink interfaces shows up as
+  a gap rather than a workaround.
+- **An adapter is judged by the tool the format is known from.** Its own
+  tests share its author's reading of the specification, so its evidence
+  of correctness comes from outside: for GeoTIFF, GDAL's reading of the
+  same files, exactly (`acceptance/cogcheck.sh`).
+
+Status: GeoTIFF/COG reading is done: `cog.Open` over an `io.ReaderAt`,
+`File.Source` as an `engine.RasterSource` for one band of one resolution
+level, with a byte-bounded cache of decoded blocks. It reads classic and
+BigTIFF, tiles and strips, chunky and planar, 8/16/32-bit integers and
+32/64-bit floats, none/LZW/Deflate/PackBits/ZSTD with predictors 2 and 3,
+overviews, sparse blocks, GDAL NoData (compared in the native type) and
+the geotransform and EPSG code. It is bit-identical to GDAL 3.14 on 98
+files, 58.5M cells, and all eight of `cogsabotage.py`'s planted defects
+fail that comparison. Open: writing (a COG sink), a byte-range
+`io.ReaderAt` over HTTP, internal masks, and a benchmark of decode
+throughput against GDAL.
 
 ## 35. Use Existing Format Libraries Where Possible
 
 Adapters wrap existing format libraries (a Zarr package into `Array`, a
 LAS/LAZ library into point batches) rather than reimplementing parsers.
 strata's differentiator is computation, not parsing.
+
+The GeoTIFF adapter is the exception, recorded in
+[ADR 0002](docs/adr/0002-cog-adapter.md): no Go library reads a
+window's blocks of a floating-point TIFF, and GDAL means cgo. So `cog`
+parses the container itself and wraps libraries only for LZW
+(`golang.org/x/image/tiff/lzw`), Deflate (the standard library) and ZSTD
+(`klauspost/compress`). An exception to this rule needs an outside
+judge, and GDAL is that judge here (§34).
 
 ## 36. CRS and Reprojection
 
@@ -2022,6 +2052,15 @@ strata/
 │   ├── rapidsource/           fuzzdata.Source drawn from rapid
 │   └── rastertest/            grid symmetries and comparison helpers
 │
+├── cog/                       GeoTIFF/COG source, a separate module (§34, ADR 0002)
+│   ├── doc.go                 scope, values and validity, robustness
+│   ├── tiff.go                header, IFD chain, tag values, read bounds
+│   ├── ifd.go                 an IFD as an image: layout, samples, blocks
+│   ├── geo.go                 GeoKeys: geotransform, PixelIsPoint, EPSG code
+│   ├── decode.go              decompression, predictors, float32 and validity
+│   ├── cache.go               byte-bounded LRU of decoded blocks
+│   └── source.go              Open, File, Source (an engine.RasterSource)
+│
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)
 ├── lint/                      custom analyzers, a separate module (§39)
@@ -2030,8 +2069,8 @@ strata/
 └── docs/adr/
 ```
 
-Later: `array/` (v0.3) and `pointcloud/` (v0.7), and format adapters
-(§34). Domain packages other than `terrain` live in other modules (§7).
+Later: `array/` (v0.3) and `pointcloud/` (v0.7), and more format
+adapters (§34). Domain packages other than `terrain` live in other modules (§7).
 
 ## 41. Explicit Non-Goals for v0.1
 
@@ -2252,6 +2291,7 @@ deciding whether to publish Kernel (§22, §52)
 ```text
 v0.5   Zarr adapter: chunk-native N-D datasets (§34)
 v0.6   GeoTIFF / COG adapters (§34)
+       partly done: reading (`cog` module, ADR 0002); writing open
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
 v0.8   resampling, alignment, mosaics, interpolation
        partly done: same-CRS resampling (§54); reprojection is the

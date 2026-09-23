@@ -26,6 +26,8 @@ python3 check_resample.py out --sabotage   # ... which must fail on a half-cell 
 python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's Python bindings)
 ./gdalcheck.sh <some.tif>       # difference against gdaldem in Docker
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
+./cogcheck.sh [some.tif]        # the GeoTIFF/COG reader against GDAL's reading, in Docker
+python cogsabotage.py out-cog   # ... and check that comparison's checker
 ```
 
 `check.py` needs numpy; with scipy installed it also cross-checks its
@@ -255,6 +257,75 @@ single ulp and confirms the comparison fails.
 be featureless speckle following the terrain texture; horizontal bands
 every `TileHeight` rows would mean a seam bug that a tolerance could
 have hidden.
+
+## Reading GeoTIFFs: the cog module against GDAL
+
+The `cog` module (DESIGN.md §34, [ADR 0002](../docs/adr/0002-cog-adapter.md))
+is strata's own GeoTIFF parser. Its unit tests build their files with a
+test-only TIFF writer by the same author, so they would share any
+misreading of the TIFF, GeoTIFF or libtiff predictor specifications.
+`cogcheck.sh` takes the author out of it:
+
+1. `cogmake.py` runs in the GDAL container. It writes 98 files from a
+   synthetic 701×517 DEM with NoData holes (or from the first 1500² cells
+   of a GeoTIFF you pass):
+   - COGs in 128² blocks with overviews, for all eight sample types,
+     every compression (none, LZW, Deflate, ZSTD, PackBits) and every
+     predictor that applies (none, horizontal, floating point);
+   - sparse blocks where the DEM is empty;
+   - two BigTIFF COGs;
+   - three-band stripped and tiled GeoTIFFs, pixel- and band-interleaved,
+     some big-endian;
+   - a file without NoData, a single-strip file, a PixelIsPoint file, and
+     a float64 file with values near 1e300.
+
+   For each band of each level, GDAL records what it reads:
+   - the cells as float32, converted by GDAL (`ReadRaster` with a
+     Float32 buffer);
+   - its mask band;
+   - the level's geotransform, the EPSG code and the NoData value.
+2. `go run ./cog` reads the same files through `cog.Source.ReadWindow`,
+   in 100×77 windows that line up with no block size.
+3. `cogcompare.py` requires the two readings to be **identical**:
+   - the same levels and sizes;
+   - the geotransform to 1e-9 of a cell;
+   - the same EPSG code;
+   - `Masked` exactly when GDAL has NoData;
+   - every validity bit;
+   - the float32 bits of every valid cell.
+
+   A reader has no rounding latitude, so there is no tolerance.
+
+With GDAL 3.14 (`ghcr.io/osgeo/gdal:ubuntu-small-latest`), all 98 files
+are identical to GDAL's reading: 58.5M cells, 9.6M of them NoData, in
+about 35 s.
+
+The first run failed one file. The reader held float64 values beyond
+float32's range at ±MaxFloat32, but GDAL reads them as ±Inf. The unit
+tests had encoded the same wrong belief and passed; that is the case for
+this directory in one line.
+
+`cogsabotage.py` copies one file's results at a time, plants a defect a
+reader could plausibly have, and requires the comparison to fail:
+
+```
+caught  block one cell off      a block's cells shifted right by one
+caught  one ulp                 one valid cell off by one float32 ulp
+caught  one NoData cell valid   NoData compared after the cast, or missed
+caught  overflow clamped        the defect above, reintroduced
+caught  PixelIsPoint ignored    the origin half a cell off
+caught  bands swapped           chunky samples read at the wrong stride
+caught  overview dropped        a reduced-resolution image skipped
+caught  sparse block valid      sparse blocks read as valid zeros
+8/8 sabotages caught
+```
+
+What it does not cover:
+- files GDAL did not write: other writers' quirks, such as old-style LZW
+  or odd strip layouts;
+- compressions the reader refuses (JPEG, WebP, LERC);
+- reading over HTTP;
+- decode speed, which nothing here measures yet.
 
 ## What this does not tell you
 
