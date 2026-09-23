@@ -294,7 +294,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		// The samples are the data's bytes: a copy per row.
 		v := newValidator(float32Test(nd), n)
 		for r := range rows {
-			copyFloat32(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes], 1, 0)
+			kern.CopyRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
 			v.upto(b.vals, (r+1)*im.blockW)
 		}
 		b.valid = v.finish(b.vals)
