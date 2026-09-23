@@ -32,6 +32,7 @@ func init() {
 	simdAspect = hornAspectRowNEON
 	simdHillshade = hornHillshadeRowNEON
 	simdCurvature = ztCurvatureRowNEON
+	simdRuggedness = ruggednessRowNEON
 	UseScalar(false)
 }
 
@@ -125,7 +126,7 @@ func hornSlopeAtanLanes(dst, r0, r1, r2 []float32, kx, ky, scale float32) int {
 // laneConsts are the constant vectors of the lane functions.
 type laneConsts struct {
 	tan3pi8, tanpi8, pi, pi2, pi4, one, negOne, zero, maxf, c4, c3, c2, c1 archsimd.Float32x4
-	deg, full, hi                                                          archsimd.Float32x4
+	deg, full, hi, eighth                                                  archsimd.Float32x4
 	sign                                                                   archsimd.Uint32x4
 	zeroInt                                                                archsimd.Int32x4
 }
@@ -141,7 +142,7 @@ func newLaneConsts() laneConsts {
 		pi: b(atan2Pi), pi2: b(atanPi2), pi4: b(atanPi4),
 		one: b(1), negOne: b(-1), zero: b(0), maxf: b(math.MaxFloat32),
 		c4: b(atanC4), c3: b(atanC3), c2: b(atanC2), c1: b(atanC1),
-		deg: b(radToDeg), full: b(360), hi: b(255),
+		deg: b(radToDeg), full: b(360), hi: b(255), eighth: b(0.125),
 		sign:    archsimd.BroadcastUint32x4(signBit32),
 		zeroInt: archsimd.BroadcastInt32x4(0),
 	}
@@ -332,6 +333,103 @@ func ztMeanLanes(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32) int {
 		num := c.one.Add(q2).Mul(r).Sub(pq.Add(pq).Mul(s)).Add(c.one.Add(p2).Mul(t))
 		d := w.Mul(w.Sqrt())
 		store4(c.zero.Sub(num.Div(d.Add(d))), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	return n - len(dst)
+}
+
+func ruggednessRowNEON(dst, r0, r1, r2 []float32, kind RuggednessKind) {
+	var i int
+	switch kind {
+	case RugTRIRiley:
+		i = rileyLanes(dst, r0, r1, r2)
+	case RugTRIWilson:
+		i = wilsonLanes(dst, r0, r1, r2)
+	case RugTPI:
+		i = tpiLanes(dst, r0, r1, r2)
+	default:
+		i = roughnessLanes(dst, r0, r1, r2)
+	}
+	n := len(dst)
+	scalarRuggednessRow(dst[i:], r0[i:n+2], r1[i:n+2], r2[i:n+2], kind)
+}
+
+// window4 loads the nine cells of the windows centred on four adjacent
+// cells. The rows must have at least lane+2 cells.
+func window4(r0, r1, r2 []float32) (z1, z2, z3, z4, z5, z6, z7, z8, z9 archsimd.Float32x4) {
+	return load4(r0), load4(r0[1:]), load4(r0[2:]),
+		load4(r1), load4(r1[1:]), load4(r1[2:]),
+		load4(r2), load4(r2[1:]), load4(r2[2:])
+}
+
+// rileyLanes widens each float32 difference to float64, two lanes at a
+// time (FCVTL), and sums the squares there, as sq64 does. FCVTN narrows
+// each half into the low two lanes, and the high half's pair is moved up
+// as one 64-bit element.
+func rileyLanes(dst, r0, r1, r2 []float32) int {
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window4(r0, r1, r2)
+		d1, d2, d3, d4 := z1.Sub(z5), z2.Sub(z5), z3.Sub(z5), z4.Sub(z5)
+		d6, d7, d8, d9 := z6.Sub(z5), z7.Sub(z5), z8.Sub(z5), z9.Sub(z5)
+		var half [2]archsimd.Float32x4
+		for h := range half {
+			w := func(d archsimd.Float32x4) archsimd.Float64x2 {
+				if h == 1 {
+					d = d.HiToLo()
+				}
+				y := d.ConvertLo2ToFloat64()
+				return y.Mul(y)
+			}
+			s := w(d1).Add(w(d2)).Add(w(d3)).Add(w(d4)).Add(w(d6)).Add(w(d7)).Add(w(d8)).Add(w(d9))
+			half[h] = s.Sqrt().ConvertToFloat32()
+		}
+		lo, hi := half[0].ToBits().ReshapeToUint64s(), half[1].ToBits().ReshapeToUint64s()
+		store4(lo.SetElem(1, hi.GetElem(0)).ReshapeToUint32s().BitsToFloat32(), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	return n - len(dst)
+}
+
+func wilsonLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window4(r0, r1, r2)
+		s := z1.Sub(z5).Abs().Add(z2.Sub(z5).Abs()).Add(z3.Sub(z5).Abs()).Add(z4.Sub(z5).Abs()).
+			Add(z6.Sub(z5).Abs()).Add(z7.Sub(z5).Abs()).Add(z8.Sub(z5).Abs()).Add(z9.Sub(z5).Abs())
+		store4(s.Mul(c.eighth), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	return n - len(dst)
+}
+
+func tpiLanes(dst, r0, r1, r2 []float32) int {
+	c := &consts
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window4(r0, r1, r2)
+		s := z1.Add(z2).Add(z3).Add(z4).Add(z6).Add(z7).Add(z8).Add(z9)
+		store4(z5.Sub(s.Mul(c.eighth)), dst)
+		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	return n - len(dst)
+}
+
+// roughnessLanes uses FMAX and FMIN, which already are Go's max and min
+// lanewise: a NaN in either operand gives NaN, and -0 orders below +0
+// (internal/focalrow/simd_arm64.go).
+func roughnessLanes(dst, r0, r1, r2 []float32) int {
+	n := len(dst)
+	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
+	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
+		z1, z2, z3, z4, z5, z6, z7, z8, z9 := window4(r0, r1, r2)
+		hi := z1.Max(z2).Max(z3.Max(z4)).Max(z5.Max(z6).Max(z7.Max(z8))).Max(z9)
+		lo := z1.Min(z2).Min(z3.Min(z4)).Min(z5.Min(z6).Min(z7.Min(z8))).Min(z9)
+		store4(hi.Sub(lo), dst)
 		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
 	}
 	return n - len(dst)

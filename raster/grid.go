@@ -2,13 +2,20 @@ package raster
 
 import "fmt"
 
-// CRS identifies a coordinate reference system. It is a placeholder: the
-// engine carries it along with a Grid but never interprets or transforms
-// it (DESIGN.md §36, §41).
+// CRS identifies a coordinate reference system. It is a label: the engine
+// carries it along with a Grid but never interprets or transforms it.
+// Reprojection is the caller's preprocessing (DESIGN.md §36, §41).
 type CRS struct {
 	// Code is an opaque identifier such as "EPSG:25833", or empty if
 	// unknown.
 	Code string
+}
+
+// Matches reports whether data in c and o may be combined without a
+// transformation: their codes are equal, or either is unknown. Codes are
+// compared as strings, so two codes naming the same system do not match.
+func (c CRS) Matches(o CRS) bool {
+	return c.Code == "" || o.Code == "" || c.Code == o.Code
 }
 
 // Grid is the spatial metadata of a raster, kept separate from its cell

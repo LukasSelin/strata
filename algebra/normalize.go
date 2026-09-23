@@ -117,6 +117,14 @@ type normalizeKernel struct{ lo, span float32 }
 func (normalizeKernel) Radius() int                  { return 0 }
 func (normalizeKernel) Arity() (inputs, outputs int) { return 1, 1 }
 
+// Fuse lets a Pipeline run Normalize's second pass as one step of a
+// fused chain rather than as a pass of its own (DESIGN.md §29).
+// vec.OpSubDiv is the kernel normalizeValues calls, subtraction before
+// division and all, so the bits are the same either way.
+func (k normalizeKernel) Fuse() (vec.Step, bool) {
+	return vec.Step{Op: vec.OpSubDiv, K: [2]float32{k.lo, k.span}}, true
+}
+
 func (k normalizeKernel) Process(dst exec.Span, src exec.Window) {
 	d, s := dst.Dst[0], src.Src[0]
 	normalizeValues(d, s, k.lo, k.span, compact(d) && compact(s))

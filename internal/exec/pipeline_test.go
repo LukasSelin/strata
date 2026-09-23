@@ -10,6 +10,7 @@ import (
 
 	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -33,6 +34,14 @@ func (k mulKernel) Process(dst exec.Span, src exec.Window) {
 			row[x] = v
 		}
 	}
+}
+
+// Fuse makes a two-input mulKernel a step of a fused chain, so the
+// pipeline tests below run the fused path as well as the staged one. A
+// wider one is not a chain step — a step combines the running value with
+// one operand — and says so, which is what the ok result is for.
+func (k mulKernel) Fuse() (vec.Step, bool) {
+	return vec.Step{Op: vec.OpMul}, k.inputs == 2
 }
 
 // chain returns the stages of an n-input product: n-1 binary multiplies,
@@ -71,6 +80,16 @@ func unfused(t *testing.T, src []raster.Float32Raster, stages []exec.Stage, out 
 		values = append(values, dst...)
 	}
 	return values[out]
+}
+
+// requireFused fails unless p lowered to a fused chain, so that a test
+// written for the pipeline keeps covering the fused path rather than
+// quietly falling back to the staged one (DESIGN.md §29).
+func requireFused(t *testing.T, id string, p *exec.Pipeline) {
+	t.Helper()
+	if !p.Fused() {
+		t.Fatalf("%s: the pipeline did not lower to a fused chain", id)
+	}
 }
 
 func sameRaster(t *testing.T, id string, got, want raster.Float32Raster) {
@@ -115,6 +134,7 @@ func TestPipelineMatchesUnfused(t *testing.T) {
 						masked, windowed, workers, tile)
 					dst := raster.NewFloat32Like(src[0])
 					p := exec.NewPipeline(inputs, stages, out)
+					requireFused(t, id, p)
 					err := exec.ProcessN(context.Background(),
 						[]raster.Float32Raster{dst}, src, p,
 						engine.Options{TileWidth: tile[0], TileHeight: tile[1], Workers: workers})
@@ -153,6 +173,7 @@ func TestPipelineChunkedMatchesUnfused(t *testing.T) {
 					sources[i] = engine.NewMemorySource(src[i])
 				}
 				p := exec.NewPipeline(inputs, stages, out)
+				requireFused(t, id, p)
 				err := exec.ProcessChunked(context.Background(),
 					[]engine.RasterSink{engine.NewMemorySink(dst)}, sources, p,
 					engine.Options{TileWidth: tile[0], TileHeight: tile[1], Workers: workers})
@@ -185,6 +206,7 @@ func TestPipelineSingleStage(t *testing.T) {
 
 	got := raster.NewFloat32Like(src[0])
 	p := exec.NewPipeline(2, []exec.Stage{{Kernel: k, In: []int{0, 1}}}, 2)
+	requireFused(t, "one stage", p)
 	if err := exec.ProcessN(context.Background(), []raster.Float32Raster{got}, src, p,
 		engine.Options{TileHeight: 4, Workers: 3}); err != nil {
 		t.Fatalf("pipeline: %v", err)
@@ -212,6 +234,11 @@ func TestPipelineReusesAValue(t *testing.T) {
 
 	dst := raster.NewFloat32Like(src[0])
 	p := exec.NewPipeline(3, stages, 5)
+	// A value read twice is two live intermediates, which is off §29's
+	// left-deep cut: this pipeline must run staged.
+	if p.Fused() {
+		t.Fatal("a pipeline that reuses a value lowered to a fused chain")
+	}
 	if err := exec.ProcessN(context.Background(), []raster.Float32Raster{dst}, src, p,
 		engine.Options{TileWidth: 8, TileHeight: 5, Workers: 4}); err != nil {
 		t.Fatalf("pipeline: %v", err)
@@ -248,18 +275,19 @@ func TestPipelineTraffic(t *testing.T) {
 		t.Errorf("chained tiled = %v B/cell, want 60 (%v)", got, chained)
 	}
 
-	var fused engine.Stats
+	var fusedStats engine.Stats
 	dst := ramp(w, h)
 	p := exec.NewPipeline(inputs, stages, out)
+	requireFused(t, "traffic", p)
 	if err := exec.ProcessN(context.Background(), []raster.Float32Raster{dst}, src, p,
-		engine.Options{Workers: 4, Stats: &fused}); err != nil {
+		engine.Options{Workers: 4, Stats: &fusedStats}); err != nil {
 		t.Fatalf("fused: %v", err)
 	}
-	if got := float64(fused.Total()) / float64(cells); got != 28 {
-		t.Errorf("fused tiled = %v B/cell, want 28 (%v)", got, fused)
+	if got := float64(fusedStats.Total()) / float64(cells); got != 28 {
+		t.Errorf("fused tiled = %v B/cell, want 28 (%v)", got, fusedStats)
 	}
-	if got := fused.Amplification(); got != 1 {
-		t.Errorf("fused tiled Amplification = %v, want 1 (%v)", got, fused)
+	if got := fusedStats.Amplification(); got != 1 {
+		t.Errorf("fused tiled Amplification = %v, want 1 (%v)", got, fusedStats)
 	}
 
 	var fusedChunk engine.Stats

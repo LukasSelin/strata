@@ -37,7 +37,7 @@ the detailed record; this table only points at it.
 | Scalar backend, amd64 AVX2 backend (`GOEXPERIMENT=simd`) | §14–§17 | done |
 | arm64 NEON backend (`GOEXPERIMENT=simd`, STRATA-11) | §14, §17 | done: `vec`, `stencil`, `accum` |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
-| `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature | §20 | done; ruggedness open |
+| `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -54,7 +54,7 @@ the detailed record; this table only points at it.
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files; writing, HTTP range reads open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
-| CRS transformation | §36 | not started; `raster.CRS` is a placeholder |
+| CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
@@ -237,7 +237,7 @@ type Grid struct {
     Width, Height            int
     ResolutionX, ResolutionY float64 // signed, as in a GDAL geotransform
     OriginX, OriginY         float64 // outer corner of cell (0, 0)
-    CRS                      CRS     // opaque placeholder, §36
+    CRS                      CRS     // opaque label, §36
 }
 
 type Dataset struct {
@@ -329,7 +329,9 @@ K3  kernel packages have no go statements, channels or select
 None of the rules applies to `_test.go` files. A new kernel package,
 `internal/focalrow` (§53) or a resampling one, registers by carrying the
 marker; one that imports `simd/archsimd` without it fails K0, which is
-how `focalrow` was found when this check first ran over it.
+how `focalrow` was found when this check first ran over it, and
+`internal/resamp` when it met the check on master: its band driver,
+which reads `raster` masks and takes the mask lock, moved to `resample`.
 
 ## 13. SIMD-First Design
 
@@ -457,6 +459,7 @@ func HornSlopeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan bool)
 func HornAspectRow(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 func HornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
 func ZTCurvatureRow(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
+func RuggednessRow(dst, r0, r1, r2 []float32, kind RuggednessKind)
 
 func Erode3x3(...) // validity of radius-1 outputs, word-level
 func ClearBorder(...)
@@ -638,12 +641,12 @@ terrain/
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
+├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness
 └── stencil.go     shared row driver, edge and validity policy
 ```
 
-Later: `ruggedness.go`. `terrain` stays limited to local
-derivatives of a DEM; flow routing and everything built on it are a
-separate module's (§7).
+`terrain` stays limited to local derivatives of a DEM; flow routing and
+everything built on it are a separate module's (§7).
 
 - **Method.** Gradient, Slope, Aspect and Hillshade use Horn's 3×3
   gradient, computed a whole row at a time. Each SIMD lane loads the
@@ -654,6 +657,24 @@ separate module's (§7).
   curvature, positive where convex. It is the terrain kernel with the
   most arithmetic per cell and no arctangent: two divisions and a
   square root.
+- **Ruggedness.** Riley's and Wilson's terrain ruggedness index, the
+  topographic position index and roughness (max − min) of the 3×3
+  window, in elevation units, with no cell size or ZFactor. Unlike the
+  other kernels, whose conventions are gdaldem's but whose rounding is
+  their own, these reproduce gdaldem's arithmetic operation for
+  operation (apps/gdaldem_lib.cpp, float32 input): each difference
+  rounded to float32, sums folded left to right in row-major order,
+  "/ 8" as "· 0.125", and Riley's squares, sum and root in float64
+  before one rounding to float32. The results are therefore
+  bit-identical to gdaldem's, which the acceptance harness checks cell
+  for cell on a real raster, not within a tolerance. Riley's float64
+  root makes it the slowest of the four: in BenchmarkRowWidth on
+  4094-cell rows with AVX2, about 1.7 ns/cell against 0.3–0.6 for the
+  others, on the Ryzen 9 3900X. A float32 sum would be cheaper
+  but disagrees with gdaldem in the last bit. Roughness uses Go's min
+  and max (a NaN anywhere gives NaN); the AVX2 kernel uses VMAXPS and
+  VMINPS as they are and repairs the difference once, rather than each
+  comparison.
 - **Conventions.** Conventions are gdaldem-compatible: compass bearings,
   gdaldem-style `ZFactor`, and positive cell sizes.
 - **Edges.** The one-cell border of the rasters passed in gets NaN and
@@ -927,13 +948,13 @@ err := terrain.SlopeTiled(ctx, dst, dem, terrain.SlopeOptions{CellSize: 30},
 
 STRATA-8 added `AddTiled`, `SubTiled`, `MulTiled`, `MinTiled`, `MaxTiled`,
 `ClampTiled`, `GradientTiled`, `SlopeTiled`, `AspectTiled` and
-`HillshadeTiled` over in-memory rasters (`CurvatureTiled` came later), and `MaskTiled` followed with
+`HillshadeTiled` over in-memory rasters (`CurvatureTiled` and `RuggednessTiled` came later), and `MaskTiled` followed with
 `Mask` (§18). They give the same bits as the plain functions for every
 `Options`. The terrain functions run the same kernels as one tile; the
 algebra functions stay direct to keep their zero allocations.
 
 The Chunked functions (`SlopeChunked`, `AspectChunked`,
-`HillshadeChunked`, `GradientChunked`, `CurvatureChunked`, `AddChunked`, `SubChunked`,
+`HillshadeChunked`, `GradientChunked`, `CurvatureChunked`, `RuggednessChunked`, `AddChunked`, `SubChunked`,
 `MulChunked`, `MinChunked`, `MaxChunked`, `MaskChunked`, `ClampChunked`)
 take sources and sinks instead of rasters and run with bounded memory
 (§27), through `exec.ProcessChunked`. Their sinks receive the bits the
@@ -1153,7 +1174,8 @@ IO-bound operations.
 
 ## 29. Operation Fusion
 
-Operation fusion should be a major future optimization.
+A chain of pointwise operations should run as one kernel, with the values
+between them in registers.
 
 Example:
 
@@ -1175,7 +1197,7 @@ load → scale → store
 load → clamp → store
 ```
 
-the engine should eventually support:
+the engine supports:
 
 ```text
 SIMD load
@@ -1189,15 +1211,272 @@ clamp
 SIMD store
 ```
 
-For many workloads this may be more important than SIMD alone.
+For many workloads this matters more than SIMD alone.
 
-The architecture should not block future fusion. Two earlier decisions
-keep it open:
+Two earlier decisions are what make it writable at all:
 
-- SIMD kernels are Go (ADR 0001), so a fusion generator emits Go, not
-  assembly.
+- SIMD kernels are Go (ADR 0001), so a fused kernel is Go, not assembly.
 - Validity is a separate bitmap (§31), so a fused data kernel is plain
-  branch-free arithmetic. Validity is computed once for the whole chain.
+  branch-free arithmetic. Validity is computed once for the whole chain,
+  which §52 already does.
+
+### What it is on top of
+
+§52's `Pipeline` runs a chain of kernels over one span, so a tile is
+loaded once instead of once per operation. What it does not remove is the
+values between the stages: each one is a span-sized buffer the engine
+lends, written by one stage and read by the next. A span is up to
+`bandCells` = 65536 cells, so each is up to 256 KiB — one Zen 2 core's
+whole L2 — and a five-stage chain has four of them. That traffic is
+exactly what `engine.Stats` does not count (§51), which is why a staged
+pipeline reads 28 B/cell while moving considerably more.
+
+Fusion removes them. The engine's structure does not change at all: a
+`Pipeline` still satisfies `Kernel`, still declares radius 0, and still
+lets the engine derive its validity in one pass. Only `Process` changes,
+from "run each stage over the span" to "run the whole chain over a few
+cells at a time".
+
+### The left-deep cut
+
+The running value is a register only if there is one of it. So this cut
+fuses a **left-deep** chain and nothing else:
+
+```text
+((a · b) · c) · d          fused
+ (a · b) · (c · d)         staged: two live intermediates
+```
+
+Concretely, a `Pipeline` lowers when every stage is a `FusableKernel`
+with one output, stage 0 starts from a pipeline input, every later stage
+takes the stage before it as its *first* operand, every second operand is
+a pipeline input, and the last stage produces the output. A pipeline that
+fails any of those runs staged, which is the reference the fused form is
+tested against; nothing panics, because a diamond is a legal pipeline and
+not a mistake.
+
+That is not a narrow case. A weighted factor product is exactly this
+shape, and so is any chain of arithmetic with a `Clamp` or a `Rescale` on
+the end.
+
+Operands are never swapped, even for an operation that would commute. A
+caller who wants `src - acc` is asking for a different chain and should
+say so, and the rule costs nothing: the shapes the typed entry points
+build are left-deep already.
+
+### The form
+
+`internal/vec` holds the evaluator, because it already has both
+backends, the `kernelSet` swap table, and `min8`/`max8` — the two
+functions that reproduce Go's builtin `min` and `max` over NaN and signed
+zeros, which a fused chain needs as much as `Min` and `Max` do.
+
+```go
+type Op uint8 // Add Sub Mul Div Min Max AddScalar MulScalar Affine Clamp Abs Sqrt
+
+// Step is one operation of a Chain: what to do, which of Run's slices a
+// binary op reads, and the immediates of the ops that take them.
+type Step struct {
+    Op  Op
+    Src int
+    K   [2]float32
+}
+
+type Chain struct{ ... }
+
+func NewChain(inputs, first int, steps []Step) *Chain
+func (c *Chain) Run(dst []float32, srcs [][]float32)
+```
+
+`exec.FusableKernel` is how a kernel names itself as a step:
+
+```go
+type FusableKernel interface {
+    Kernel
+    Fuse() (step vec.Step, ok bool)
+}
+```
+
+The `ok` result is for a kernel whose arity depends on its parameters and
+so is a step for some of them and not others. A kernel that says `true`
+and whose arity contradicts its operation is a programming error and
+panics.
+
+`algebra`'s `binaryOp` had to learn which operation it is. It carried a
+bare `func(dst, a, b []float32)`, which has no identity a fusion pass can
+switch on, so it now carries the `vec.Op` beside the function: the
+function is what `Process` calls and the op is what a `Pipeline` fuses
+on. `Clamp` and `transfer.Rescale` implement `Fuse` too. `Reclass` and
+`Lookup` do not and will not as written: their inner scan over a table is
+per cell, data-dependent and breaks early, which is not a step a lane of
+a vector can take (`internal/curve`).
+
+### One extension to the contract
+
+`Chain.Run` takes its operands as `[][]float32`, which `Process` may not
+allocate per band (§26). So `ScratchSize` and `Scratch` gain `Runs`, for
+the same reason they gained `Views`: slice headers a kernel hands on and
+cannot make for itself. A fused pipeline asks for `Runs` and **no cells
+at all**, which is the claim this section makes, as an assertion.
+
+### The two backends are not the same shape, on purpose
+
+The vector backends are the ones this section is named for. They carry
+the accumulators in registers for the whole chain — four vectors at a
+time, so 32 cells on AVX2 and 16 on NEON, each input loaded once, `dst`
+stored once, nothing else written anywhere. AVX2 follows that file's
+existing rules: the operand array is filled before the first 256-bit
+instruction, immediates are broadcast at the top of the lane function,
+and `ClearAVXUpperBits` comes before the scalar tail (ADR 0001,
+`internal/stencil/simd_amd64.go`). NEON needs none of that, and `min4`
+and `max4` are already Go's builtins where `min8` and `max8` are a
+repair.
+
+The scalar backend carries the value through a block of 2048 cells
+instead. One cell at a time with the operation dispatched per cell would
+put a switch and two bounds checks against one multiply; a block puts
+them against 2048. Each step is then the very kernel the unfused chain
+would have called, over the same cells in the same order, which makes the
+scalar chain the staged chain's bits by construction and leaves
+`internal/vec`'s tight loops as they were. It is not a register, but it
+is 8 KiB rather than 256, and that is where the traffic was.
+
+The two must still agree bit for bit, which is what the tests are for.
+
+### Bit-exactness has three landmines
+
+1. **No FMA contraction.** `OpAffine` keeps `float32(acc*K0) + K1`, the
+   explicit conversion `scalarAffineFloat32` has, and the AVX2 step is
+   `VMULPS` then `VADDPS`. A running value crossing a multiply and an add
+   in a register is exactly where a compiler would contract them, and
+   arm64 would where amd64 would not.
+2. **`min`/`max` are not the hardware's.** `min8`/`max8`, never `.Min`
+   and `.Max`.
+3. **Bounds checks.** The chain evaluators' tightest loop is over the
+   chain's *operations*, not its cells, so the checks it leaves are
+   amortised over a block or a lane rather than paid per element. They
+   are named in `internal/vec/bce_test.go`'s allow list with that reason,
+   and the element loops they call stay checked everywhere else.
+
+### What it is worth
+
+Not a counter figure. `engine.Stats` reads 28 B/cell for a six-input
+product whether the stages are staged or fused — it never counted the
+scratch — so what fusion changes is time, and §51's number simply stops
+being optimistic.
+
+`benchmarks/fusion` is where it is measured, because the spike that asked
+the question was already there. It runs §52's six-factor product four
+ways — five chained `MulTiled` calls, a staged `Pipeline`, that same
+`Pipeline` lowered, and a `Fused` kernel written by hand as a generator
+would have had to emit it — and `TestFormsAgree` holds all four to the
+same bits.
+
+4096², mask off, NEON, Mcells/s, medians of 3, Apple M4 (10 cores):
+
+| workers | tiles | chained | staged | lowered | fused | lowered ÷ staged | lowered ÷ fused |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | strips | 1170 | 1171 | 1562 | 2079 | 1.33× | 0.75 |
+| 1 | 256×256 | 209 | 274 | 354 | 437 | 1.29× | 0.81 |
+| 10 | strips | 1581 | 2928 | 3188 | 3502 | 1.09× | 0.91 |
+| 10 | 256×256 | 925 | 1159 | 1769 | 1961 | 1.53× | 0.90 |
+
+So the lowering is worth 9–53% over the staged pipeline, and it collects
+three quarters to nine tenths of what hand-written code gets. The gap to
+hand-written is the dispatch: the lane loop runs a switch and a slice
+advance per operation, where the hand-written kernel has the chain in its
+instruction stream. That is the argument for a generator, and it is now a
+number rather than a hope — 10 to 25%, on this machine, for this chain.
+
+### Four vectors at a time, which is not a detail
+
+The first version of the lane loop carried one vector, and it was
+*slower* than the staged pipeline it replaced: 840 Mcells/s against 1171
+on one worker. Dispatching an operation costs about as much as performing
+it on four lanes, so a chain that pays that per vector spends more on
+deciding than on arithmetic, and carrying the value in a register buys
+nothing.
+
+Carrying `chainWide` = 4 vectors divides the dispatch by four and took
+the same case to 1562. Four accumulators are four registers of sixteen on
+amd64 and of thirty-two on arm64, so nothing spills, and what is left
+over — fewer than 32 cells of a span — goes to the scalar block
+evaluator rather than to a second copy of the switch.
+
+This is the §51 lesson again: the design said "in a register" and was
+right about the memory, and a cheap measurement caught that the
+instruction it cost was the thing that mattered.
+
+### Where these numbers sit against the spike's
+
+`benchmarks/fusion/RESULTS.md` measured chained, staged and hand-fused on
+a Zen 2 with AVX2 and concluded that out of cache register-level fusion
+was worth about 5%, and that the large in-cache gaps were the
+`Pipeline`'s per-call scratch allocation rather than fusion. Both of its
+caveats have since moved: scratch comes from a pool now, and these
+numbers are a different machine, with far more memory bandwidth per core,
+where the same product is much less memory-bound and so has much more to
+gain from not moving the intermediates. Neither run is wrong; they are
+two machines, and the Zen 2 column of this table is not yet filled in.
+
+What both agree on is the ordering: tile-level fusion (§52) is the larger
+win, and register-level fusion is the smaller one on top.
+
+### Where it lives
+
+`internal/vec/chain.go`, `chain_amd64.go`, `chain_arm64.go` and
+`scalarChainFrom` in `scalar.go`; `FusableKernel` and `Scratch.Runs` in
+`internal/exec`; `Pipeline.lower` and `processFused` in
+`internal/exec/pipeline.go`; `Fuse` methods in `algebra` and `transfer`.
+The `lowered` arm of `benchmarks/fusion` is what measures it.
+
+Nothing is public. A caller still cannot build a `Pipeline` (§52), so
+fusion is reached only through the typed entry points that will be
+written for the shapes that want it. Publishing `Kernel` is the same
+separate decision it was.
+
+### Testing
+
+The staged pipeline is the reference, and it has a reference of its own:
+§52's `unfused`, which runs each stage as its own whole-raster call. So
+every test here is one comparison — build the same pipeline with fusion
+on and with it off, and require the same bits.
+
+- `TestPipelineFusedMatchesStaged` and its chunked twin run the §23
+  matrix — every tile size, worker count, windowed and compact operands,
+  masked and not — on every backend the build has.
+- `TestPipelineFusedEveryOp` runs a chain using every operation a chain
+  can hold, where the unary and immediate steps differ most between the
+  two backends.
+- `TestPipelineFallsBackOffTheCut` names the five shapes that do not
+  lower — diamond, right-deep, an unfusable stage, a kernel too wide to
+  be a step, an output that is not the last stage's — and requires each
+  to run staged and still equal its unfused form.
+- `TestPipelineFusedAsksNoCells` is the claim: `ScratchSize{Runs: n}`.
+- `requireFused` in §52's own tests keeps them covering the fused path
+  rather than quietly falling back to the staged one.
+- In `internal/vec`: `TestChainMatchesStaged` over random programs,
+  random data including every float32 class, and lengths straddling the
+  lane widths, the unrolled group and the scalar block;
+  `TestChainIsNotFused` for the two multiply-add shapes;
+  `TestSIMDChainMatchesScalar` for the lane loop, on whichever backend
+  the build has.
+- In `benchmarks/fusion`, `TestFormsAgree` holds the lowered chain to the
+  same bits as the chained calls, the staged pipeline and the
+  hand-written kernel, on every backend, tile shape and worker count the
+  benchmarks use.
+
+The acceptance harness (§39) is byte-identical to the parent commit,
+which is the check that a refactor reaching into `algebra` and `transfer`
+changed nothing a caller can see.
+
+Status: done, for the left-deep cut, on all three backends. Still to do:
+the Zen 2 AVX2 run, which is the suite's headline machine (§38) and the
+one the spike's own numbers came from; a chain with two live
+intermediates, which needs a register file and is worth what it measures;
+a generator, which this now prices at 10–25% for a chain of multiplies
+and which nothing yet asks for; and the typed entry point that would let
+a caller reach any of this.
 
 Status: partly done. Tile-level fusion of radius-0 chains is done: the
 internal `Pipeline` (§52) runs a chain of kernels on each tile while it is
@@ -1337,12 +1616,44 @@ judge, and GDAL is that judge here (§34).
 
 ## 36. CRS and Reprojection
 
-Do not attempt to replace PROJ.
+Do not attempt to replace PROJ. Reprojection is the caller's
+preprocessing, done before data reaches strata (with gdalwarp, PROJ or a
+format adapter), not part of execution.
 
-`raster.CRS` is an opaque placeholder (`Code string`, for example
-`"EPSG:25833"`). A `Grid` carries it along, but nothing interprets it.
-When transformation is needed, define a narrow abstraction over
-coordinate columns rather than point structs (§11):
+### The contract
+
+1. **One CRS per computation.** Every input to one operation, and its
+   output, is in the same CRS. strata never transforms coordinates.
+2. **Grid operations assume a projected CRS with ground units.** Cell
+   sizes, distances and neighbourhoods are taken as lengths on the ground,
+   in the same unit on both axes. A raster in a geographic CRS (degrees)
+   must be projected first; `terrain` would otherwise return wrong slopes
+   and aspects without an error, since it cannot tell.
+3. **The CRS is a label.** `raster.CRS` is opaque (`Code string`, for
+   example `"EPSG:25833"`). A `Grid` carries it along, and nothing
+   interprets it: no parsing, no lookup of units or axis order.
+4. **Operations that see grids check labels.** Wherever an operation takes
+   two or more `raster.Grid`s, it panics unless their CRSs match
+   (`raster.CRS.Matches`): equal codes, or either code empty. Empty means
+   unknown, and the caller vouches for it. Codes are compared as strings,
+   so `"EPSG:25833"` and `"urn:ogc:def:crs:EPSG::25833"` do not match;
+   normalise codes at the IO boundary.
+5. **Operations that take bare rasters cannot check.** `algebra`, `focal`,
+   `terrain`, `transfer`, `reduce` and the engine see `Float32Raster`s and
+   `engine.RasterSource`s, never grids (§9), so for them the contract
+   is the caller's to keep. They require equal dimensions, not equal grids.
+
+Today `resample` is the one operation that takes grids, and it checks
+(§54). Mosaics, alignment helpers (v0.8) and point rasterization (v0.7)
+will take grids too, and must check the same way.
+
+### If transformation is ever needed
+
+Reprojecting inside strata would save a full pass over the data when it
+is fused with the computation after it. That is an optimisation to make
+once a workload shows it matters, not a gap. If it is built, it goes
+through a narrow abstraction over coordinate columns rather than point
+structs (§11), backed by PROJ through an adapter:
 
 ```go
 type Transformer interface {
@@ -1350,8 +1661,9 @@ type Transformer interface {
 }
 ```
 
-A native subset (WGS84, Web Mercator, UTM) may follow; the rest stays
-adapter-driven.
+The outside reference would be `gdalwarp -et 0` (exact), since gdalwarp's
+default transformer interpolates between exact points along each row
+and is off by up to 0.125 source pixels.
 
 ## 37. Memory Management
 
@@ -1679,6 +1991,7 @@ strata/
 │   ├── doc.go
 │   ├── resample.go            Method, Options, Resample, ResampleTiled,
 │   │                           ResampleChunked and their checks
+│   ├── band.go                bands over the resamp kernels, validity
 │   └── tiled.go               tiling, bands, the chunked driver
 │
 ├── terrain/                   implemented
@@ -1687,6 +2000,7 @@ strata/
 │   ├── aspect.go
 │   ├── hillshade.go
 │   ├── curvature.go
+│   ├── ruggedness.go
 │   └── stencil.go
 │
 ├── engine/                    public engine configuration
@@ -1698,8 +2012,8 @@ strata/
 │
 ├── internal/
 │   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
-│   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, mask.go,
-│   │                           simd_amd64.go, simd_arm64.go
+│   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, rugged.go,
+│   │                           mask.go, simd_amd64.go, simd_arm64.go
 │   ├── focalrow/              implemented (§53): focalrow.go (scalar, dispatch),
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── accum/                 implemented (§49): exact float32 Sum and Moments,
@@ -1710,8 +2024,8 @@ strata/
 │   │                           table-driven Reclass and Lookup, scalar only
 │   ├── pointwise/             implemented (§50): operand checks and validity
 │   │                           for the radius-0 packages' plain functions
-│   ├── resamp/                implemented (§54): table.go (tap tables), band.go
-│   │                           (bands, validity), scalar.go, dispatch.go,
+│   ├── resamp/                implemented (§54), kernel package: table.go (tap
+│   │                           tables), scalar.go, dispatch.go,
 │   │                           simd_amd64.go, simd_arm64.go
 │   ├── exec/                  kernel machinery (STRATA-8)
 │   │   ├── kernel.go          Kernel, Span, Window
@@ -1977,9 +2291,11 @@ v0.6   GeoTIFF / COG adapters (§34)
        partly done: reading (`cog` module, ADR 0002); writing open
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
 v0.8   resampling, alignment, mosaics, interpolation
-       partly done: same-CRS resampling (§54); reprojection waits on §36
+       partly done: same-CRS resampling (§54); reprojection is the
+       caller's preprocessing (§36)
 v0.9   fusion beyond hand-built pipelines: lazy planning, scheduling;
-       register-level fusion measured, not built (§29)
+       register-level fusion is built for the left-deep pointwise cut
+       (§29); a chain with two live intermediates remains
 v0.10  voxel grids as 3-D arrays (§33)
 ```
 
@@ -2777,8 +3093,10 @@ was built to expose.
 Two honest limits. The scratch traffic between stages is not counted —
 the counter sees a pipeline as one kernel with its declared arity — so 28
 B/cell is the DRAM figure only while the intermediates stay in cache.
-That understatement is the argument for §29 on top: register-level fusion
-removes the intermediates rather than relegating them to L2. And a
+That understatement was the argument for §29 on top, which has since
+landed: register-level fusion removes the intermediates rather than
+relegating them to L2, so a pipeline that lowers now moves what it says
+it moves. And a
 pipeline does nothing about the chunked 2.00×, which is the source and
 sink copy. It makes that copy carry more work, which is the most that can
 be done for a file.
@@ -2884,7 +3202,8 @@ pool miss per benchmark run spread over its few dozen calls.
 Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
-is what would let a caller build one of these.
+is what would let a caller build one of these. Register-level fusion on
+top of the radius-0 cut is §29, and is done.
 
 ## 53. Focal Operations
 
@@ -3169,18 +3488,18 @@ Status: done for grids in one CRS: `resample.Resample`, `ResampleTiled` and
 scalar-canonical passes with AVX2 and NEON kernels that match them bit for
 bit, checked against a float64 reference and against gdalwarp
 (`acceptance/`), measured in `benchmarks/resample`. Open: Mode, mosaics
-and alignment helpers, reprojection (§36), and the AVX2 numbers from the
-Zen 2 machine.
+and alignment helpers, and the AVX2 numbers from the Zen 2 machine.
+Reprojection is not planned; it is the caller's preprocessing (§36).
 
 ### Scope
 
 Resampling between two `raster.Grid`s in the same CRS: a different
 resolution, a different origin, or both, with axis-aligned cells of any
 sign on either axis. That is v0.8's first item (§45) and needs no CRS
-transformation, which `raster.CRS` cannot give yet (§36): the source
-coordinate of an output cell's centre is an affine function of its
-column alone along x and of its row alone along y. Reprojection breaks
-that and is not attempted.
+transformation (§36): the source coordinate of an output cell's centre
+is an affine function of its column alone along x and of its row alone
+along y. Reprojection breaks that and is not attempted. Grids whose CRSs
+do not match (`raster.CRS.Matches`) panic.
 
 ### Separable, table-driven, gather-free
 

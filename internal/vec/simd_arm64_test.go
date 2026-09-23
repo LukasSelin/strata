@@ -15,6 +15,7 @@ var simdTestKernels = kernelSet{
 	min: minFloat32NEON, max: maxFloat32NEON, clamp: clampFloat32NEON,
 	abs: absFloat32NEON, sqrt: sqrtFloat32NEON,
 	reduceMin: reduceMinFloat32NEON, reduceMax: reduceMaxFloat32NEON,
+	chain: chainFloat32NEON,
 }
 
 // requireSIMD never skips: NEON is part of the arm64 baseline.

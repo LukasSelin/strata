@@ -31,6 +31,12 @@
 // outside the source and cells of weight exactly zero are not taps. A
 // cell centred exactly on a source centre therefore has one tap of
 // weight 1, and an identity grid copies the source bit for bit.
+//
+// The band driver that runs the passes over rasters, with masks and
+// gdalwarp's validity rules, is package resample's: this package is a
+// kernel package and sees only spans and its own tables (DESIGN.md §12).
+//
+//strata:kernel
 package resamp
 
 import (

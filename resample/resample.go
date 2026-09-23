@@ -77,13 +77,13 @@ func ResampleTiled(ctx context.Context, dst, src raster.Dataset, opts Options, e
 	ws := getWorkspaces(workers)
 	defer putWorkspaces(ws)
 	stats := make([]engine.Stats, workers)
-	source := resamp.Source{R: s}
+	from := source{R: s}
 	err := exec.RunUnits(ctx, workers, tiles.units, func(w, i int) error {
 		x0, y0, x1, y1 := tiles.unit(i)
 		if y0 == y1 {
 			return nil
 		}
-		read := p.plan.Band(ws[w], d.Window(x0, y0, x1-x0, y1-y0), x0, y0, source, mu)
+		read := band(p.plan, ws[w], d.Window(x0, y0, x1-x0, y1-y0), x0, y0, from, mu)
 		st := &stats[w]
 		st.Bands++
 		st.Cells += int64(x1-x0) * int64(y1-y0)
@@ -133,7 +133,7 @@ func newPlan(dg, sg raster.Grid, opts Options, eopts engine.Options) plan {
 	if eopts.TileWidth < 0 || eopts.TileHeight < 0 || eopts.Workers < 0 {
 		panic(fmt.Sprintf("resample: negative Options %+v", eopts))
 	}
-	if dg.CRS.Code != "" && sg.CRS.Code != "" && dg.CRS.Code != sg.CRS.Code {
+	if !dg.CRS.Matches(sg.CRS) {
 		panic(fmt.Sprintf("resample: dst CRS %q differs from src CRS %q; reprojection is not supported", dg.CRS.Code, sg.CRS.Code))
 	}
 	checkGrid("dst", dg)
@@ -195,19 +195,19 @@ func checkGrid(name string, g raster.Grid) {
 // rasters of a size seen before allocates only its tables.
 var workspaces sync.Pool
 
-func getWorkspaces(n int) []*resamp.Workspace {
-	ws := make([]*resamp.Workspace, n)
+func getWorkspaces(n int) []*workspace {
+	ws := make([]*workspace, n)
 	for i := range ws {
-		if w, ok := workspaces.Get().(*resamp.Workspace); ok {
+		if w, ok := workspaces.Get().(*workspace); ok {
 			ws[i] = w
 		} else {
-			ws[i] = new(resamp.Workspace)
+			ws[i] = new(workspace)
 		}
 	}
 	return ws
 }
 
-func putWorkspaces(ws []*resamp.Workspace) {
+func putWorkspaces(ws []*workspace) {
 	for _, w := range ws {
 		workspaces.Put(w)
 	}

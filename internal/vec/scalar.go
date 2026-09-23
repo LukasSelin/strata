@@ -139,3 +139,90 @@ func scalarReduceMaxFloat32(acc float32, src []float32) float32 {
 	}
 	return acc
 }
+
+// chainCells is how many cells scalarChainFrom carries from one step to
+// the next. A whole band — the span the engine hands a kernel — is up to
+// 65536 cells, or 256 KiB, which is where an unfused chain's buffers go
+// and why they cost anything at all (DESIGN.md §29, §51).
+//
+// 2048 cells is 8 KiB: past the width at which BenchmarkWidth's per-call
+// cost stops mattering, and a quarter of the 32 KiB L1 data cache of the
+// smallest machine this project measures on, so the six or seven operand
+// streams passing through keep the rest of it. Larger blocks keep
+// measuring slightly faster on a machine with a 128 KiB L1, which is the
+// per-call cost still shrinking rather than a cache effect, and is not a
+// reason to spend another machine's L1.
+const chainCells = 2048
+
+// scalarChainFloat32 is the scalar chain evaluator: for each block of
+// cells it applies every step of the chain before moving on, so an
+// intermediate value never leaves the block.
+//
+// The block, rather than one cell at a time, is what keeps this the
+// canonical reference cheaply. Each step is the very kernel the unfused
+// chain would have called, over the same cells in the same order, so the
+// bits are the staged chain's bits by construction and the tight loops
+// stay the bounds-check-free ones this file already has. Carrying the
+// value in a register instead is worth doing where a register holds
+// eight cells at once; that is the vector backend's job (chain_amd64.go).
+//
+// The block is never copied into or out of: the first step reads the
+// chain's starting input straight into it and the last writes straight
+// out to dst, so a chain of n steps makes exactly n passes over the
+// block and none over anything else.
+func scalarChainFloat32(c *Chain, dst []float32, srcs [][]float32) {
+	scalarChainFrom(c, dst, srcs, 0)
+}
+
+// scalarChainFrom runs the chain over dst[from:], reading srcs[i][from:].
+// The offset is what lets the vector backend hand it a tail without
+// building a second slice of operands to do it (chain_amd64.go).
+func scalarChainFrom(c *Chain, dst []float32, srcs [][]float32, from int) {
+	var block [chainCells]float32
+	last := len(c.steps) - 1
+	for off := from; off < len(dst); off += chainCells {
+		n := min(chainCells, len(dst)-off)
+		// acc is where the running value is read from: the chain's
+		// starting input for the first step, the block after that.
+		acc := srcs[c.first][off : off+n]
+		for i, s := range c.steps {
+			out := block[:n]
+			if i == last {
+				out = dst[off : off+n]
+			}
+			var src []float32
+			if s.Op.Binary() {
+				src = srcs[s.Src][off : off+n]
+			}
+			switch s.Op {
+			case OpAdd:
+				scalarAddFloat32(out, acc, src)
+			case OpSub:
+				scalarSubFloat32(out, acc, src)
+			case OpMul:
+				scalarMulFloat32(out, acc, src)
+			case OpDiv:
+				scalarDivFloat32(out, acc, src)
+			case OpMin:
+				scalarMinFloat32(out, acc, src)
+			case OpMax:
+				scalarMaxFloat32(out, acc, src)
+			case OpAddScalar:
+				scalarAddScalarFloat32(out, acc, s.K[0])
+			case OpMulScalar:
+				scalarMulScalarFloat32(out, acc, s.K[0])
+			case OpAffine:
+				scalarAffineFloat32(out, acc, s.K[0], s.K[1])
+			case OpSubDiv:
+				scalarSubDivFloat32(out, acc, s.K[0], s.K[1])
+			case OpClamp:
+				scalarClampFloat32(out, acc, s.K[0], s.K[1])
+			case OpAbs:
+				scalarAbsFloat32(out, acc)
+			case OpSqrt:
+				scalarSqrtFloat32(out, acc)
+			}
+			acc = out
+		}
+	}
+}

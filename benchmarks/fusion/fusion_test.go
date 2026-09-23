@@ -12,7 +12,7 @@ import (
 	"github.com/LukasSelin/strata/raster"
 )
 
-// TestFormsAgree checks that the three forms compute the same raster, bit
+// TestFormsAgree checks that the four forms compute the same raster, bit
 // for bit, Data and validity, on every backend, tile shape and worker
 // count the benchmarks use, on a size that is not a multiple of the SIMD
 // width or of the tiles. A fused form that does not equal its unfused
@@ -38,7 +38,7 @@ func TestFormsAgree(t *testing.T) {
 			if backend == suite.SIMD && vec.Backend() == suite.Scalar {
 				continue
 			}
-			forms := map[string]form{"chained": chained, "pipeline": pipelined, "fused": fused}
+			forms := allForms()
 			for name, run := range forms {
 				for _, workers := range []int{1, 4} {
 					for _, tile := range [][2]int{{0, 0}, {256, 256}, {37, 11}} {
@@ -87,12 +87,23 @@ func same(t *testing.T, id string, got, want result) {
 	}
 }
 
+// allForms is every form the benchmarks measure, by the name
+// bytesPerCell and workload know them by.
+func allForms() map[string]form {
+	return map[string]form{
+		"chained": chained, "pipeline": pipelined,
+		"lowered": lowered, "fused": fused,
+	}
+}
+
 // TestCounter checks bytesPerCell against engine.Stats for the float32
-// traffic it counts: 60 B/cell for the chain, 28 for the pipeline and the
-// fused kernel.
+// traffic it counts: 60 B/cell for the chain, 28 for the pipeline, the
+// lowered chain and the fused kernel. The last three read the same 28
+// whatever they do between the stages, which is §51's stated limit and
+// §29's reason to be measured in time.
 func TestCounter(t *testing.T) {
 	f := newFixture(300)
-	for name, run := range map[string]form{"chained": chained, "pipeline": pipelined, "fused": fused} {
+	for name, run := range allForms() {
 		var s engine.Stats
 		if err := run(context.Background(), f, false, engine.Options{Stats: &s}); err != nil {
 			t.Fatal(err)
@@ -116,7 +127,7 @@ func TestAllocs(t *testing.T) {
 	}
 	defer kernels.UseScalar(false)
 	f := newFixture(300)
-	for name, run := range map[string]form{"chained": chained, "pipeline": pipelined, "fused": fused} {
+	for name, run := range allForms() {
 		for _, masked := range []bool{false, true} {
 			for _, workers := range []int{1, 4} {
 				c := suite.Case{Size: f.size, Masked: masked, Backend: suite.SIMD, Workers: workers, Tiles: tiles256}
