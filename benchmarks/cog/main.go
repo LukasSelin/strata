@@ -37,6 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"runtime/pprof"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,7 @@ var (
 	block   = flag.Int("block", 512, "the file's block size, for reads/block")
 	repeat  = flag.Int("repeat", 1, "run this many times in one process")
 	cpuprof = flag.String("cpuprofile", "", "write a CPU profile of the timed runs here")
+	memprof = flag.String("memprofile", "", "write an allocation profile of the timed runs here")
 )
 
 // outFill is what slope writes under invalid cells: gdaldem's NoData.
@@ -135,6 +137,11 @@ func run() error {
 	blocks := int64(ceilDiv(w, *block) * ceilDiv(h, *block))
 	fmt.Printf("size=%dx%d masked=%v tile=%d workers=%d cache=%d gomaxprocs=%d\n",
 		w, h, src.Masked(), *tile, *workers, *cacheB, runtime.GOMAXPROCS(0))
+	// The bound the source chose. An interface, because the build of an
+	// older reader that cogbench.sh times has no such method.
+	if c, ok := src.(interface{ CacheBytes() int64 }); ok {
+		fmt.Printf("cache_bytes=%d\n", c.CacheBytes())
+	}
 
 	for i := range *repeat {
 		// A fresh source per run, so every run starts with an empty cache.
@@ -148,6 +155,9 @@ func run() error {
 			}
 		}
 		calls0, bytes0 := cnt.calls.Load(), cnt.bytes.Load()
+		var m0 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+		stopPeak := peakHeap()
 		t0 := time.Now()
 		switch *mode {
 		case "read":
@@ -161,12 +171,56 @@ func run() error {
 			return err
 		}
 		d := time.Since(t0).Seconds()
+		peak := stopPeak()
+		var m1 runtime.MemStats
+		runtime.ReadMemStats(&m1)
 		calls, bytes := cnt.calls.Load()-calls0, cnt.bytes.Load()-bytes0
-		fmt.Printf("run=%d ms=%.1f MBs=%.0f reads=%d readMB=%.1f reads_per_block=%.2f\n",
+		fmt.Printf("run=%d ms=%.1f MBs=%.0f reads=%d readMB=%.1f reads_per_block=%.2f"+
+			" allocMB=%.1f allocs=%d gcs=%d gcPauseMs=%.2f peakHeapMB=%.1f\n",
 			i, d*1000, float64(w)*float64(h)*4/d/1e6, calls, float64(bytes)/1e6,
-			float64(calls)/float64(blocks))
+			float64(calls)/float64(blocks),
+			float64(m1.TotalAlloc-m0.TotalAlloc)/1e6, m1.Mallocs-m0.Mallocs, m1.NumGC-m0.NumGC,
+			float64(m1.PauseTotalNs-m0.PauseTotalNs)/1e6, float64(peak)/1e6)
+	}
+	if *memprof != "" {
+		f, err := os.Create(*memprof)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		// Every allocation since the process started, most of them the
+		// timed runs': pprof -sample_index=alloc_space shows where.
+		if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// peakHeap samples the heap's objects, live and not yet swept, every
+// millisecond until the function it returns is called, which returns
+// the largest it saw. runtime/metrics reads it without stopping the
+// world, as ReadMemStats would.
+func peakHeap() func() uint64 {
+	done := make(chan struct{})
+	res := make(chan uint64)
+	go func() {
+		var peak uint64
+		sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+		t := time.NewTicker(time.Millisecond)
+		defer t.Stop()
+		for {
+			metrics.Read(sample)
+			peak = max(peak, sample[0].Value.Uint64())
+			select {
+			case <-done:
+				res <- peak
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return func() uint64 { close(done); return <-res }
 }
 
 // readAll reads the whole raster in full-width strips of -tile rows, on

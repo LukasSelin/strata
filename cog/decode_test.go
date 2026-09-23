@@ -188,3 +188,109 @@ func BenchmarkFloat32Validity(b *testing.B) {
 		float32Validity(vals, nd)
 	}
 }
+
+// TestDefaultCacheBytes checks that the default cache is DefaultCacheRows
+// rows of decoded blocks, within its floor and cap, and that a source
+// reports the bound it chose.
+func TestDefaultCacheBytes(t *testing.T) {
+	row := func(width, bw, bh int) int64 { // one row of blocks, as block.size counts it
+		cells := bw * bh
+		return int64((width+bw-1)/bw) * int64(4*cells+8*raster.MaskWords(cells)+64)
+	}
+	for _, tc := range []struct {
+		name          string
+		width, bw, bh int
+		want          int64
+	}{
+		{"the benchmark's 11264-wide COG", 11264, 512, 512, DefaultCacheRows * row(11264, 512, 512)},
+		{"narrow: the floor", 701, 256, 256, DefaultCacheBytes},
+		{"strips: the floor", 20000, 20000, 8, DefaultCacheBytes},
+		{"very wide: the cap", 200000, 512, 512, MaxDefaultCacheBytes},
+		{"absurdly wide: the cap, no overflow", 1 << 40, 16384, 16384, MaxDefaultCacheBytes},
+	} {
+		got := defaultCacheBytes(&image{width: tc.width, blockW: tc.bw, blockH: tc.bh})
+		if got != tc.want {
+			t.Errorf("%s: %d bytes, want %d", tc.name, got, tc.want)
+		}
+	}
+	if got := DefaultCacheRows * row(11264, 512, 512); got < 180<<20 || got > 190<<20 {
+		t.Errorf("11264-wide: %d MiB, the benchmark's reasoning expects about 182", got>>20)
+	}
+
+	f, err := Open(bytes.NewReader(fileSpec{order: binary.LittleEndian, images: []imageSpec{{
+		w: 40, h: 30, bands: 1, format: sampleFloat, size: 4, tiled: true, blockW: 16, blockH: 16,
+		planar: planarChunky, compression: compressionNone, vals: [][]float64{make([]float64, 40*30)},
+	}}}.write()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ opt, want int64 }{{0, DefaultCacheBytes}, {-1, 0}, {5000, 5000}} {
+		src, err := f.Source(SourceOptions{CacheBytes: tc.opt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := src.CacheBytes(); got != tc.want {
+			t.Errorf("CacheBytes %d: the source reports %d, want %d", tc.opt, got, tc.want)
+		}
+	}
+}
+
+// TestIntFastPath checks intRow, convertInts and exactValidity against
+// convert, the general path they replace for 8- and 16-bit integers,
+// with and without the horizontal predictor, on every NoData value that
+// prepareNoData can make of them, fractions and -0 included.
+func TestIntFastPath(t *testing.T) {
+	rng := rand.New(rand.NewPCG(9, 10))
+	le := binary.LittleEndian
+	for _, st := range []sampleType{{"uint8", sampleUint, 1}, {"int8", sampleInt, 1},
+		{"uint16", sampleUint, 2}, {"int16", sampleInt, 2}} {
+		bits, signed := 8*st.size, st.format == sampleInt
+		for _, n := range []int{1, 63, 64, 65, 300} {
+			raw := make([]byte, n*st.size)
+			for i := range raw {
+				raw[i] = byte(rng.Uint32())
+			}
+			for i := 0; i < n; i += 7 { // make some cells hold 0 and 12
+				v := uint16(0)
+				if i%2 == 1 {
+					v = 12
+				}
+				if st.size == 1 {
+					raw[i] = byte(v)
+				} else {
+					le.PutUint16(raw[2*i:], v)
+				}
+			}
+			for _, pred := range []bool{false, true} {
+				// The reference: undo the predictor in place, then convert.
+				ref := slices.Clone(raw)
+				if pred {
+					horizontalRow(ref, st.size, 1)
+				}
+				for _, v := range []float64{-0.5, 0, 12, 12.7, -1, 65535, 1e9} {
+					nd := prepareNoData(v, true, st.format, bits)
+					want := make([]float32, n)
+					var wantValid []uint64
+					if convert(want, ref, st.format, bits, 1, 0, nd, nil) {
+						wantValid = make([]uint64, raster.MaskWords(n))
+						convert(want, ref, st.format, bits, 1, 0, nd, wantValid)
+					}
+					got := make([]float32, n)
+					intRow(got, slices.Clone(raw), bits, signed, pred)
+					got2 := make([]float32, n)
+					convertInts(got2, ref, bits, signed, 1, 0)
+					for i := range got {
+						if got[i] != want[i] || got2[i] != want[i] {
+							t.Fatalf("%s, %d cells, pred %v: cell %d is %v (intRow) and %v (convertInts), want %v",
+								st.name, n, pred, i, got[i], got2[i], want[i])
+						}
+					}
+					if gotValid := exactValidity(got, nd); !slices.Equal(gotValid, wantValid) {
+						t.Fatalf("%s, %d cells, pred %v, NoData %v: validity %x, want %x",
+							st.name, n, pred, v, gotValid, wantValid)
+					}
+				}
+			}
+		}
+	}
+}

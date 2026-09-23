@@ -25,6 +25,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): the GeoTIFF/COG reader's decode speed against GDAL, and slope over a COG against `gdaldem` (§34).
+- [benchmarks/gdalsuite/RESULTS.md](benchmarks/gdalsuite/RESULTS.md): all 25 operations with a GDAL counterpart timed against it, compute only, file to file and the whole flow from a COG, with both tools' outputs compared (§38).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
@@ -1617,8 +1618,11 @@ GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
 on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
 Go's inflate, is most of the gap), yet slope over a COG still beats
 `gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Open: writing (a COG sink), internal masks, and a default cache
-that scales with the file's block rows for many workers.
+workers. Since then the default block cache holds 8 rows of blocks
+(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
+read allocates about its cache rather than its size, and 8- and 16-bit
+integers convert without a float64 detour (UInt16 reads 1.4–1.9×
+faster). Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 
