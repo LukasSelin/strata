@@ -76,6 +76,21 @@ err = terrain.SlopeChunked(ctx, out, in,
     terrain.SlopeOptions{CellSize: 30}, engine.Options{TileHeight: 256})
 ```
 
+Or read a GeoTIFF or Cloud Optimized GeoTIFF straight from the file,
+through the `cog` adapter, its own module
+(`go get github.com/LukasSelin/strata/cog`):
+
+```go
+f, err := os.Open("dem.tif")
+// ...
+file, err := cog.Open(f)                          // any io.ReaderAt
+dem, err := file.Source(cog.SourceOptions{})      // band 0, full resolution
+cell := dem.Grid().ResolutionX
+
+err = terrain.SlopeChunked(ctx, out, dem,
+    terrain.SlopeOptions{CellSize: cell}, engine.Options{TileHeight: 256})
+```
+
 Or turn a surface into a classification — here a five-class fire-risk
 scale from a slope factor, with the breakpoints and the curve supplied
 by the caller:
@@ -111,6 +126,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `resample` | Resamples between grids in the same CRS, gdalwarp's conventions: `Nearest`, `Bilinear`, `Cubic`, `Lanczos`, `Average`, with NoData renormalised as gdalwarp does. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
 | `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
+| `cog`     | A separate module: GeoTIFF and COG files as a `RasterSource`. Classic and BigTIFF, tiles and strips, integer and float samples, LZW/Deflate/PackBits/ZSTD, overviews, NoData as validity, geotransform and EPSG code. Pure Go, and bit-identical to GDAL's reading of 98 test files. |
 
 Each package's doc comment is the reference for its operand rules, validity
 semantics, edge handling, and cancellation behaviour.
@@ -165,7 +181,8 @@ Those tests share the library author's understanding of the problem.
 separate module that drives strata through its public API. A numpy
 program written from published definitions then judges the results.
 `gdalcheck.sh` differences strata's output against `gdaldem` on a real
-raster.
+raster, and `cogcheck.sh` requires the `cog` reader to read every cell of
+98 GDAL-written GeoTIFFs exactly as GDAL does.
 
 CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
 race detector, and `golangci-lint` in both the default and the
