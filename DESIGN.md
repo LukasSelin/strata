@@ -1609,9 +1609,8 @@ strata's differentiator is computation, not parsing.
 The GeoTIFF adapter is the exception, recorded in
 [ADR 0002](docs/adr/0002-cog-adapter.md): no Go library reads a
 window's blocks of a floating-point TIFF, and GDAL means cgo. So `cog`
-parses the container itself and wraps libraries only for LZW
-(`golang.org/x/image/tiff/lzw`), Deflate (the standard library) and ZSTD
-(`klauspost/compress`). An exception to this rule needs an outside
+parses the container itself and wraps a library only for LZW, Deflate
+and ZSTD (`klauspost/compress`). An exception to this rule needs an outside
 judge, and GDAL is that judge here (§34).
 
 ## 36. CRS and Reprojection

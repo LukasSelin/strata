@@ -325,7 +325,8 @@ What it does not cover:
   or odd strip layouts;
 - compressions the reader refuses (JPEG, WebP, LERC);
 - reading over HTTP;
-- decode speed, which nothing here measures yet.
+- decode speed, which [`benchmarks/cog/`](../benchmarks/cog/RESULTS.md)
+  measures against GDAL.
 
 ## What this does not tell you
 
