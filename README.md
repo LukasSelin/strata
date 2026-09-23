@@ -174,6 +174,15 @@ straight from the COG still beats `gdaldem slope` on the same file, by
 costs more than computing the slope: from a Deflate COG the run takes
 2.28 s on one worker, from the raw file 0.89 s.
 
+[`benchmarks/gdalsuite/`](benchmarks/gdalsuite/RESULTS.md) times all 25
+operations that have a GDAL counterpart (terrain, focal, algebra,
+statistics, resampling) against it at three levels. The arithmetic
+alone is 24× GDAL's on one core and 57× on twelve (geometric means);
+from a raw file to a file, 5.3× and 9.0×; the whole flow from a Deflate
+COG, 2.3× and 4.5×, because decoding the COG is most of strata's run.
+Both tools' outputs are compared on every operation, and most are
+bit-identical.
+
 ## Testing
 
 Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also

@@ -25,6 +25,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): the GeoTIFF/COG reader's decode speed against GDAL, and slope over a COG against `gdaldem` (§34).
+- [benchmarks/gdalsuite/RESULTS.md](benchmarks/gdalsuite/RESULTS.md): all 25 operations with a GDAL counterpart timed against it, compute only, file to file and the whole flow from a COG, with both tools' outputs compared (§38).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
