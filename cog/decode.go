@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -66,8 +67,10 @@ func prepareNoData(v float64, has bool, format, size int) noData {
 }
 
 // decodeBlock reads and decodes block idx of im, at block row by, for
-// band. nd is the prepared NoData value.
-func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block, error) {
+// band. nd is the prepared NoData value. read returns the block's stored
+// bytes, which may be shared with other sources, so they are not
+// modified.
+func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read func(off, n uint64) ([]byte, error)) (*block, error) {
 	rows := im.blockRows(by)
 	n := im.blockW * rows
 	b := &block{w: im.blockW, rows: rows}
@@ -84,13 +87,16 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 	if count > 2*maxBlockBytes {
 		return nil, fmt.Errorf("%d compressed bytes for a block, more than %d MiB", count, 2*maxBlockBytes>>20)
 	}
-	raw, err := c.readFull(off, count)
+	raw, err := read(off, count)
 	if err != nil {
 		return nil, fmt.Errorf("reading %d bytes at offset %d: %w", count, off, err)
 	}
 	spb := im.blockSamples()
 	rowBytes := im.blockW * spb * im.bytes
 	want := rowBytes * rows
+	if im.compression == compressionNone && (im.predictor != predictorNone || c.order == binary.BigEndian && im.bytes > 1) {
+		raw = slices.Clone(raw) // decompress returns raw itself, and toLittleEndian will write to it
+	}
 	data, err := decompress(im.compression, raw, want)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", compressionName(im.compression), err)

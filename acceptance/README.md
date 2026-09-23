@@ -348,9 +348,9 @@ server strata did not write:
 4. `cogcompare.py` judges the result exactly as before.
 5. `cogblocks.py` counts, through GDAL's `BLOCK_OFFSET_x_y` and
    `BLOCK_SIZE_x_y` metadata, the blocks each file stores, the block
-   reads strata's per-band sources need, and how many of those end past
-   the 64 KiB prefetch. It prints them next to the requests, and fails
-   if any file was not read over HTTP.
+   reads strata's per-band sources make, and how many stored blocks end
+   past the 64 KiB prefetch. It prints them next to the requests, and
+   fails if any file was not read over HTTP.
 
 With GDAL 3.14 and nginx 1.31, in about 25 s, all 98 files are identical to GDAL's
 reading, as they are from disk. The request counts:
@@ -360,30 +360,35 @@ file                                              KiB blocks  reads fetches requ
 cog-Float32-DEFLATE-FLOATING_POINT                958     39     39      34       35     0    100%
 cog-Byte-ZSTD-STANDARD                            129     39     39      20       21     0    100%
 gtiff-Float32-tiles-BAND-be                      3624    561    561     554      555     0    100%
-gtiff-Float32-tiles-PIXEL-be                     3310    187    561     555      556     0    296%
+gtiff-Float32-tiles-PIXEL-be                     3310    187    561     185      186     0    100%
 ...
-98/98 files read over HTTP. The 97 counted: 10,814 requests for 8,789 blocks (11,399 block reads,
-10,717 of them past the prefetch) = 97 prefetches + 10,717 fetches + 0 other.
-217.0 MiB fetched of 165.7 MiB
+98/98 files read over HTTP. The 97 counted: 8,344 requests for 8,789 blocks (11,399 block reads,
+8,247 blocks past the prefetch) = 97 prefetches + 8,247 fetches + 0 other.
+165.7 MiB fetched of 165.7 MiB
 ```
 
-On every counted file, requests = 1 prefetch + 1 per block read that
+On every counted file, requests = 1 prefetch + 1 per stored block that
 ends past the prefetch, and nothing else. Open never needed a request
-beyond the prefetch, not even for the stripped GeoTIFFs. The cache meant
-no block was fetched twice by one source, although eight goroutines read
-100×77 windows that cut every block. A COG stores its smallest overviews
+beyond the prefetch, not even for the stripped GeoTIFFs. The caches meant
+no block was fetched twice, although eight goroutines read 100×77
+windows that cut every block and, in a pixel-interleaved file, three
+band sources read each block: `reads` is 3 × `blocks` on those rows,
+and `fetched` is still 100%, because the File keeps the compressed
+blocks for its sources to share (up to 64 MiB, which holds every file
+here). Before that cache, the PIXEL rows fetched every block once per
+band: 10,814 requests and 217.0 MiB in total. A COG stores its smallest overviews
 first, so those blocks sit inside the prefetch: a 129 KiB ZSTD COG with
 39 blocks took 21 requests. Merging adjacent reads could only save
 requests between blocks, and nothing issues those as one read, so the
 reader does not merge.
 
-Two costs show up that the reader itself cannot fix:
-- **Pixel-interleaved files are fetched once per band.** A `Source`
-  reads one band and its cache is its own, so reading the three bands
-  of a pixel-interleaved file fetches each block three times (`reads`
-  is 3 × `blocks`; `fetched` near 300%). Band-interleaved files and
-  single-band COGs are not affected. A block cache shared by a file's
-  sources would fix it.
+Two costs remain:
+- **A large pixel-interleaved file read band after band fetches again.**
+  The shared cache holds 64 MiB of compressed blocks, least recently
+  used out. Sources that read the same region at about the same time
+  share every fetch, whatever the file's size; a source that reads a
+  whole band of a file bigger than that before the next band starts
+  finds the first blocks gone. None of the files here is that large.
 - **Blocks over 1 MiB take one request per MiB.** `cog` reads a block in
   1 MiB pieces, so that a corrupt byte count cannot make it allocate
   before it reads. `gtiff-Float32-onestrip`, a single 1.4 MB strip,

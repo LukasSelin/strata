@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/LukasSelin/strata/engine"
@@ -686,5 +687,70 @@ func TestPanics(t *testing.T) {
 	}
 	if _, err := f.Source(SourceOptions{Level: 1}); err == nil {
 		t.Error("Source accepted level 1 of 1")
+	}
+}
+
+// countingReader counts its ReadAt calls.
+type countingReader struct {
+	r io.ReaderAt
+	n atomic.Int64
+}
+
+func (c *countingReader) ReadAt(p []byte, off int64) (int, error) {
+	c.n.Add(1)
+	return c.r.ReadAt(p, off)
+}
+
+// TestSharedBlocks checks that the sources of a pixel-interleaved file
+// read each block once between them, whether they read one after another
+// or all at once, and that a band-interleaved file's sources read their
+// own blocks once each.
+func TestSharedBlocks(t *testing.T) {
+	rng := rand.New(rand.NewPCG(9, 10))
+	const w, h, bands = 64, 48, 3
+	st := sampleType{"uint16", sampleUint, 2}
+	vals := make([][]float64, bands)
+	for b := range vals {
+		vals[b] = make([]float64, w*h)
+		for i := range vals[b] {
+			vals[b][i] = randomValue(rng, st)
+		}
+	}
+	for _, planar := range []int{planarChunky, planarSeparate} {
+		for _, together := range []bool{false, true} {
+			// Uncompressed and big-endian, so decoding a shared block
+			// in place would corrupt it for the next band.
+			sp := imageSpec{w: w, h: h, bands: bands, format: st.format, size: st.size, tiled: true,
+				blockW: 16, blockH: 16, planar: planar, compression: compressionNone, vals: vals}
+			file := fileSpec{order: binary.BigEndian, images: []imageSpec{sp}}.write()
+			cr := &countingReader{r: bytes.NewReader(file)}
+			f, err := Open(cr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cr.n.Store(0)
+			var wg sync.WaitGroup
+			for b := range bands {
+				src, err := f.Source(SourceOptions{Band: b})
+				if err != nil {
+					t.Fatal(err)
+				}
+				read := func() {
+					for range 4 {
+						checkWindow(t, "shared", src, vals[b], w, 0, 0, w, h, false, 0)
+					}
+				}
+				if together {
+					wg.Go(read)
+				} else {
+					read()
+				}
+			}
+			wg.Wait()
+			blocks := int64(len(f.levels[0].offsets))
+			if got := cr.n.Load(); got != blocks {
+				t.Errorf("planar %d, together %v: %d reads for %d blocks", planar, together, got, blocks)
+			}
+		}
 	}
 }
