@@ -8,13 +8,15 @@ BLOCK_OFFSET_x_y metadata of every band of every level:
 
   - blocks:       the distinct blocks stored in the file (sparse ones,
                   offset 0, are not stored, and GDAL reports none);
-  - block reads:  the blocks strata's sources must fetch to read every
-                  band of every level once: a Source reads one band, so
-                  a pixel-interleaved block is fetched once per band;
-  - fetches:      the block reads that end past the prefetched header,
-                  each of which should cost one range request. A COG
-                  stores its smallest overviews first, so their blocks
-                  often lie inside the prefetch and cost none.
+  - block reads:  the blocks strata's sources read to read every band of
+                  every level once: a Source reads one band, so a
+                  pixel-interleaved block is read once per band;
+  - fetches:      the blocks that end past the prefetched header, each of
+                  which should cost one range request. The sources of a
+                  pixel-interleaved file share its compressed blocks, so
+                  a block is fetched once however many bands read it. A
+                  COG stores its smallest overviews first, so their
+                  blocks often lie inside the prefetch and cost none.
 
 and prints them next to strata.json's requests and bytes. "other" is what
 the requests spent beyond the prefetch and one request per fetch: IFD and
@@ -49,7 +51,7 @@ strata_side = {r["name"]: r for r in json.load(open(os.path.join(D, "strata.json
 
 def count_blocks(path, prefetch):
     ds = gdal.Open(path)
-    reads, fetches, stored = 0, 0, set()
+    reads, stored = 0, {}
     for b in range(1, ds.RasterCount + 1):
         band = ds.GetRasterBand(b)
         for lv in [band] + [band.GetOverview(k) for k in range(band.GetOverviewCount())]:
@@ -60,8 +62,8 @@ def count_blocks(path, prefetch):
                     if off:
                         size = int(lv.GetMetadataItem(f"BLOCK_SIZE_{x}_{y}", "TIFF"))
                         reads += 1
-                        fetches += int(off) + size > prefetch
-                        stored.add(int(off))
+                        stored[int(off)] = size
+    fetches = sum(off + size > prefetch for off, size in stored.items())
     return len(stored), reads, fetches
 
 
@@ -95,7 +97,7 @@ for g in gdal_side["files"]:
 n = len(gdal_side["files"])
 print(f"\n{n - failed}/{n} files read over HTTP. The {tot['files']} counted: "
       f"{tot['requests']:,} requests for {tot['blocks']:,} blocks "
-      f"({tot['reads']:,} block reads, {tot['fetches']:,} of them past the prefetch) = "
+      f"({tot['reads']:,} block reads, {tot['fetches']:,} blocks past the prefetch) = "
       f"{tot['files']:,} prefetches + {tot['fetches']:,} fetches + {tot['other']:,} other. "
       f"{tot['bytes'] / 2**20:.1f} MiB fetched of {tot['size'] / 2**20:.1f} MiB")
 sys.exit(1 if failed else 0)

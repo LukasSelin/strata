@@ -21,10 +21,24 @@ type File struct {
 	geo    georef
 	nodata float64
 	hasND  bool
+	// shared holds the compressed blocks of pixel-interleaved images,
+	// which every band's source reads; nil for a single band.
+	shared *cache[blockKey, []byte]
 }
 
 // maxOverviews is GDAL's limit on the overviews it reads from one file.
 const maxOverviews = 30
+
+// blockKey names a block of a File: its image, a level or a level's
+// mask, and its index in that image's offsets.
+type blockKey struct {
+	im  *image
+	idx int
+}
+
+// sharedCacheBytes bounds the compressed blocks a File with more than
+// one band keeps for its sources to share.
+const sharedCacheBytes = 64 << 20
 
 // Open reads the header and every image directory of the GeoTIFF that r
 // holds. It reads no cell data. r must stay open while the File and its
@@ -68,6 +82,9 @@ func Open(r io.ReaderAt) (*File, error) {
 	}
 	if f.nodata, f.hasND, err = c.noData(ifds[0]); err != nil {
 		return nil, fmt.Errorf("cog: %w", err)
+	}
+	if main.bands > 1 {
+		f.shared = newCache[blockKey](sharedCacheBytes, func(b []byte) int64 { return int64(len(b)) + 64 })
 	}
 	return f, nil
 }
@@ -235,7 +252,9 @@ type SourceOptions struct {
 	// CacheBytes bounds the memory of decoded blocks the source keeps,
 	// so blocks that several windows touch are decoded once: 0 means
 	// DefaultCacheBytes, a negative value no cache. The cache always
-	// holds at least the most recent block.
+	// holds at least the most recent block. It does not cover the
+	// compressed blocks a pixel-interleaved File shares between its
+	// sources; see File.Source.
 	CacheBytes int64
 }
 
@@ -247,7 +266,7 @@ type Source struct {
 	level int
 	band  int
 	nd    noData
-	cache *cache
+	cache *cache[int, *block]
 	mask  *Source // the level's transparency mask, which gives validity, or nil
 }
 
@@ -255,6 +274,14 @@ var _ engine.RasterSource = (*Source)(nil)
 
 // Source returns a source reading the band and level that opts select.
 // It returns an error if either does not exist.
+//
+// A pixel-interleaved file (PlanarConfiguration 1) stores every band of a
+// cell together, so each band's source needs the same blocks. The File
+// keeps the compressed blocks its sources read, up to 64 MiB, and a block
+// that one band's source fetched is not fetched again for another's while
+// it is kept. Sources reading the same region at about the same time
+// share every fetch; ones reading a large file band after band share
+// what the 64 MiB holds.
 func (f *File) Source(opts SourceOptions) (*Source, error) {
 	if opts.Level < 0 || opts.Level >= len(f.levels) {
 		return nil, fmt.Errorf("cog: level %d, and the file has %d", opts.Level, len(f.levels))
@@ -265,11 +292,12 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 	}
 	newSource := func(im *image, band int, nd noData) *Source {
 		s := &Source{f: f, im: im, level: opts.Level, band: band, nd: nd}
+		size := func(b *block) int64 { return b.size() }
 		switch {
 		case opts.CacheBytes == 0:
-			s.cache = newCache(DefaultCacheBytes)
+			s.cache = newCache[int](DefaultCacheBytes, size)
 		case opts.CacheBytes > 0:
-			s.cache = newCache(opts.CacheBytes)
+			s.cache = newCache[int](opts.CacheBytes, size)
 		}
 		return s
 	}
@@ -350,7 +378,13 @@ func (s *Source) read(ctx context.Context, dst raster.Float32Raster, x, y int, v
 // block returns the decoded block at (bx, by), through the cache.
 func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 	idx := s.im.blockIndex(bx, by, s.band)
-	load := func() (*block, error) { return s.f.c.decodeBlock(s.im, idx, by, s.band, s.nd) }
+	var read func(off, n uint64) ([]byte, error) // nil: read into a scratch buffer
+	if s.f.shared != nil && s.im.planar == planarChunky {
+		read = func(off, n uint64) ([]byte, error) {
+			return s.f.shared.get(ctx, blockKey{s.im, idx}, func() ([]byte, error) { return s.f.c.readFull(off, n) })
+		}
+	}
+	load := func() (*block, error) { return s.f.c.decodeBlock(s.im, idx, by, s.band, s.nd, read) }
 	if s.cache == nil {
 		return load()
 	}

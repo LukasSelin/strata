@@ -1594,7 +1594,9 @@ values into `float32` plus validity at the boundary (§9, §31).
 
 Status: GeoTIFF/COG reading is done: `cog.Open` over an `io.ReaderAt`,
 `File.Source` as an `engine.RasterSource` for one band of one resolution
-level, with a byte-bounded cache of decoded blocks. It reads classic and
+level, with a byte-bounded cache of decoded blocks per source and, for a
+pixel-interleaved file, one of compressed blocks that its band sources
+share, so each block is fetched once for all bands. It reads classic and
 BigTIFF, tiles and strips, chunky and planar, 8/16/32-bit integers and
 32/64-bit floats, none/LZW/Deflate/PackBits/ZSTD with predictors 2 and 3,
 overviews, sparse blocks, GDAL NoData (compared in the native type) and
@@ -1607,15 +1609,15 @@ then one request per block past it, 206 required, bounded retries of 429,
 5xx and truncated bodies, at most 8 requests in flight, and If-Match on
 the ETag so a replaced file fails instead of mixing versions. Read through
 it from nginx, all 98 files are again identical to GDAL's reading, and
-every file but one costs exactly one prefetch plus one request per block
-past it (`acceptance/coghttpcheck.sh`). Its speed against GDAL is
-measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): on
-one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
+every file but one costs exactly one prefetch plus one request per stored
+block past it, pixel-interleaved ones included: 8,344 requests and
+165.7 MiB for 165.7 MiB of files, where one fetch per band had cost
+10,814 and 217.0 MiB (`acceptance/coghttpcheck.sh`). Its speed against
+GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
+on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
 Go's inflate, is most of the gap), yet slope over a COG still beats
 `gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Open: writing (a COG sink),
-internal masks, a block cache shared by a file's bands (each band of a
-pixel-interleaved file fetches every block again), and a default cache
+workers. Open: writing (a COG sink), internal masks, and a default cache
 that scales with the file's block rows for many workers.
 
 ## 35. Use Existing Format Libraries Where Possible

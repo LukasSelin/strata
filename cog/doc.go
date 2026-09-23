@@ -31,8 +31,10 @@
 // of a COG, and the tile offsets they hold, at the start of the file, so
 // Open is served from that block. After that, each block a Source
 // decodes is one range request: the cache means a block is fetched once
-// per Source, not once per window. A Source reads one band, so each band
-// of a pixel-interleaved file fetches the block again. Requests must be
+// per Source, not once per window. A Source reads one band, and the
+// sources of a pixel-interleaved file share its compressed blocks, up to
+// 64 MiB, so a block every band needs is fetched once, not once per band.
+// Requests must be
 // answered 206 with exactly the range asked for. Transient failures
 // (transport errors, truncated bodies, 429, 5xx) are retried with
 // backoff, a bounded number of times, and at most

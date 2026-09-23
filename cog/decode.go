@@ -130,8 +130,11 @@ func (nd noData) matches(v float64, format, bits int) bool {
 }
 
 // decodeBlock reads and decodes block idx of im, at block row by, for
-// band. nd is the prepared NoData value.
-func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block, error) {
+// band. nd is the prepared NoData value. read, if not nil, returns the
+// block's stored bytes, which other sources share, so they are not
+// modified; if nil, the block is read from the file into a scratch
+// buffer.
+func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read func(off, n uint64) ([]byte, error)) (*block, error) {
 	rows := im.blockRows(by)
 	n := im.blockW * rows
 	b := &block{w: im.blockW, rows: rows}
@@ -150,7 +153,13 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 		return nil, fmt.Errorf("%d compressed bytes for a block, more than %d MiB", count, 2*maxBlockBytes>>20)
 	}
 	var raw []byte
-	if count <= readChunk && off <= math.MaxInt64-count {
+	switch {
+	case read != nil:
+		var err error
+		if raw, err = read(off, count); err != nil {
+			return nil, fmt.Errorf("reading %d bytes at offset %d: %w", count, off, err)
+		}
+	case count <= readChunk && off <= math.MaxInt64-count:
 		// The usual case, read into a scratch buffer; readFull reads in
 		// chunks, for counts a short file may not back.
 		rp := getScratch(int(count)) // #nosec G115 -- at most readChunk
@@ -159,7 +168,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 		if err := readAtFull(c.r, raw, int64(off)); err != nil { // #nosec G115 -- checked above
 			return nil, fmt.Errorf("reading %d bytes at offset %d: %w", count, off, err)
 		}
-	} else {
+	default:
 		var err error
 		if raw, err = c.readFull(off, count); err != nil {
 			return nil, fmt.Errorf("reading %d bytes at offset %d: %w", count, off, err)
@@ -173,6 +182,15 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 	spb := im.blockSamples()
 	rowBytes := im.rowBytes()
 	want := rowBytes * rows
+	if read != nil && im.compression == compressionNone &&
+		(im.predictor != predictorNone || c.order == binary.BigEndian && im.bytes > 1) {
+		// decompress returns raw itself, and undoing the predictor or
+		// the byte order writes to it, so shared bytes are copied first.
+		rp := getScratch(len(raw))
+		defer putScratch(rp)
+		copy(*rp, raw)
+		raw = *rp
+	}
 	var dst []byte // where a stream format decompresses to
 	if im.compression != compressionNone {
 		dp := getScratch(want)
