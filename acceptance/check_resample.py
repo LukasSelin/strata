@@ -145,7 +145,10 @@ def axis(method, n, o, r, sn, so, sr, shift=0.0):
     return out, s
 
 
-def reference(case, src, valid, shift=0.0):
+def reference(case, src, valid, shift=0.0, half_valid=True):
+    """Per output cell, (value, tolerance) or None where it is invalid.
+    half_valid=False leaves out Lanczos's half-valid rule, which gdalwarp
+    dropped in GDAL 3.13.1 (DESIGN.md §54)."""
     sg, dg, m = case["src_grid"], case["dst_grid"], case["method"]
     ax, sx = axis(m, dg["width"], dg["ox"], dg["rx"], sg["width"], sg["ox"], sg["rx"], shift)
     ay, sy = axis(m, dg["height"], dg["oy"], dg["ry"], sg["height"], sg["oy"], sg["ry"])
@@ -203,7 +206,7 @@ def reference(case, src, valid, shift=0.0):
                 row.append(None)
                 continue
             exact = abs(((ux[c] - 0.5) % 1.0)) < 1e-9 and abs(((uy[r] - 0.5) % 1.0)) < 1e-9
-            if m == "Lanczos" and masked and not exact:
+            if half_valid and m == "Lanczos" and masked and not exact:
                 nv = sum(1 for j in wy_ for i in wx_ if valid[j * sw + i])
                 if 2 * nv < len(wx_) * len(wy_):
                     row.append(None)
