@@ -535,6 +535,42 @@ What the corpus still does not cover:
 - **Generated files** depend on the writers' current versions, so a
   later `generate.sh` may produce different ones.
 
+### The EPSG table against epsg.io: epsgcheck.py
+
+cog's unit and deprecation table (`cog/epsg_table.go`) comes from PROJ's
+`proj.db`, and so does GDAL's reading of the same keys. Every comparison
+above would pass a mistake in it. [`epsgcheck.py`](epsgcheck.py)
+checks the table against [epsg.io](https://epsg.io), MapTiler's import
+of the same EPSG registry, which does not go through `proj.db`. It uses
+only the free per-code pages (no API key) and needs no packages:
+
+```
+python3 epsgcheck.py              # judge the table
+python3 epsgcheck.py --sabotage   # plant 4 defects; each must be caught
+```
+
+It checks every unit entry (first axis unit, by name), every replacement
+(the old code is deprecated, and the new one is an EPSG CRS of the same
+kind), and that 668 codes the table leaves out (every neighbour of a
+listed code, plus 400 random ones) really are in metres or degrees.
+About 3,000 pages are cached in `out-epsg/cache`, so only the first run
+takes minutes. Last run, both on EPSG 12.029: no disagreements.
+
+It reports, without failing:
+
+- **26 replacements deprecated themselves**, e.g. 31265 → 31275 → 3907
+  → 8677. The table follows one step, and so does GDAL: for all 419
+  replaced codes, `ImportFromEPSG` in GDAL 3.14 gives the table's
+  replacement, even where it is deprecated (despite its warning calling it
+  "non-deprecated").
+- **EPSG:8449 → 8860**, a 3D geographic CRS replaced by a 2D one.
+- **Codes epsg.io answers with ESRI's definition**, such as 26761 (NAD27
+  / Hawaii zone 1, which EPSG does not have), are skipped: they are not
+  EPSG codes.
+
+epsg.io does not publish which code replaces which, so it cannot check
+the pairing itself; GDAL agreeing on all 419 is the evidence for that.
+
 ## What this does not tell you
 
 * **Speed.** `benchmarks/` and `benchmarks/cmd/stratademo` measure that.
