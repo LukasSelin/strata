@@ -45,7 +45,7 @@ the detailed record; this table only points at it.
 | Reductions: exact accumulator (`internal/accum`) and its decision | §49 | done |
 | Reductions: Sum, Stats, `benchmarks/reduce` suite | §49 | done |
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
-| `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; AVX2 benchmark run pending; median, skip-invalid statistics open |
+| `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; median, skip-invalid statistics and the 64 KiB-stride slowdown open |
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
@@ -53,7 +53,7 @@ the detailed record; this table only points at it.
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters (GeoTIFF, Zarr, …) | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
-| `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
+| `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode and mosaics open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
 
@@ -1160,11 +1160,14 @@ the wall. SIMD is worth 8.7× to Aspect, 5.7× to Hillshade, 4.1× to Slope
 and 2.6× to Gradient at 4096². That is why workers scale these operations
 where they barely scale the algebra ones.
 
-Convolution and resampling do, and both are now measured: convolution in
-§53 and benchmarks/focal/RESULTS.md, by radius, and resampling in §54 and
+Convolution and resampling do, and both are now measured on AVX2 and
+NEON: convolution in §53 and benchmarks/focal/RESULTS.md, by radius
+(compute-bound except where a 64 KiB row stride causes cache set
+conflicts, which is not bandwidth), and resampling in §54 and
 benchmarks/resample/RESULTS.md, where every method at every scale is
-compute-bound, asking 2–8 GB/s. Interpolation and point-cloud filtering
-should behave like the terrain kernels too, and are not measured yet.
+compute-bound, asking at most 8 GB/s. Interpolation and point-cloud
+filtering should behave like the terrain kernels too, and are not
+measured yet.
 Benchmarks distinguish compute-bound, cache-bound, memory-bound and
 IO-bound operations.
 
@@ -1679,7 +1682,7 @@ benchmarks/
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── focal/              implemented: Correlate, Gaussian, Mean, Min, Max by radius, RESULTS.md (§53)
 ├── resample/           implemented: every method at 2×, 4×, ½, 1/1.37, against
-│                        direct 2-D, RESULTS.md (NEON; AVX2 open), §54
+│                        direct 2-D, RESULTS.md (AVX2 and NEON), §54
 ├── gdal/               implemented: the same operations timed against gdaldem, RESULTS.md
 ├── nodata/             STRATA-3 spike, not part of the suite
 ├── reduce/             implemented: Min, MinMax, Sum, Stats against read bandwidth, RESULTS.md (§49)
@@ -3402,41 +3405,46 @@ own §28 class from `stratabench` without a change to its name pattern.
 Every operation moves 8 bytes per cell whatever its radius: the other
 rows of the neighbourhood come from cache.
 
-**§28's prediction holds on the NEON run** (Apple M4, one core,
-benchmarks/focal/RESULTS.md): every operation is compute-bound at every
-radius and size, 256² to 16384², masked or not.
+**§28's prediction holds**, on AVX2 (the Zen 2 desktop, one pinned
+core) as on NEON (Apple M4), benchmarks/focal/RESULTS.md, with one
+exception that is not bandwidth. Figures are AVX2 at 4096², unmasked.
 
-- Correlate costs what its products cost: 0.58, 1.35, 2.59 and 6.77 ns
-  per cell at r = 1, 2, 3 and 5 (4096², no mask), a flat 0.053–0.064 ns
-  per product, so its throughput falls as (2r+1)² and its memory demand
-  with it, from 14 GB/s at r = 1 to 1.2 at r = 5.
-- The separable forms grow linearly: Gaussian 0.40 → 1.12 ns per cell
-  from r = 1 to 5, Mean 0.35 → 0.97, Min 0.34 → 0.96. At r = 5 separable
-  is 6× cheaper than the full kernel.
-- The highest demand in the suite is 28 GB/s, Min and Mean at r = 1, and
-  even there throughput rises with the raster size rather than meeting
-  a ceiling.
-- NEON is worth 3.3–6.0× over scalar, more than its four lanes, because
-  the scalar kernels accumulate through memory a term at a time (the
-  canonical order, bounds-check free) where the lanes hold four
-  accumulators in registers.
-- One row was labelled cache-bound, CorrelateR2 unmasked at 16384², on
-  three samples that spread 45%; five more had a median within 20% of
-  the 256² figure. A laptop cannot pin a thread to a core.
+- Correlate costs what its products cost: 0.93, 1.88, 3.36 and 7.95 ns
+  per cell at r = 1, 2, 3 and 5, a flat 0.066–0.075 ns per product from
+  r = 2 (0.053–0.064 on NEON), so its throughput falls as (2r+1)² and its
+  memory demand with it, from 8.6 GB/s at r = 1 to 1.0 at r = 5.
+- The separable forms grow linearly: Gaussian 0.71 → 1.66 ns per cell
+  from r = 1 to 5, Mean 0.70 → 1.59, Min 0.80 → 2.38. At r = 5 separable
+  is 4.8× cheaper than the full kernel (6× on NEON).
+- The highest demand in the suite is 14.9 GB/s (Mean and Gaussian at
+  r = 1, 1024²), under a core's 22.
+- AVX2 is worth 3.0–5.4× over scalar, NEON 3.3–6.0×: more than the lanes
+  alone would give, because the scalar kernels accumulate through memory
+  a term at a time (the canonical order, bounds-check free) where the
+  lanes hold several accumulators in registers. Eight lanes give no more
+  than four; the M4's core is 1.2–2.5× faster in absolute terms.
+- **The exception: a 64 KiB row stride.** At 16384², and not at 8192²,
+  12288², 16320² or 16448², Gaussian, Mean and Min at r = 5 run at
+  42–56% of their 4096² speed on AVX2 (Gaussian 602 → 252 M cells/s),
+  moving about 2 GB/s; r = 3 loses 6–18% and r ≤ 2 at most 7%. Scalar and
+  NEON do not show it. `stratabench` labels those rows
+  memory-bandwidth-bound by its rule; they are not. It is consistent with
+  L2 set conflicts on Zen 2 (8-way, sets repeating every 64 KiB): a
+  column pass over 2r+1 rows 64 KiB apart holds them all in one set.
+  Any raster whose row is a multiple of 64 KiB is exposed.
 
 So workers should scale these operations as they scale Slope (§26), and
 further, since they ask for less bandwidth per core; that is not
-measured yet. The AVX2 run on the Zen 2 desktop, the suite's headline
-machine, is pending, and is where the §28 classes are rendered between
-the markers and checked by `TestResultsMatch`.
+measured yet.
 
 Status: done: `focal` (Correlate, Convolve, CorrelateSeparable,
 Gaussian, Mean, Min, Max, plain, Tiled and Chunked), `internal/focalrow`
-(scalar, AVX2, NEON), the §23 matrix entries, `benchmarks/focal` with an
-Apple M4 NEON run, and the acceptance checks. The `chunkJob.spanSize`
-fix is in. Open: the Zen 2 AVX2 benchmark run, which is the suite's
-headline machine (§38); a focal median (sorting networks up to 5×5, a
-selection algorithm beyond); statistics over valid cells only, with the
+(scalar, AVX2, NEON), the §23 matrix entries, `benchmarks/focal` with
+AVX2 (Zen 2) and NEON (Apple M4) runs, and the acceptance checks. The
+`chunkJob.spanSize` fix is in. Open: the 64 KiB-stride slowdown of the
+SIMD column pass at r ≥ 3 (block the pass across the width, or offset
+the rows it holds, and confirm the cause with counters); a focal median
+(sorting networks up to 5×5, a selection algorithm beyond); statistics over valid cells only, with the
 interface extension above; van Herk/Gil-Werman for Min and Max at large
 radii; rectangular and per-axis radii, whose erosion would need to
 follow the footprint; and focal kernels as `Pipeline` stages.
@@ -3636,21 +3644,27 @@ worker count gives the plain call's bits (`TestTiledAndChunkedMatch`,
 
 ### Measured
 
-[`benchmarks/resample/RESULTS.md`](benchmarks/resample/RESULTS.md), on an
-Apple M4 with NEON; the AVX2 run on the Zen 2 machine is still to do.
+[`benchmarks/resample/RESULTS.md`](benchmarks/resample/RESULTS.md): AVX2
+on the Zen 2 desktop, the suite's headline machine, and NEON on an Apple
+M4. Figures below are AVX2 at 4096² unless marked.
 
-- **Compute-bound, as §28 predicted:** every method at every scale
-  (2×, 4×, ½, 1/1.37) holds its throughput from 256² to the largest size,
-  asking 2–8 GB/s; the taps, not the memory, are the limit.
-- **Separable against direct:** the passes beat `Direct2D` by 3.3–6.5×
-  in the same scalar code (Cubic ×2 335 against 73.5 M cells/s at 4096²,
-  Lanczos ×2 265 against 40.6, Lanczos ½ 72.8 against 13.2) and by
-  11–15× once they vectorise, which the direct form cannot without a
-  gather. The two give the same bits, so nothing is traded for it.
-- **SIMD:** NEON gives 2.0–3.3× on the interpolating methods (Average ×2
-  1900 M cells/s, Bilinear ×2 1279, Lanczos ×2 596, Lanczos ½ 144) and
-  nothing to Nearest, a copy at about 1 G cells/s. AVX2's eight lanes are
-  expected to give more; the Zen 2 run will say.
+- **Compute-bound, as §28 predicted,** on both machines: every method at
+  every scale (2×, 4×, ½, 1/1.37) holds its throughput from 256² to the
+  largest size, asking at most 7.7 GB/s on AVX2 (2–8 on NEON); the taps,
+  not the memory, are the limit.
+- **Separable against direct:** the passes beat `Direct2D` by 3.3–6.4×
+  in the same scalar code (Cubic ×2 184 against 36.2 M cells/s, Lanczos
+  ×2 138 against 21.5, Lanczos ½ 35.8 against 7.1) and by 8.7–17× once
+  they vectorise, which the direct form cannot without a gather. NEON
+  gave the same shape (3.3–6.5×, 11–15×). The two give the same bits, so
+  nothing is traded for it.
+- **SIMD:** AVX2 gives 2.3–3.2× on the interpolating methods (Average ×2
+  1105 M cells/s, Bilinear ×2 811, Lanczos ×2 362, Lanczos ½ 100) and
+  nothing to Nearest, a copy at about 400 M cells/s. That is no more than
+  NEON's 2.0–3.3× on four lanes, against the expectation that eight
+  lanes would give more: lane width is not what limits the passes. The
+  M4's faster core runs them 1.6–1.7× faster in absolute terms (Lanczos
+  ×2 596, Average ×2 1900, Nearest about 1 G cells/s).
 - **Masks:** a source mask with 10% of cells invalid at random, which
   puts an invalid cell in every footprint, costs 5–9×: three horizontal
   passes, the counts and a per-cell finish. Clustered NoData costs only
