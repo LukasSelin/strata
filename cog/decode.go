@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/lzw"
 	"github.com/klauspost/compress/zlib"
 	"github.com/klauspost/compress/zstd"
@@ -375,21 +374,14 @@ func decompress(scheme uint64, data, dst []byte, want int) ([]byte, error) {
 		return unpackBits(data, want)
 	case compressionDeflate, compressionDeflate2:
 		// A zlib stream: the header is checked here and the Deflate
-		// data inflated raw. Decoding stops at the block's size, so it
-		// never reaches the Adler-32 trailer, and a zlib reader would
-		// only compute a checksum it never compares.
+		// data inflated raw, whole, into dst (see inflate). Decoding
+		// stops at the block's size, so it never reaches the Adler-32
+		// trailer, and a zlib reader would only compute a checksum it
+		// never compares.
 		if err := zlibHeader(data); err != nil {
 			return nil, err
 		}
-		d := inflaters.Get().(*inflater)
-		defer inflaters.Put(d)
-		d.src.Reset(data[2:])
-		if d.fr == nil {
-			d.fr = flate.NewReader(&d.src)
-		} else if err := d.fr.(flate.Resetter).Reset(&d.src, nil); err != nil {
-			return nil, err
-		}
-		return readInto(d.fr, dst)
+		return inflate(dst, data[2:])
 	case compressionLZW:
 		if len(data) >= 2 && data[0] == 0 && data[1]&1 != 0 {
 			// Old-style LZW, from libtiff before 5.0: codes least
@@ -453,21 +445,15 @@ func readInto(r io.Reader, dst []byte) ([]byte, error) {
 	return dst[:n], nil
 }
 
-// The decoders keep tables and windows between blocks, so they are
-// pooled rather than made per block, with the reader they read from.
-type inflater struct {
-	src bytes.Reader
-	fr  io.ReadCloser // nil until first used
-}
-
+// The LZW decoder keeps its tables between blocks, so it is pooled
+// rather than made per block, with the reader it reads from.
 type unlzw struct {
 	src bytes.Reader
 	lr  lzw.Reader
 }
 
 var (
-	inflaters = sync.Pool{New: func() any { return new(inflater) }}
-	unlzws    = sync.Pool{New: func() any {
+	unlzws = sync.Pool{New: func() any {
 		d := new(unlzw)
 		d.lr.SetAldusCompatible(true) // libtiff's LZW; it survives Reset
 		return d
