@@ -281,10 +281,22 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	if isFloat32 && spb == 1 && im.predictor == predictorFloat {
 		// The common float COG: the predictor's byte planes go straight
 		// into the samples, without being put back into data first.
+		v := newValidator(float32Test(nd), n)
 		for r := range rows {
-			floatPredictorRow32(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
+			planesRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
+			v.upto(b.vals, (r+1)*im.blockW)
 		}
-		b.valid = float32Validity(b.vals, nd)
+		b.valid = v.finish(b.vals)
+		return b, nil
+	}
+	if isFloat32 && spb == 1 && im.predictor == predictorNone && c.order == binary.LittleEndian {
+		// The samples are the data's bytes: a copy per row.
+		v := newValidator(float32Test(nd), n)
+		for r := range rows {
+			copyFloat32(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes], 1, 0)
+			v.upto(b.vals, (r+1)*im.blockW)
+		}
+		b.valid = v.finish(b.vals)
 		return b, nil
 	}
 	first := 0
@@ -299,13 +311,21 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 			// One band in native order: the horizontal predictor is
 			// undone as the samples are written, in one pass per row.
 			pred := im.predictor == predictorHorizontal
+			v := newValidator(intTest(nd), n)
 			for r := range rows {
-				intRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes], im.bits, signed, pred)
+				vals, row := b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes]
+				if im.bits == 16 {
+					uint16Row(vals, row, signed, pred)
+				} else {
+					intRow(vals, row, im.bits, signed, pred)
+				}
+				v.upto(b.vals, (r+1)*im.blockW)
 			}
-		} else {
-			toLittleEndian(data, im, c.order, rowBytes)
-			convertInts(b.vals, data, im.bits, signed, spb, first)
+			b.valid = v.finish(b.vals)
+			return b, nil
 		}
+		toLittleEndian(data, im, c.order, rowBytes)
+		convertInts(b.vals, data, im.bits, signed, spb, first)
 		b.valid = exactValidity(b.vals, nd)
 		return b, nil
 	}
