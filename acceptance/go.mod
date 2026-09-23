@@ -12,9 +12,6 @@ require (
 	github.com/LukasSelin/strata/cog v0.0.0
 )
 
-require (
-	github.com/klauspost/compress v1.20.0 // indirect
-	golang.org/x/image v0.45.0 // indirect
-)
+require github.com/klauspost/compress v1.20.0 // indirect
 
 replace github.com/LukasSelin/strata/cog => ../cog

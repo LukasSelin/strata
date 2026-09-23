@@ -243,7 +243,7 @@ func (s *Source) ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y 
 // block returns the decoded block at (bx, by), through the cache.
 func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 	idx := s.im.blockIndex(bx, by, s.band)
-	read := s.f.c.readFull
+	var read func(off, n uint64) ([]byte, error) // nil: read into a scratch buffer
 	if s.f.shared != nil && s.im.planar == planarChunky {
 		read = func(off, n uint64) ([]byte, error) {
 			return s.f.shared.get(ctx, blockKey{s.level, idx}, func() ([]byte, error) { return s.f.c.readFull(off, n) })

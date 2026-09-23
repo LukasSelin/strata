@@ -325,7 +325,8 @@ What it does not cover:
 - files GDAL did not write: other writers' quirks, such as old-style LZW
   or odd strip layouts;
 - compressions the reader refuses (JPEG, WebP, LERC);
-- decode speed, which nothing here measures yet.
+- decode speed, which [`benchmarks/cog/`](../benchmarks/cog/RESULTS.md)
+  measures against GDAL.
 
 ### Over HTTP: coghttpcheck.sh
 
