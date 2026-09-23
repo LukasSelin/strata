@@ -29,13 +29,14 @@ var (
 	cellPool slab[float32]
 	bitPool  slab[uint64]
 	viewPool slab[raster.Float32Raster]
+	runPool  slab[[]float32]
 )
 
 // poisonScratch makes every block handed out be filled with values a
 // correct kernel never reads before writing: NaN cells, alternating
-// bits and garbage views. Tests set it, so that a kernel relying on
-// fresh or zeroed scratch fails there rather than on a pool miss in
-// production.
+// bits, garbage views and nil runs. Tests set it, so that a kernel
+// relying on fresh or zeroed scratch fails there rather than on a pool
+// miss in production.
 var poisonScratch bool
 
 // slab is a set of pools of []T by size class. A block's capacity is
@@ -98,7 +99,7 @@ func (e *job) allocScratch(w, h int) {
 		return
 	}
 	need := sk.Scratch(w, h)
-	if need.Cells < 0 || need.Words < 0 || need.Views < 0 {
+	if need.Cells < 0 || need.Words < 0 || need.Views < 0 || need.Runs < 0 {
 		panic(fmt.Sprintf("engine: kernel asked for negative scratch %+v", need))
 	}
 	for i := range e.workers {
@@ -116,15 +117,20 @@ func (e *job) allocScratch(w, h int) {
 			wk.views = viewPool.get(need.Views)
 			s.Views = (*wk.views)[:need.Views:need.Views]
 		}
+		if need.Runs > 0 {
+			wk.runs = runPool.get(need.Runs)
+			s.Runs = (*wk.runs)[:need.Runs:need.Runs]
+		}
 		if poisonScratch {
 			poison(s)
 		}
 	}
 }
 
-// releaseScratch returns every worker's scratch to the pools. Views are
-// cleared first: a Pipeline leaves views of the caller's rasters in
-// them, and a pooled block must not keep those rasters alive.
+// releaseScratch returns every worker's scratch to the pools. Views and
+// runs are cleared first: a Pipeline leaves views of, and slices into,
+// the caller's rasters in them, and a pooled block must not keep those
+// rasters alive.
 func (e *job) releaseScratch() {
 	for i := range e.workers {
 		wk := &e.workers[i]
@@ -138,7 +144,11 @@ func (e *job) releaseScratch() {
 			clear((*wk.views)[:cap(*wk.views)])
 			viewPool.put(wk.views)
 		}
-		wk.cells, wk.bits, wk.views = nil, nil, nil
+		if wk.runs != nil {
+			clear((*wk.runs)[:cap(*wk.runs)])
+			runPool.put(wk.runs)
+		}
+		wk.cells, wk.bits, wk.views, wk.runs = nil, nil, nil, nil
 		wk.kscratch = Scratch{}
 	}
 }
@@ -156,4 +166,5 @@ func poison(s *Scratch) {
 	for i := range s.Views {
 		s.Views[i] = junk
 	}
+	clear(s.Runs)
 }

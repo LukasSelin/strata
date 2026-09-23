@@ -103,6 +103,10 @@ func BenchmarkRowWidth(b *testing.B) {
 		{"curvature-profile", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvProfile) }},
 		{"curvature-plan", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvPlan) }},
 		{"curvature-mean", func(n int) { ZTCurvatureRow(dst[:n], rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, CurvMean) }},
+		{"tri-riley", func(n int) { RuggednessRow(dst[:n], rows[0], rows[1], rows[2], RugTRIRiley) }},
+		{"tri-wilson", func(n int) { RuggednessRow(dst[:n], rows[0], rows[1], rows[2], RugTRIWilson) }},
+		{"tpi", func(n int) { RuggednessRow(dst[:n], rows[0], rows[1], rows[2], RugTPI) }},
+		{"roughness", func(n int) { RuggednessRow(dst[:n], rows[0], rows[1], rows[2], RugRoughness) }},
 	}
 	b.Logf("backend: %s", Backend())
 	for _, op := range ops {

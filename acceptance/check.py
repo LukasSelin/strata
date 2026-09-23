@@ -29,6 +29,19 @@ float64 numpy:
         mean    = -((1 + q^2) r - 2pqs + (1 + p^2) t) / (2 (1 + g)^1.5)
     Profile and plan are undefined on flat cells (p = q = 0); strata
     documents 0 there.
+  * ruggedness, over the eight neighbours of the centre e:
+        TRI (Riley)    = sqrt(sum (n - e)^2)
+        TRI (Wilson)   = sum |n - e| / 8
+        TPI            = e - sum n / 8
+        roughness      = max - min of all nine cells
+    These are checked for exact equality, not within a tolerance: strata
+    documents that it rounds exactly as GDAL's gdaldem does
+    (apps/gdaldem_lib.cpp, float32 input), so the reference is that
+    source's arithmetic in numpy: each n - e rounded to float32, sums
+    folded left to right in row-major order in float32, "/ 8" as
+    "* 0.125f", and Riley's squares, sum and root in float64 before one
+    rounding to float32. The plane also checks all four against their
+    closed forms in float64 (check 3).
 
 The focal operations are checked against their definitions as shifted
 sums of the float32 input, in float64:
@@ -171,6 +184,38 @@ def zt(z, cx, cy):
 
 
 CURVATURES = ("curvature_profile", "curvature_plan", "curvature_mean")
+
+RUGGEDNESS = ("ruggedness_tri", "ruggedness_triwilson", "ruggedness_tpi", "ruggedness_roughness")
+
+
+def ruggedness(op, z):
+    """A ruggedness measure of z, with gdaldem's float32 arithmetic, as
+    float64 holding float32 values, NaN on the border."""
+    z = z.astype(np.float32)
+    out = np.full(z.shape, np.nan)
+    win = [z[j : j + z.shape[0] - 2, i : i + z.shape[1] - 2] for j in range(3) for i in range(3)]
+    e, nb = win[4], win[:4] + win[5:]
+    if op == "ruggedness_tri":
+        s = np.zeros(e.shape)
+        for n in nb:
+            d = (n - e).astype(np.float64)  # the difference rounds in float32
+            s = s + d * d
+        v = np.sqrt(s).astype(np.float32)
+    elif op == "ruggedness_triwilson":
+        s = np.abs(nb[0] - e)
+        for n in nb[1:]:
+            s = s + np.abs(n - e)
+        v = s * np.float32(0.125)
+    elif op == "ruggedness_tpi":
+        s = nb[0]
+        for n in nb[1:]:
+            s = s + n
+        v = e - s * np.float32(0.125)
+    else:
+        v = np.max(win, axis=0) - np.min(win, axis=0)
+    assert v.dtype == np.float32, v.dtype
+    out[1:-1, 1:-1] = v
+    return out
 
 
 def curvature(op, z, cx, cy):
@@ -369,6 +414,13 @@ for case in MAN["rasters"]:
         z = np.where(dem_mask, z, np.nan)  # NoData must not enter the maths
     got, _ = load(case["out"])
     out_mask = load_mask(case.get("out_mask"))
+    if op in RUGGEDNESS:
+        ref = ruggedness(op, z)
+        keep = defined(out_mask) & np.isfinite(ref)
+        bad = int((got[keep] != ref[keep]).sum())
+        record(f"{case['name']} == gdaldem's arithmetic", bad == 0,
+               f"{bad} differing cells over {int(keep.sum())}")
+        continue
     ref, tol = expected(op, z, case)
     if ref is None:
         continue
@@ -460,13 +512,32 @@ for case in MAN["rasters"]:
 PLANE_A, PLANE_B = 0.3, -0.7  # rise per column, rise per row (see main.go)
 
 for case in MAN["rasters"]:
-    if case["surface"] != "plane" or case["op"] not in ("slope_deg", "aspect") + CURVATURES:
+    if case["surface"] != "plane" or case["op"] not in ("slope_deg", "aspect") + CURVATURES + RUGGEDNESS:
         continue
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
     tdx, tdy = PLANE_A / cx, PLANE_B / cy
     got, _ = load(case["out"])
     keep = defined(None)
+    if case["op"] in RUGGEDNESS:
+        # Neighbour (i, j) differs from the centre by a*i + b*j, so the
+        # squares sum to 6a^2 + 6b^2, the absolute differences are |a|,
+        # |b|, |a + b| and |a - b| twice each, the neighbours average to
+        # the centre, and the window spans 2|a| + 2|b|. Each float32
+        # difference is off by at most an ulp of the elevations, and the
+        # sums add seven roundings each.
+        a, b = PLANE_A, PLANE_B
+        want = {
+            "ruggedness_tri": np.sqrt(6 * a * a + 6 * b * b),
+            "ruggedness_triwilson": 2 * (abs(a) + abs(b) + abs(a + b) + abs(a - b)) / 8,
+            "ruggedness_tpi": 0.0,
+            "ruggedness_roughness": 2 * abs(a) + 2 * abs(b),
+        }[case["op"]]
+        z, _ = load(case["dem"])
+        tol = 16 * EPS * np.nanmax(np.abs(z))
+        err = np.abs(got[keep] - want).max()
+        record(f"{case['name']} = analytic {want:.4f}", err <= tol, f"max error {err:.2e}, tolerance {tol:.2e}")
+        continue
     if case["op"] in CURVATURES:
         # A plane has no curvature: whatever strata reports is the
         # rounding of the float32 elevations, which the derived tolerance
@@ -701,6 +772,9 @@ if WANT_PNG:
         ("hill-curvature_profile-plain.f32", "RdBu", None, None),
         ("hill-curvature_plan-plain.f32", "RdBu", None, None),
         ("hill-curvature_mean-plain.f32", "RdBu", None, None),
+        ("noisy-ruggedness_tri-plain.f32", "viridis", None, None),
+        ("noisy-ruggedness_tpi-plain.f32", "RdBu", None, None),
+        ("noisy-ruggedness_roughness-plain.f32", "viridis", None, None),
     ]:
         a, _ = load(name)
         a = np.where(a == FILL, np.nan, a)

@@ -1,7 +1,9 @@
 // Package terrain computes terrain derivatives of elevation rasters:
-// Gradient, Slope, Aspect and Hillshade from Horn's 3×3 gradient, and
+// Gradient, Slope, Aspect and Hillshade from Horn's 3×3 gradient,
 // profile, plan and mean Curvature from the Zevenbergen–Thorne quadratic
-// fitted to the same 3×3 window.
+// fitted to the same 3×3 window, and Ruggedness (the terrain ruggedness
+// index, topographic position index and roughness) from the window's
+// differences, bit-identical to GDAL gdaldem's.
 //
 // # Conventions
 //
@@ -20,9 +22,10 @@
 //
 // Cell sizes are positive ground distances in the elevation's units, not
 // signed geotransform resolutions: pass abs(ResolutionY) for a north-up
-// raster.Grid. A ZFactor multiplies elevations before differencing, for
-// elevations in different units from the cell size; gdaldem's -s scale
-// corresponds to ZFactor 1/scale.
+// raster.Grid. A grid in a geographic CRS has cells in degrees, not ground
+// distances: project it first (DESIGN.md §36). A ZFactor multiplies
+// elevations before differencing, for elevations in different units from
+// the cell size; gdaldem's -s scale corresponds to ZFactor 1/scale.
 //
 // # Edges
 //
@@ -36,16 +39,16 @@
 //
 // # Tiled execution
 //
-// SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled and
-// CurvatureTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
+// SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled, CurvatureTiled
+// and RuggednessTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
 // from the DEM, so the result is bit-for-bit the plain function's for
 // every tiling and worker count. The plain functions run the same kernels
 // as one tile with one worker, on the calling goroutine.
 //
-// SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked and
-// CurvatureChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked,
+// CurvatureChunked and RuggednessChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
 // files, run in Workers × tile buffers (DESIGN.md §27). They give the
 // same bits as the plain functions on the same data, for every tiling and
@@ -58,8 +61,8 @@
 // flows through IEEE arithmetic. Values that are defined but degenerate,
 // such as the aspect of a flat cell, are ordinary valid values too. If the DEM has a mask, an output cell is
 // valid iff it is interior and all nine cells of its 3×3 neighbourhood are
-// valid (the centre too, which Curvature reads although Horn gives it
-// zero weight). Data under
+// valid (the centre too, which Curvature and Ruggedness read although
+// Horn gives it zero weight). Data under
 // an invalid output cell is unspecified. The output masks are computed
 // with word-level operations, separately from the arithmetic.
 //
@@ -79,7 +82,8 @@
 // cell sizes and z-factors so far apart that ZFactor/(8·CellSize) or
 // ZFactor/(8·CellSizeY) overflows or underflows float32 (for Curvature,
 // ZFactor/(2·CellSize), ZFactor/CellSize², ZFactor/(4·CellSize·CellSizeY)
-// and their CellSizeY counterparts). The operand
+// and their CellSizeY counterparts). Ruggedness has no cell size or
+// ZFactor, and panics only on an unknown RuggednessType. The operand
 // checks are shared with the Tiled functions, and their panic messages
 // start with "engine:". The Tiled functions return an error only for
 // cancellation, and the Chunked functions also for errors of their

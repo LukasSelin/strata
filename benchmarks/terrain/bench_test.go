@@ -86,6 +86,11 @@ var (
 	opCurvature = op{1, func(dem raster.Float32Raster, outs []raster.Float32Raster) {
 		terrain.Curvature(outs[0], dem, terrain.CurvatureOptions{CellSize: cellSize})
 	}}
+	// Riley's TRI, the ruggedness type with the most work per cell: its
+	// sum and root are in float64.
+	opRuggedness = op{1, func(dem raster.Float32Raster, outs []raster.Float32Raster) {
+		terrain.Ruggedness(outs[0], dem, terrain.RuggednessOptions{})
+	}}
 )
 
 func (o op) workload(f *fixture, c suite.Case) suite.Workload {
@@ -109,11 +114,12 @@ func (o op) bench(b *testing.B) {
 	})
 }
 
-func BenchmarkGradient(b *testing.B)  { opGradient.bench(b) }
-func BenchmarkSlope(b *testing.B)     { opSlope.bench(b) }
-func BenchmarkAspect(b *testing.B)    { opAspect.bench(b) }
-func BenchmarkHillshade(b *testing.B) { opHillshade.bench(b) }
-func BenchmarkCurvature(b *testing.B) { opCurvature.bench(b) }
+func BenchmarkGradient(b *testing.B)   { opGradient.bench(b) }
+func BenchmarkSlope(b *testing.B)      { opSlope.bench(b) }
+func BenchmarkAspect(b *testing.B)     { opAspect.bench(b) }
+func BenchmarkHillshade(b *testing.B)  { opHillshade.bench(b) }
+func BenchmarkCurvature(b *testing.B)  { opCurvature.bench(b) }
+func BenchmarkRuggedness(b *testing.B) { opRuggedness.bench(b) }
 
 // TestAllocs checks every case on a small raster against a bound that
 // does not grow with the raster: the plain functions run through the
@@ -124,6 +130,7 @@ func TestAllocs(t *testing.T) {
 	const limit = 16
 	ops := map[string]op{
 		"Gradient": opGradient, "Slope": opSlope, "Aspect": opAspect, "Hillshade": opHillshade, "Curvature": opCurvature,
+		"Ruggedness": opRuggedness,
 	}
 	for name, o := range ops {
 		f := newFixture(64, o.outputs)

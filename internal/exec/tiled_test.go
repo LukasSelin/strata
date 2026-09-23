@@ -152,6 +152,15 @@ var adapters = []adapter{
 		},
 	},
 	{
+		name: "ruggedness-tri", inputs: 1, outputs: 1,
+		direct: func(dst, src []raster.Float32Raster) {
+			terrain.Ruggedness(dst[0], src[0], terrain.RuggednessOptions{})
+		},
+		tiled: func(ctx context.Context, dst, src []raster.Float32Raster, o engine.Options) error {
+			return terrain.RuggednessTiled(ctx, dst[0], src[0], terrain.RuggednessOptions{}, o)
+		},
+	},
+	{
 		name: "gradient", inputs: 1, outputs: 2,
 		direct: func(dst, src []raster.Float32Raster) {
 			terrain.Gradient(dst[0], dst[1], src[0], terrain.GradientOptions{CellSize: 7})

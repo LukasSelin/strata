@@ -1,13 +1,22 @@
 # Register-level fusion spike: results
 
 What register-level operation fusion (DESIGN.md §29) adds on top of the
-tile-level `Pipeline` (§52), measured before building a generator for it.
-The workload is §52's six-factor product
-dst = ((((a0·a1)·a2)·a3)·a4)·a5, computed three ways: five chained
-`algebra.MulTiled` calls, one `exec.Pipeline`, and the hand-written
-`Fused` kernel (one loop, six loads, five multiplies, one store).
-All three are bit-identical (`TestFormsAgree`). Metrics and names are
-defined in [`../README.md`](../README.md) and [`doc.go`](doc.go).
+tile-level `Pipeline` (§52). The workload is §52's six-factor product
+dst = ((((a0·a1)·a2)·a3)·a4)·a5, computed four ways: five chained
+`algebra.MulTiled` calls, one staged `exec.Pipeline`, the same
+`Pipeline` **lowered** to a `vec.Chain` (§29, as the engine now ships
+it), and the hand-written `Fused` kernel (one loop, six loads, five
+multiplies, one store). All four are bit-identical (`TestFormsAgree`).
+Metrics and names are defined in [`../README.md`](../README.md) and
+[`doc.go`](doc.go).
+
+> **Two runs, two machines.** The Zen 2 headline and medians below were
+> taken before §29 was built, when this was a spike asking whether to
+> build it, and so have no `lowered` column; they also predate the
+> pooled scratch that their own 1024² caveat asked for. The Apple M4
+> section at the end has all four forms on the current tree. Neither
+> supersedes the other — they are different machines, and the Zen 2 run
+> with a `lowered` column is still owed.
 
 ## Headline
 
@@ -36,6 +45,13 @@ So a fusion generator for pointwise chains is not worth building on this
 evidence. Reasons to measure again: stencil or longer chains, whose
 intermediates would not fit in cache, and the in-cache sizes once the
 per-call scratch allocation is gone.
+
+*Since written:* the per-call scratch allocation is gone (it comes from a
+pool), and §29 was built — not as a generator, but as a lowering the
+engine applies at run time. On an Apple M4 that lowering is worth
+9–53% over the staged pipeline, which is a good deal more than 5%; see
+[Apple M4, with the lowered form](#apple-m4-with-the-lowered-form). The
+question this section answered is therefore still open on Zen 2.
 
 ## Machine and method
 
@@ -214,3 +230,45 @@ above.
 | on | simd | 1 | strips | 1059 | 939 | 1884 | 2.01× |
 | on | simd | 10 | 256x256 | 644 | 540 | 1164 | 2.16× |
 | on | simd | 10 | strips | 1396 | 1854 | 3096 | 1.67× |
+
+## Apple M4, with the lowered form
+
+A second machine, and the first run with the `lowered` form — the
+`Pipeline` as the engine ships it, lowered to a `vec.Chain` so the
+running product is carried in registers rather than through scratch.
+
+| | |
+|---|---|
+| CPU | Apple M4, 10 cores, NEON |
+| Go | go1.27.0 darwin/arm64, **`GOEXPERIMENT=simd`** |
+| Run | `GOEXPERIMENT=simd go test ./benchmarks/fusion -run '^$' -bench . -strata.sizes 4096 -count 3`, not pinned, normal priority |
+
+Mcells/s, medians of three, 4096², mask off:
+
+| workers | tiles | Chained | Pipeline | Lowered | Fused | Lowered ÷ Pipeline | Lowered ÷ Fused |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | strips | 1170 | 1171 | 1562 | 2079 | 1.33× | 0.75 |
+| 1 | 256x256 | 209 | 274 | 354 | 437 | 1.29× | 0.81 |
+| 10 | strips | 1581 | 2928 | 3188 | 3502 | 1.09× | 0.91 |
+| 10 | 256x256 | 925 | 1159 | 1769 | 1961 | 1.53× | 0.90 |
+
+- **The lowering is worth 9–53% over the staged pipeline**, and collects
+  three quarters to nine tenths of what the hand-written kernel gets.
+  The remaining 10–25% is the lane loop's per-operation dispatch, which
+  is what a generator would remove; that is now a price rather than a
+  guess.
+- **This machine has far more memory bandwidth per core than the Zen 2**,
+  so the same product is much less memory-bound on it and has
+  correspondingly more to gain from not moving the intermediates at all.
+  That, and the pooled scratch, are why these ratios are larger than the
+  "about 5%" above.
+- **Carrying four vectors at a time is what makes it work.** One vector
+  per pass of the operation loop measured 840 Mcells/s in the
+  1-worker/strips case — *slower* than the staged pipeline's 1171 —
+  because dispatching an operation costs about what performing it costs.
+  Four vectors took the same case to 1562.
+
+Caveats: `-count 3` on a machine that was not quiet, so a few percent is
+inside the noise; one chain, of the cheapest possible stages; tiled only.
+The same caveats as above, and the same remedy — re-run under the
+README's conditions before quoting a figure.

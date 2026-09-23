@@ -58,6 +58,15 @@ func TestRowLengthPanics(t *testing.T) {
 	mustPanic(t, "unknown curvature kind", func() {
 		ZTCurvatureRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 6), 1, 1, 1, 1, 1, CurvMean+1)
 	})
+	mustPanic(t, "short ruggedness row", func() {
+		RuggednessRow(make([]float32, 4), make([]float32, 6), make([]float32, 5), make([]float32, 6), RugTPI)
+	})
+	mustPanic(t, "unknown ruggedness kind", func() {
+		RuggednessRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 6), RugRoughness+1)
+	})
+	mustPanic(t, "negative ruggedness kind", func() {
+		RuggednessRow(make([]float32, 4), make([]float32, 6), make([]float32, 6), make([]float32, 6), -1)
+	})
 	mustPanic(t, "dx/dy length", func() {
 		HornGradientRow(make([]float32, 4), make([]float32, 3), make([]float32, 6), make([]float32, 6), make([]float32, 6), 1, 1)
 	})
@@ -370,5 +379,46 @@ func TestHornGradientNearFlat(t *testing.T) {
 				check("dy", base, relief, i, dy[i], z(2, 0)-z(0, 0), z(2, 2)-z(0, 2), z(2, 1)-z(0, 1))
 			}
 		}
+	}
+}
+
+func TestRuggednessRowKnownWindows(t *testing.T) {
+	tiny := float32(math.Ldexp(1, -12))
+	cases := []struct {
+		name                          string
+		w                             [9]float32 // z1..z9, row-major
+		riley, wilson, tpi, roughness float32
+	}{
+		{"flat", [9]float32{7, 7, 7, 7, 7, 7, 7, 7, 7}, 0, 0, 0, 0},
+		{"3-4-5", [9]float32{3, 4, 0, 0, 0, 0, 0, 0, 0}, 5, 0.875, -0.875, 4},
+		{"pit", [9]float32{2, 2, 2, 2, -6, 2, 2, 2, 2}, float32(math.Sqrt(512)), 8, -8, 8},
+		{"spread", [9]float32{-1, 5, 2, 0, 3, -4, 1, 1, 9}, float32(math.Sqrt(16 + 4 + 1 + 9 + 49 + 4 + 4 + 36)), 3.375, 3 - 1.625, 13},
+		// Riley sums in float64: in float32, 1 + 7·2^-24 would be 1.
+		{"float64 sum", [9]float32{1, tiny, tiny, tiny, 0, tiny, tiny, tiny, tiny}, 1 + float32(math.Ldexp(1, -22)),
+			(1 + 7*tiny) * 0.125, -(1 + 7*tiny) * 0.125, 1},
+	}
+	for _, c := range cases {
+		r0, r1, r2 := c.w[0:3], c.w[3:6], c.w[6:9]
+		for kind, want := range []float32{c.riley, c.wilson, c.tpi, c.roughness} {
+			got := make([]float32, 1)
+			RuggednessRow(got, r0, r1, r2, RuggednessKind(kind))
+			if math.Float32bits(got[0]) != math.Float32bits(want) {
+				t.Errorf("%s kind %d: got %g (%#x), want %g (%#x)",
+					c.name, kind, got[0], math.Float32bits(got[0]), want, math.Float32bits(want))
+			}
+		}
+	}
+}
+
+func TestRoughnessNaNAndSignedZero(t *testing.T) {
+	nan, negZero := float32(math.NaN()), float32(math.Copysign(0, -1))
+	got := make([]float32, 1)
+	RuggednessRow(got, []float32{1, 2, 3}, []float32{4, nan, 6}, []float32{7, 8, 9}, RugRoughness)
+	if got[0] == got[0] {
+		t.Errorf("roughness with a NaN in the window = %g, want NaN", got[0])
+	}
+	RuggednessRow(got, []float32{0, negZero, 0}, []float32{negZero, 0, 0}, []float32{0, 0, negZero}, RugRoughness)
+	if math.Float32bits(got[0]) != 0 {
+		t.Errorf("roughness of signed zeros = %g (%#x), want +0", got[0], math.Float32bits(got[0]))
 	}
 }

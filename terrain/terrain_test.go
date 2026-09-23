@@ -176,6 +176,9 @@ var singleOutputOps = map[string]func(dst, dem raster.Float32Raster){
 	"aspect":    func(dst, dem raster.Float32Raster) { Aspect(dst, dem, AspectOptions{CellSize: 1}) },
 	"hillshade": func(dst, dem raster.Float32Raster) { Hillshade(dst, dem, HillshadeOptions{CellSize: 1}) },
 	"curvature": func(dst, dem raster.Float32Raster) { Curvature(dst, dem, CurvatureOptions{CellSize: 1}) },
+	"ruggedness": func(dst, dem raster.Float32Raster) {
+		Ruggedness(dst, dem, RuggednessOptions{Type: RuggednessRoughness})
+	},
 }
 
 func TestSmallRastersAreAllBorder(t *testing.T) {
@@ -294,6 +297,10 @@ func TestSIMDMatchesScalar(t *testing.T) {
 		"curvature-mean": func(f fixture) {
 			Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 30, CellSizeY: 20, Type: CurvatureMean})
 		},
+		"tri":        func(f fixture) { Ruggedness(f.out1, f.dem, RuggednessOptions{}) },
+		"tri-wilson": func(f fixture) { Ruggedness(f.out1, f.dem, RuggednessOptions{Type: RuggednessTRIWilson}) },
+		"tpi":        func(f fixture) { Ruggedness(f.out1, f.dem, RuggednessOptions{Type: RuggednessTPI}) },
+		"roughness":  func(f fixture) { Ruggedness(f.out1, f.dem, RuggednessOptions{Type: RuggednessRoughness}) },
 	}
 	for name, op := range ops {
 		for _, w := range []int{3, 4, 9, 10, 17, 63, 64, 65, 100} {
@@ -341,7 +348,7 @@ func TestValidityMatchesNaive(t *testing.T) {
 	for _, w := range []int{3, 62, 63, 64, 65, 66, 129} {
 		for _, extra := range []int{0, 1, 61} {
 			rng := rand.New(rand.NewPCG(uint64(w), uint64(extra)))
-			for op := range 4 {
+			for op := range 5 {
 				f := newFixture(rng, w, 6, extra, true, 0)
 				before := append([]uint64(nil), f.parentOut.Valid...)
 				outs := []raster.Float32Raster{f.out1}
@@ -355,6 +362,8 @@ func TestValidityMatchesNaive(t *testing.T) {
 					Hillshade(f.out1, f.dem, HillshadeOptions{CellSize: 1})
 				case 3:
 					Curvature(f.out1, f.dem, CurvatureOptions{CellSize: 1, Type: CurvaturePlan})
+				case 4:
+					Ruggedness(f.out1, f.dem, RuggednessOptions{Type: RuggednessTPI})
 				}
 
 				inWindow := make(map[int]bool)
@@ -493,6 +502,9 @@ func TestPanics(t *testing.T) {
 		{CellSize: 1e-20}, {CellSize: 1e25}, {CellSize: 1, CellSizeY: 1e-20}, {CellSize: 1e-10, ZFactor: 1e20},
 	} {
 		mustPanic(t, fmt.Sprintf("curvature options %+v", o), func() { Curvature(raster.NewFloat32Like(dem), dem, o) })
+	}
+	for _, o := range []RuggednessOptions{{Type: RuggednessRoughness + 1}, {Type: -1}} {
+		mustPanic(t, fmt.Sprintf("ruggedness options %+v", o), func() { Ruggedness(raster.NewFloat32Like(dem), dem, o) })
 	}
 	// Tiny but representable scale factors are fine.
 	Curvature(raster.NewFloat32Like(dem), dem, CurvatureOptions{CellSize: 1e10, ZFactor: 1e-10})

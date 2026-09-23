@@ -29,6 +29,29 @@ func TestGridWindow(t *testing.T) {
 	mustPanic(t, "must be positive", func() { g.Window(0, 0, 0, 1) })
 }
 
+func TestCRSMatches(t *testing.T) {
+	a, b, unknown := CRS{Code: "EPSG:25833"}, CRS{Code: "EPSG:4326"}, CRS{}
+	for _, c := range []struct {
+		x, y CRS
+		want bool
+	}{
+		{a, a, true},
+		{a, b, false},
+		{a, unknown, true},
+		{unknown, b, true},
+		{unknown, unknown, true},
+		// Codes are opaque: the same system under another spelling differs.
+		{a, CRS{Code: "epsg:25833"}, false},
+	} {
+		if got := c.x.Matches(c.y); got != c.want {
+			t.Errorf("%q.Matches(%q) = %v, want %v", c.x.Code, c.y.Code, got, c.want)
+		}
+		if got := c.y.Matches(c.x); got != c.want {
+			t.Errorf("%q.Matches(%q) = %v, want %v", c.y.Code, c.x.Code, got, c.want)
+		}
+	}
+}
+
 func TestDataset(t *testing.T) {
 	g := Grid{Width: 6, Height: 4, ResolutionX: 2, ResolutionY: -2}
 	r := NewFloat32Stride(6, 4, 8, seq(dataLen(6, 4, 8)))

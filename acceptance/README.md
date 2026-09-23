@@ -43,14 +43,14 @@ forms (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked`
 through raw float32 files on 4 workers). The focal cases are Correlate
 and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
 with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
-2, and Min and Max at radii 1 and 3. 600 checks come out of that
-(594 without scipy):
+2, and Min and Max at radii 1 and 3. 720 checks come out of that
+(714 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; focal results against their definition as shifted sums, Min and Max exactly | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
 | 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
-| 3 | The plane against its analytic slope, aspect and zero curvature | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
+| 3 | The plane against its analytic slope, aspect, zero curvature and closed-form ruggedness | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
 | 5 | Validity after a (2r+1)×(2r+1) erosion of the input mask, 3×3 for terrain | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
@@ -79,6 +79,12 @@ Florinsky's (2016) normal-section formulas, and from the textbook
 definitions of correlation and convolution (the latter
 scipy.ndimage's) — not from strata's code. `gdaldem` has no curvature
 mode, so for curvature this numpy reference is the only outside opinion.
+Ruggedness is the exception to "definitions, not code": strata documents
+that it rounds exactly as gdaldem does, so the reference is the
+arithmetic of gdaldem's source (`apps/gdaldem_lib.cpp`) transcribed into
+numpy, and the check is equality, not a tolerance. The plane's closed
+forms (check 3) and `gdalcheck.sh` judge the same results against the
+definitions and against gdaldem itself.
 
 ## Tolerances
 
@@ -138,6 +144,11 @@ mean divides by 24, not 25        yes      9
 radius-2 validity eroded 3x3      yes      7
 focal NoData leaking in           yes      3
 focal tile seam                   yes      2
+Riley and Wilson TRI swapped      yes      24
+TPI sign flipped                  yes      9
+roughness without the centre      yes      3
+one TRI cell one ulp off          yes      3
+TRI summed in float32             yes      9
 ```
 
 One plausible focal defect is out of reach: a Mean that multiplies by a
@@ -161,7 +172,8 @@ nothing has to be installed locally.
 ```
 
 It extracts a window, promotes it to Float32, runs `gdaldem
-slope/aspect/hillshade`, runs the same three through strata's
+slope/aspect/hillshade` and `gdaldem TRI` (Riley, and `-alg Wilson`),
+`TPI` and `roughness`, runs the same operations through strata's
 bounded-memory `Chunked` path ([gdal/main.go](gdal/main.go)), and
 differences them ([gdalcompare.py](gdalcompare.py)). Cell size and
 NoData come from GDAL's own header, not from a hard-coded guess.
@@ -230,6 +242,15 @@ slope × 1.00002  caught, 15× bound     caught, 28× bound
 On `noisy`, the 1.00002 drift passes the absolute `slope == gdaldem
 slope` check (max 7.9e-04° < 1e-3°); only the derived bound catches it.
 
+Ruggedness needs no reconciliation and gets no tolerance: strata's TRI,
+TRI Wilson, TPI and roughness must match gdaldem's in every bit of every
+cell that carries data. They did, with GDAL 3.14.0dev in the
+`ubuntu-small-latest` image, for the scalar and the AVX2 build, on a
+4096² window at (6000, 107000) of `Bok_andel.tif` (a 12.5 m Swedish
+beech-share raster, Int16, NoData -1; 16,760,836 cells) and on `noisy`
+(32,812 cells). `gdalsabotage.py` also moves one cell of each by a
+single ulp and confirms the comparison fails.
+
 `out-gdal/slope-difference.png` shows where the two disagree. It should
 be featureless speckle following the terrain texture; horizontal bands
 every `TileHeight` rows would mean a seam bug that a tolerance could
@@ -253,10 +274,10 @@ have hidden.
   diff -r out out-simd          # must be empty
   ```
 
-  On an AVX2 machine (checked on a Ryzen 9 3900X) all 101 files are
-  byte-identical, which is the SIMD claim in the top-level README tested
-  from outside the library. That run predates curvature, whose files
-  have not been diffed on AVX2 hardware yet. On a CPU without AVX2 the vector build falls
-  back to scalar and the comparison proves nothing.
+  On an AVX2 machine (checked on a Ryzen 9 3900X) all 759 files,
+  curvature and ruggedness included, are byte-identical, which is the
+  SIMD claim in the top-level README tested from outside the library. On
+  a CPU without AVX2 the vector build falls back to scalar and the
+  comparison proves nothing.
 * **Anything outside these operations.** Extending it means adding a
   case to `main.go` and a reference to `expected()` in `check.py`.

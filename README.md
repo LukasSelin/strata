@@ -105,7 +105,7 @@ bit-for-bit identical results for every tile size and worker count.
 | --------- | -------- |
 | `raster`  | `Float32Raster`, grids, windows, and the validity bitmap. |
 | `algebra` | Pointwise `Add`, `Sub`, `Mul`, `Min`, `Max`, `Clamp`, `Mask`, each allocation-free and writing into a caller-supplied destination. |
-| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`; and profile, plan and mean `Curvature` from the Zevenbergen–Thorne quadratic. |
+| `terrain` | Terrain derivatives from Horn's 3×3 gradient: `Gradient`, `Slope`, `Aspect`, `Hillshade`; profile, plan and mean `Curvature` from the Zevenbergen–Thorne quadratic; and `Ruggedness` (TRI, Riley or Wilson; TPI; roughness), bit-identical to gdaldem's. |
 | `focal`   | Neighbourhood operations of radius 1 to 8: `Correlate` and `Convolve` with a caller's weights, `CorrelateSeparable` (with `Gaussian` taps), and focal `Mean`, `Min`, `Max`. The same bits for every tile size, worker count and backend. |
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `resample` | Resamples between grids in the same CRS, gdalwarp's conventions: `Nearest`, `Bilinear`, `Cubic`, `Lanczos`, `Average`, with NoData renormalised as gdalwarp does. |
