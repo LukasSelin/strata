@@ -781,3 +781,74 @@ func TestSharedBlocks(t *testing.T) {
 		}
 	}
 }
+
+// TestSharedMaskBlocks reads a pixel-interleaved file whose per-band
+// transparency mask is pixel-interleaved too, so each band's source and
+// its mask source read through the File's shared cache: the image's and
+// the mask's blocks have the same indexes at the same level, and must not
+// be taken for each other. Each band has its own holes, and each block of
+// either image is read once for all bands.
+func TestSharedMaskBlocks(t *testing.T) {
+	rng := rand.New(rand.NewPCG(11, 12))
+	const w, h, bands, hole = 64, 48, 3, 7
+	st := sampleType{"uint16", sampleUint, 2}
+	isHole := func(x, y, b int) bool { return (3*x+y+5*b)%7 == 0 }
+	vals := make([][]float64, bands)
+	masks := make([][]float64, bands)
+	for b := range vals {
+		vals[b] = make([]float64, w*h)
+		masks[b] = make([]float64, w*h)
+		for i := range vals[b] {
+			v := randomValue(rng, st)
+			if v == hole {
+				v++
+			}
+			vals[b][i], masks[b][i] = v, 255
+			if isHole(i%w, i/w, b) {
+				vals[b][i], masks[b][i] = hole, 0 // checkWindow's NoData stands for the mask
+			}
+		}
+	}
+	for _, together := range []bool{false, true} {
+		sp := imageSpec{w: w, h: h, bands: bands, format: st.format, size: st.size, tiled: true,
+			blockW: 16, blockH: 16, planar: planarChunky, compression: compressionNone, vals: vals}
+		mask := imageSpec{w: w, h: h, bands: bands, format: sampleUint, size: 1, tiled: true,
+			blockW: 16, blockH: 16, planar: planarChunky, compression: compressionDeflate,
+			vals: masks, subfile: subfileMask}
+		file := fileSpec{order: binary.BigEndian, images: []imageSpec{sp, mask}}.write()
+		cr := &countingReader{r: bytes.NewReader(file)}
+		f, err := Open(cr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.masks[0] == nil || f.masks[0].bands != bands {
+			t.Fatalf("together %v: no per-band mask", together)
+		}
+		cr.n.Store(0)
+		var wg sync.WaitGroup
+		for b := range bands {
+			src, err := f.Source(SourceOptions{Band: b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !src.Masked() {
+				t.Fatalf("band %d not Masked", b)
+			}
+			read := func() {
+				for range 4 {
+					checkWindow(t, fmt.Sprintf("band %d", b), src, vals[b], w, 0, 0, w, h, true, hole)
+				}
+			}
+			if together {
+				wg.Go(read)
+			} else {
+				read()
+			}
+		}
+		wg.Wait()
+		blocks := int64(len(f.levels[0].offsets) + len(f.masks[0].offsets))
+		if got := cr.n.Load(); got != blocks {
+			t.Errorf("together %v: %d reads for %d blocks", together, got, blocks)
+		}
+	}
+}
