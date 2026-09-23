@@ -2,16 +2,18 @@ package cog
 
 import (
 	"bytes"
+	"compress/lzw"
 	"compress/zlib"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
-	"golang.org/x/image/tiff/lzw"
+	tifflzw "golang.org/x/image/tiff/lzw"
 
 	"github.com/LukasSelin/strata/raster"
 )
@@ -37,32 +39,94 @@ func (b *block) size() int64 {
 	return int64(4*len(b.vals) + 8*len(b.valid) + 64)
 }
 
-// noData is a NoData value prepared for comparison in the samples'
-// native type: GDAL_NODATA is a decimal string, and a value that the
-// type cannot hold exactly matches no cell.
+// noData is a NoData value prepared as GDAL's NoData mask band compares
+// it with samples (gcore/gdalnodatamaskband.cpp):
+//
+//   - An integer type has a NoData value only if the value is within the
+//     type's range. It is then truncated toward zero, as C++'s cast does,
+//     and compared exactly: NoData 12.5 on bytes marks the cells holding
+//     12.
+//   - Floats compare with ARE_REAL_EQUAL: equal, or closer than
+//     2·FLT_EPSILON·|a+b|. That is about two float32 ulps for float32
+//     samples, and the same relative width, far more ulps, for float64.
+//     A NaN NoData matches every NaN.
+//   - A float32 file's NoData is first rounded to float32 by the GTiff
+//     driver, after moving a value within 1e-10 of ±MaxFloat32 onto it
+//     (GDALAdjustNoDataCloseToFloatMax). A value beyond float32's range
+//     rounds to ±Inf and matches infinite cells.
 type noData struct {
-	set bool
-	nan bool    // NoData is NaN: any NaN matches
-	cmp float64 // the native value, as a float64; unmatched if !set
+	set   bool
+	nan   bool    // NoData is NaN: any NaN matches
+	cmp   float64 // the value: integral for integers, float32-exact for float32
+	cmp32 float32
 }
 
-// prepareNoData converts GDAL's NoData value to the sample type, as
-// GDAL's mask band does: for float32 samples it is rounded to float32,
-// and an integer NoData is only ever equal to an integer sample.
-func prepareNoData(v float64, has bool, format, size int) noData {
+// prepareNoData prepares GDAL's NoData value v for samples of the given
+// format and bit depth.
+func prepareNoData(v float64, has bool, format, bits int) noData {
 	if !has {
 		return noData{}
 	}
-	if math.IsNaN(v) {
-		return noData{set: format == sampleFloat, nan: true}
-	}
-	if format == sampleFloat && size == 4 {
-		if !math.IsInf(v, 0) && math.Abs(v) > math.MaxFloat32 {
-			return noData{} // not representable: nothing matches
+	if format != sampleFloat {
+		lo, hi := 0.0, math.Exp2(float64(bits))-1
+		if format == sampleInt {
+			lo, hi = -math.Exp2(float64(bits-1)), math.Exp2(float64(bits-1))-1
 		}
-		return noData{set: true, cmp: float64(float32(v))}
+		if !(v >= lo && v <= hi) { // NaN included
+			return noData{}
+		}
+		return noData{set: true, cmp: math.Trunc(v)}
+	}
+	if math.IsNaN(v) {
+		return noData{set: true, nan: true}
+	}
+	if bits == 32 {
+		const maxF = math.MaxFloat32
+		switch {
+		case math.Abs(v-maxF) < 1e-10*maxF:
+			v = maxF
+		case math.Abs(v+maxF) < 1e-10*maxF:
+			v = -maxF
+		}
+		f := toFloat32(v)
+		return noData{set: true, cmp: float64(f), cmp32: f}
 	}
 	return noData{set: true, cmp: v}
+}
+
+// flt32Epsilon is C's FLT_EPSILON, which ARE_REAL_EQUAL uses for float32
+// and float64 samples alike.
+const flt32Epsilon = 0x1p-23
+
+// realEqual32 is GDAL's ARE_REAL_EQUAL on floats, each operation rounded
+// to float32 as the C++ is.
+func realEqual32(a, b float32) bool {
+	if a == b {
+		return true
+	}
+	d := float32(math.Abs(float64(float32(a - b))))
+	s := float32(math.Abs(float64(float32(a + b))))
+	return d < float32(float32(flt32Epsilon*s)*2)
+}
+
+// realEqual64 is GDAL's ARE_REAL_EQUAL on doubles.
+func realEqual64(a, b float64) bool {
+	return a == b || math.Abs(a-b) < float64(flt32Epsilon*math.Abs(a+b))*2
+}
+
+// matches reports whether sample v, exact as a float64, is NoData.
+func (nd noData) matches(v float64, format, bits int) bool {
+	switch {
+	case !nd.set:
+		return false
+	case nd.nan:
+		return math.IsNaN(v)
+	case format != sampleFloat:
+		return v == nd.cmp
+	case bits == 32:
+		return realEqual32(float32(v), nd.cmp32)
+	}
+	return realEqual64(v, nd.cmp)
 }
 
 // decodeBlock reads and decodes block idx of im, at block row by, for
@@ -72,9 +136,10 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 	n := im.blockW * rows
 	b := &block{w: im.blockW, rows: rows}
 	off, count := im.offsets[idx], im.byteCounts[idx]
-	if off == 0 && count == 0 {
-		// A sparse block, which GDAL writes for all-NoData tiles and
-		// reads as NoData, or as 0 without one.
+	if count == 0 {
+		// An absent block, which GDAL writes as a sparse one (offset
+		// and count 0) for all-NoData tiles, and reads, as it reads
+		// any block of 0 bytes, as NoData, or as 0 without one.
 		b.vals = make([]float32, n)
 		if nd.set {
 			b.valid = make([]uint64, raster.MaskWords(n)) // all invalid
@@ -88,16 +153,30 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 	if err != nil {
 		return nil, fmt.Errorf("reading %d bytes at offset %d: %w", count, off, err)
 	}
+	if im.lsbFirst {
+		for i, b := range raw {
+			raw[i] = bits.Reverse8(b)
+		}
+	}
 	spb := im.blockSamples()
-	rowBytes := im.blockW * spb * im.bytes
+	rowBytes := im.rowBytes()
 	want := rowBytes * rows
 	data, err := decompress(im.compression, raw, want)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", compressionName(im.compression), err)
 	}
-	if len(data) < want {
+	// A tile that the image's last row cuts may stop there: GDAL
+	// accepts that, and the rows below are outside the image anyway.
+	need := want
+	if im.tiled {
+		need = rowBytes * min(rows, im.height-by*im.blockH)
+	}
+	if len(data) < need {
 		return nil, fmt.Errorf("%s data decodes to %d bytes, want %d",
-			compressionName(im.compression), len(data), want)
+			compressionName(im.compression), len(data), need)
+	}
+	if len(data) < want {
+		data = append(data, make([]byte, want-len(data))...)
 	}
 	data = data[:want]
 	toLittleEndian(data, im, c.order, rowBytes)
@@ -107,12 +186,46 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData) (*block
 	if im.planar == planarChunky {
 		first = band
 	}
-	anyInvalid := convert(b.vals, data, im.format, im.bytes, spb, first, nd, nil)
+	if im.bits == 1 {
+		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
+		if nd.set && anyEqual(b.vals, float32(nd.cmp)) {
+			b.valid = make([]uint64, raster.MaskWords(n))
+			for i, v := range b.vals {
+				if v != float32(nd.cmp) {
+					b.valid[i>>6] |= 1 << uint(i&63)
+				}
+			}
+		}
+		return b, nil
+	}
+	anyInvalid := convert(b.vals, data, im.format, im.bits, spb, first, nd, nil)
 	if anyInvalid {
 		b.valid = make([]uint64, raster.MaskWords(n))
-		convert(b.vals, data, im.format, im.bytes, spb, first, nd, b.valid)
+		convert(b.vals, data, im.format, im.bits, spb, first, nd, b.valid)
 	}
 	return b, nil
+}
+
+// expandBits writes the 1-bit samples of data, every stride-th from the
+// first-th in each row of rowBytes bytes, most significant bit first,
+// into vals as 0 or 255: GDAL promotes a 1-bit mask to those values.
+func expandBits(vals []float32, data []byte, w, rowBytes, stride, first int) {
+	for i := range vals {
+		r, c := i/w, i%w
+		bit := c*stride + first
+		if data[r*rowBytes+bit>>3]&(0x80>>uint(bit&7)) != 0 {
+			vals[i] = 255
+		}
+	}
+}
+
+func anyEqual(vals []float32, v float32) bool {
+	for _, x := range vals {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // decompress returns data decoded, reading at most want bytes of output
@@ -130,7 +243,17 @@ func decompress(scheme uint64, data []byte, want int) ([]byte, error) {
 		}
 		return readUpTo(r, want)
 	case compressionLZW:
-		r := lzw.NewReader(bytes.NewReader(data), lzw.MSB, 8)
+		if len(data) >= 2 && data[0] == 0 && data[1]&1 != 0 {
+			// Old-style LZW, from libtiff before 5.0: codes least
+			// significant bit first, widening a code later than the
+			// TIFF 6 variant does. libtiff recognises it by its first
+			// code, a Clear code (256) written LSB-first, and so do we.
+			r := lzw.NewReader(bytes.NewReader(data), lzw.LSB, 8)
+			out, err := readUpTo(r, want)
+			_ = r.Close()
+			return out, err
+		}
+		r := tifflzw.NewReader(bytes.NewReader(data), tifflzw.MSB, 8)
 		out, err := readUpTo(r, want)
 		_ = r.Close()
 		return out, err
@@ -206,6 +329,9 @@ func unpackBits(src []byte, want int) ([]byte, error) {
 // little-endian, whatever the file's byte order.
 func toLittleEndian(data []byte, im *image, order binary.ByteOrder, rowBytes int) {
 	size, stride := im.bytes, im.blockSamples()
+	if im.bits == 1 {
+		return // bytes of bits, no predictor
+	}
 	if im.predictor == predictorFloat {
 		tmp := make([]byte, rowBytes)
 		for r := 0; r < len(data); r += rowBytes {
@@ -294,8 +420,9 @@ func toFloat32(v float64) float32 {
 // bit in valid. Samples convert as float32(v) does under IEEE 754, which
 // is how GDAL converts them: rounded to nearest, and ±Inf past float32's
 // range.
-func convert(vals []float32, data []byte, format, size, stride, first int, nd noData, valid []uint64) bool {
+func convert(vals []float32, data []byte, format, bits, stride, first int, nd noData, valid []uint64) bool {
 	le := binary.LittleEndian
+	size := bits / 8
 	step := size * stride
 	p := first * size
 	found := false
@@ -323,14 +450,7 @@ func convert(vals []float32, data []byte, format, size, stride, first int, nd no
 			v = float64(le.Uint32(s))
 		}
 		vals[i] = toFloat32(v)
-		ok := true
-		switch {
-		case !nd.set:
-		case nd.nan:
-			ok = v == v
-		default:
-			ok = v != nd.cmp
-		}
+		ok := !nd.matches(v, format, bits)
 		if !ok {
 			found = true
 		}
