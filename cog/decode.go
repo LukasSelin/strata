@@ -279,18 +279,26 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	data = data[:want]
 	b := newBlock(im.blockW, rows)
 	isFloat32 := im.format == sampleFloat && im.bytes == 4
+	// With SIMD kernels, rows are converted and tested one at a time, the
+	// validity while the row is in cache. Without, the block is converted
+	// whole and tested after, as before the kernels: in scalar builds that
+	// measured 7-10% faster on float32 end to end, though not in
+	// isolation (benchmarks/cog), so it is kept for them.
+	rowWise := kern.Backend() != "scalar"
 	if isFloat32 && spb == 1 && im.predictor == predictorFloat {
 		// The common float COG: the predictor's byte planes go straight
 		// into the samples, without being put back into data first.
 		v := newValidator(float32Test(nd), n)
 		for r := range rows {
 			kern.PlanesRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
-			v.upto(b.vals, (r+1)*im.blockW)
+			if rowWise {
+				v.upto(b.vals, (r+1)*im.blockW)
+			}
 		}
 		b.valid = v.finish(b.vals)
 		return b, nil
 	}
-	if isFloat32 && spb == 1 && im.predictor == predictorNone && c.order == binary.LittleEndian {
+	if rowWise && isFloat32 && spb == 1 && im.predictor == predictorNone && c.order == binary.LittleEndian {
 		// The samples are the data's bytes: a copy per row.
 		v := newValidator(float32Test(nd), n)
 		for r := range rows {
@@ -315,12 +323,14 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 			v := newValidator(intTest(nd), n)
 			for r := range rows {
 				vals, row := b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes]
-				if im.bits == 16 {
+				if im.bits == 16 && rowWise {
 					kern.Uint16Row(vals, row, signed, pred)
 				} else {
 					intRow(vals, row, im.bits, signed, pred)
 				}
-				v.upto(b.vals, (r+1)*im.blockW)
+				if rowWise {
+					v.upto(b.vals, (r+1)*im.blockW)
+				}
 			}
 			b.valid = v.finish(b.vals)
 			return b, nil
