@@ -369,9 +369,9 @@ gdaldem's faster setting.
   this change did not touch and this suite does not time. The acceptance
   suite still checks them for correctness.
 - **Disk, network, cold caches.** Every file was on a tmpfs, and the
-  warm-up run had already read it. Reading from disk or over HTTP (the
-  reader has no range-request `io.ReaderAt` yet) would add IO that
-  neither tool is charged for here.
+  warm-up run had already read it. Reading from disk, or over HTTP
+  through `cog.HTTPReaderAt` (which arrived after these runs and is not
+  timed here), would add IO that neither tool is charged for here.
 - **GDAL's mask.** `gdalread.py` reads values only. strata's read also
   produces the validity mask, which GDAL would build in a separate
   `GetMaskBand().ReadRaster`. So GDAL's read-time figures are a lighter
