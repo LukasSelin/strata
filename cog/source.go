@@ -238,9 +238,22 @@ func (f *File) level(fn string, level int) *image {
 	return f.levels[level]
 }
 
-// DefaultCacheBytes is the decoded-block cache of a source whose
-// SourceOptions.CacheBytes is 0: 64 MiB.
-const DefaultCacheBytes = 64 << 20
+// The decoded-block cache of a source whose SourceOptions.CacheBytes is
+// 0 holds DefaultCacheRows rows of the level's blocks, but never less
+// than DefaultCacheBytes nor more than MaxDefaultCacheBytes.
+//
+// A row of blocks is what one band of tiles needs, so the cache scales
+// with the raster's width. Eight rows hold what 12 engine workers on
+// 256-row tiles have in flight over 512-row blocks, with room for the
+// halos; benchmarks/cog/RESULTS.md measured a 64 MiB cache decoding
+// each block 1.57 times there on an 11264-wide raster, and 8 rows once.
+// More workers, taller tiles or a wider raster than the cap allows
+// need CacheBytes set.
+const (
+	DefaultCacheRows     = 8
+	DefaultCacheBytes    = 64 << 20
+	MaxDefaultCacheBytes = 1 << 30
+)
 
 // SourceOptions selects what a Source reads.
 type SourceOptions struct {
@@ -251,10 +264,11 @@ type SourceOptions struct {
 	Level int
 	// CacheBytes bounds the memory of decoded blocks the source keeps,
 	// so blocks that several windows touch are decoded once: 0 means
-	// DefaultCacheBytes, a negative value no cache. The cache always
-	// holds at least the most recent block. It does not cover the
-	// compressed blocks a pixel-interleaved File shares between its
-	// sources; see File.Source.
+	// the default (DefaultCacheRows rows of blocks, within
+	// DefaultCacheBytes and MaxDefaultCacheBytes), a negative value no
+	// cache. The cache always holds at least the most recent block. It
+	// does not cover the compressed blocks a pixel-interleaved File
+	// shares between its sources; see File.Source.
 	CacheBytes int64
 }
 
@@ -295,7 +309,7 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 		size := func(b *block) int64 { return b.size() }
 		switch {
 		case opts.CacheBytes == 0:
-			s.cache = newCache[int](DefaultCacheBytes, size)
+			s.cache = newCache[int](defaultCacheBytes(im), size)
 		case opts.CacheBytes > 0:
 			s.cache = newCache[int](opts.CacheBytes, size)
 		}
@@ -314,6 +328,28 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 	}
 	s.mask = newSource(mask, band, noData{set: true, cmp: 0})
 	return s, nil
+}
+
+// defaultCacheBytes is the cache of a source over im whose CacheBytes
+// is 0: DefaultCacheRows rows of decoded blocks, as block.size counts
+// them, clamped to [DefaultCacheBytes, MaxDefaultCacheBytes].
+func defaultCacheBytes(im *image) int64 {
+	cells := int64(im.blockW) * int64(im.blockH)
+	perBlock := 4*cells + 8*int64(raster.MaskWords(int(cells))) + 64
+	across := int64((im.width + im.blockW - 1) / im.blockW)
+	if across > MaxDefaultCacheBytes/(DefaultCacheRows*perBlock) {
+		return MaxDefaultCacheBytes // and no overflow on the way
+	}
+	return min(max(DefaultCacheRows*across*perBlock, DefaultCacheBytes), MaxDefaultCacheBytes)
+}
+
+// CacheBytes returns the bound on the source's decoded-block cache: the
+// one SourceOptions gave, or the default it chose, or 0 for no cache.
+func (s *Source) CacheBytes() int64 {
+	if s.cache == nil {
+		return 0
+	}
+	return s.cache.limit
 }
 
 // Size returns the level's width and height.

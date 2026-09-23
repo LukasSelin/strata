@@ -135,6 +135,11 @@ func run() error {
 	blocks := int64(ceilDiv(w, *block) * ceilDiv(h, *block))
 	fmt.Printf("size=%dx%d masked=%v tile=%d workers=%d cache=%d gomaxprocs=%d\n",
 		w, h, src.Masked(), *tile, *workers, *cacheB, runtime.GOMAXPROCS(0))
+	// The bound the source chose. An interface, because the build of an
+	// older reader that cogbench.sh times has no such method.
+	if c, ok := src.(interface{ CacheBytes() int64 }); ok {
+		fmt.Printf("cache_bytes=%d\n", c.CacheBytes())
+	}
 
 	for i := range *repeat {
 		// A fresh source per run, so every run starts with an empty cache.
