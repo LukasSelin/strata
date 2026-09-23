@@ -356,6 +356,8 @@ func TestPanics(t *testing.T) {
 	shifted.OriginX = 0.5
 	crsA, crsB := g, g
 	crsA.CRS.Code, crsB.CRS.Code = "EPSG:25833", "EPSG:4326"
+	crsURN := g
+	crsURN.CRS.Code = "urn:ogc:def:crs:EPSG::25833" // opaque, so not linked
 	zero := g
 	zero.ResolutionX = 0
 	inf := g
@@ -365,7 +367,10 @@ func TestPanics(t *testing.T) {
 		run  func()
 		want string
 	}{
-		{"crs", func() { resample.Resample(newDst(crsA), raster.NewDataset(crsB, src.Raster), resample.Options{}) }, "CRS"},
+		{"crs", func() { resample.Resample(newDst(crsA), raster.NewDataset(crsB, src.Raster), resample.Options{}) },
+			`"EPSG:25833" (https://epsg.io/25833) differs from src CRS "EPSG:4326" (https://epsg.io/4326)`},
+		{"crs unlinked", func() { resample.Resample(newDst(crsA), raster.NewDataset(crsURN, src.Raster), resample.Options{}) },
+			`src CRS "urn:ogc:def:crs:EPSG::25833"; reprojection`},
 		{"zero res", func() { resample.Resample(newDst(zero), src, resample.Options{}) }, "zero resolution"},
 		{"inf origin", func() { resample.Resample(newDst(inf), src, resample.Options{}) }, "non-finite"},
 		{"method", func() { resample.Resample(newDst(g), src, resample.Options{Method: 9}) }, "unknown"},

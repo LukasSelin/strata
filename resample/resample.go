@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/LukasSelin/strata/engine"
@@ -134,7 +136,8 @@ func newPlan(dg, sg raster.Grid, opts Options, eopts engine.Options) plan {
 		panic(fmt.Sprintf("resample: negative Options %+v", eopts))
 	}
 	if !dg.CRS.Matches(sg.CRS) {
-		panic(fmt.Sprintf("resample: dst CRS %q differs from src CRS %q; reprojection is not supported", dg.CRS.Code, sg.CRS.Code))
+		panic(fmt.Sprintf("resample: dst CRS %s differs from src CRS %s; reprojection is not supported",
+			describeCRS(dg.CRS), describeCRS(sg.CRS)))
 	}
 	checkGrid("dst", dg)
 	checkGrid("src", sg)
@@ -175,6 +178,18 @@ func checkSize(name string, g raster.Grid, s interface{ Size() (int, int) }) {
 	if g.Width != w || g.Height != h {
 		panic(fmt.Sprintf("resample: %s grid is %d×%d but its raster is %d×%d", name, g.Width, g.Height, w, h))
 	}
+}
+
+// describeCRS quotes c's code for a message, with a link to its epsg.io
+// page when the code is spelled as cog spells one, EPSG:<number>. The
+// link is for the reader only: nothing else is read from the code
+// (DESIGN.md §36).
+func describeCRS(c raster.CRS) string {
+	n, ok := strings.CutPrefix(c.Code, "EPSG:")
+	if !ok || n == "" || strings.Trim(n, "0123456789") != "" {
+		return strconv.Quote(c.Code)
+	}
+	return fmt.Sprintf("%q (https://epsg.io/%s)", c.Code, n)
 }
 
 func checkGrid(name string, g raster.Grid) {
