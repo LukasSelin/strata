@@ -292,6 +292,24 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	if im.planar == planarChunky {
 		first = band
 	}
+	if im.format != sampleFloat && (im.bits == 8 || im.bits == 16) {
+		// 8- and 16-bit integers are exact in float32, and their NoData
+		// is an integer, so neither needs convert's float64 detour.
+		signed := im.format == sampleInt
+		if spb == 1 && (im.bits == 8 || c.order == binary.LittleEndian) {
+			// One band in native order: the horizontal predictor is
+			// undone as the samples are written, in one pass per row.
+			pred := im.predictor == predictorHorizontal
+			for r := range rows {
+				intRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes], im.bits, signed, pred)
+			}
+		} else {
+			toLittleEndian(data, im, c.order, rowBytes)
+			convertInts(b.vals, data, im.bits, signed, spb, first)
+		}
+		b.valid = exactValidity(b.vals, nd)
+		return b, nil
+	}
 	toLittleEndian(data, im, c.order, rowBytes)
 	if im.bits == 1 {
 		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
@@ -750,6 +768,105 @@ func notNaNWord(chunk []float32) uint64 {
 		word |= uint64((0x7f800000-m)>>31^1) << (uint(j) & 63)
 	}
 	return word
+}
+
+// intRow writes one row of single-band little-endian integer samples of
+// the given width and signedness to vals, undoing horizontal differencing
+// first if pred: each sample is then the wrapping sum of those before it.
+func intRow(vals []float32, row []byte, bits int, signed, pred bool) {
+	le := binary.LittleEndian
+	switch {
+	case bits == 8:
+		row = row[:len(vals)]
+		var acc byte
+		for i, v := range row {
+			if pred {
+				acc += v
+			} else {
+				acc = v
+			}
+			if signed {
+				vals[i] = float32(int8(acc)) // #nosec G115 -- reinterpreting the bits is the point
+			} else {
+				vals[i] = float32(acc)
+			}
+		}
+	case pred:
+		row = row[:2*len(vals)]
+		var acc uint16
+		if signed {
+			for i := range vals {
+				acc += le.Uint16(row[2*i:])
+				vals[i] = float32(int16(acc)) // #nosec G115 -- as above
+			}
+			return
+		}
+		for i := range vals {
+			acc += le.Uint16(row[2*i:])
+			vals[i] = float32(acc)
+		}
+	default:
+		row = row[:2*len(vals)]
+		if signed {
+			for i := range vals {
+				vals[i] = float32(int16(le.Uint16(row[2*i:]))) // #nosec G115 -- as above
+			}
+			return
+		}
+		for i := range vals {
+			vals[i] = float32(le.Uint16(row[2*i:]))
+		}
+	}
+}
+
+// convertInts writes every stride-th little-endian integer sample of
+// data, from the first-th, into vals: the general case of intRow, for
+// several bands and any byte order, after toLittleEndian.
+func convertInts(vals []float32, data []byte, bits int, signed bool, stride, first int) {
+	le := binary.LittleEndian
+	size := bits / 8
+	step, p := size*stride, first*size
+	for i := range vals {
+		s := data[p:]
+		p += step
+		switch {
+		case size == 1 && signed:
+			vals[i] = float32(int8(s[0])) // #nosec G115 -- reinterpreting the bits is the point
+		case size == 1:
+			vals[i] = float32(s[0])
+		case signed:
+			vals[i] = float32(int16(le.Uint16(s))) // #nosec G115 -- as above
+		default:
+			vals[i] = float32(le.Uint16(s))
+		}
+	}
+}
+
+// exactValidity is the NoData test for integer samples of at most 16
+// bits, made on their float32 values, which hold them exactly: NoData is
+// an integer in the type's range (prepareNoData), so it is exact too, and
+// a cell is NoData if and only if its value equals it. It returns nil if
+// every cell is valid.
+func exactValidity(vals []float32, nd noData) []uint64 {
+	if !nd.set {
+		return nil
+	}
+	want, care := math.Float32bits(float32(nd.cmp)), ^uint32(0)
+	if nd.cmp == 0 {
+		want, care = 0, 0x7fffffff // -0, from truncating -0.5, is 0
+	}
+	valid := make([]uint64, raster.MaskWords(len(vals)))
+	all := true
+	for k := range valid {
+		chunk := vals[k*64 : min(k*64+64, len(vals))]
+		word := notEqualWord(chunk, want, care)
+		valid[k] = word
+		all = all && word == ^uint64(0)>>(64-uint(len(chunk)))
+	}
+	if all {
+		return nil
+	}
+	return valid
 }
 
 // convert writes every stride-th little-endian sample of data, from the
