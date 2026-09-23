@@ -166,6 +166,14 @@ gdaldem's 9.39 s; on 12 workers, 1.33 s. On the scalar kernels — a build
 without `GOEXPERIMENT=simd` — it is roughly a tie, so the advantage is
 AVX2, not the language.
 
+[`benchmarks/cog/`](benchmarks/cog/RESULTS.md) does the same for the
+GeoTIFF/COG reader. GDAL decodes a compressed float32 COG 1.4–2.1×
+faster on one core, mostly because it inflates with libdeflate. Slope
+straight from the COG still beats `gdaldem slope` on the same file, by
+1.8–2.6× on one core and 4.3–5.6× on 12 workers. Reading the format
+costs more than computing the slope: from a Deflate COG the run takes
+2.28 s on one worker, from the raw file 0.89 s.
+
 ## Testing
 
 Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also

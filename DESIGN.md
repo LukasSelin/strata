@@ -24,11 +24,12 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
+- [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): the GeoTIFF/COG reader's decode speed against GDAL, and slope over a COG against `gdaldem` (§34).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
-Where things stand, as of 2026-09-22. Each section's own **Status** line is
+Where things stand, as of 2026-09-23. Each section's own **Status** line is
 the detailed record; this table only points at it.
 
 | Area | § | Status |
@@ -52,7 +53,7 @@ the detailed record; this table only points at it.
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
-| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files; writing, HTTP range reads open |
+| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, timed against it (`benchmarks/cog`); writing, HTTP range reads open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
@@ -1596,9 +1597,13 @@ BigTIFF, tiles and strips, chunky and planar, 8/16/32-bit integers and
 overviews, sparse blocks, GDAL NoData (compared in the native type) and
 the geotransform and EPSG code. It is bit-identical to GDAL 3.14 on 98
 files, 58.5M cells, and all eight of `cogsabotage.py`'s planted defects
-fail that comparison. Open: writing (a COG sink), a byte-range
-`io.ReaderAt` over HTTP, internal masks, and a benchmark of decode
-throughput against GDAL.
+fail that comparison. Its speed against GDAL is measured in
+[benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): on one core GDAL
+reads a float32 COG 1.4–2.1× faster (libdeflate, against Go's inflate,
+is most of the gap), yet slope over a COG still beats `gdaldem slope` on
+the same file by 1.8–2.6×, and by 4.3–5.6× on 12 workers. Open: writing
+(a COG sink), a byte-range `io.ReaderAt` over HTTP, internal masks, and a
+default cache that scales with the file's block rows for many workers.
 
 ## 35. Use Existing Format Libraries Where Possible
 

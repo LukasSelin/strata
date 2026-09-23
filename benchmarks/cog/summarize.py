@@ -73,11 +73,13 @@ def threads(n):
     return f"{n} thread" + ("s" if n != 1 else "")
 
 
-for n in notes:
-    print(n)
+# The notes (files, versions, the correctness checks) stay in the timings
+# file: printed into Markdown, a leading # would make each a heading.
 per_case = len(runs[order[0]])
+per_cache = min((len(v) for k, v in runs.items() if k[0] == "cache"), default=per_case)
 print(f"\n{W} x {H} = {CELLS / 1e6:.1f}M cells, {MB:.0f} MB as float32. "
-      f"{per_case} timed runs per case after a warm-up, median reported.\n")
+      f"{per_case} timed runs per case ({per_cache} in the cache sweep) after a "
+      f"warm-up, median reported.\n")
 
 # --- 1. pure read -------------------------------------------------------
 
