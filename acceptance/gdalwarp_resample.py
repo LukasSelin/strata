@@ -24,7 +24,14 @@ records as gdalwarp's own departures from its definitions:
     differ from the resolution ratio, as for the 1.37 grids, which
     overhang the source: the values are not compared (nor, for Lanczos,
     whose half-valid window depends on the stretch, validity). The 1.25
-    grids are laid out so the two agree, and are compared in full;
+    grids are laid out so the two agree, and are compared in full. From
+    GDAL 3.13.0 gdalwarp takes the stretch from the geometry, which is
+    the resolution ratio, but the 1.37 grids stay excluded;
+  * from GDAL 3.13.0, Bilinear and Cubic downsampling by less than 2,
+    which gdalwarp no longer widens (OSGeo/gdal commit 7e18bd36cf): its
+    values are judged against the reference under that rule instead of
+    against strata's, and the cells counted. Before 3.13.0 they are
+    compared with strata's like any other cell;
   * Lanczos downsampling by an odd integer factor (none in these cases);
   * from GDAL 3.13.1, Lanczos's half-valid rule, which gdalwarp dropped
     (OSGeo/gdal commit c9507793, issue #14560): cells the reference
@@ -50,6 +57,10 @@ gdal.UseExceptions()
 
 # The first GDAL without Lanczos's half-valid rule (DESIGN.md §54).
 NO_HALF_VALID = int(gdal.VersionInfo("VERSION_NUM")) >= 3130100
+
+# The first GDAL that widens Bilinear and Cubic only from 2x downsampling
+# (DESIGN.md §54).
+FOUR_SAMPLE_TO_HALF = int(gdal.VersionInfo("VERSION_NUM")) >= 3130000
 
 ALG = {"Nearest": "near", "Bilinear": "bilinear", "Cubic": "cubic", "Lanczos": "lanczos", "Average": "average"}
 
@@ -127,8 +138,16 @@ def main():
         half = None
         if NO_HALF_VALID and case["method"] == "Lanczos" and case.get("src_mask"):
             half = ref.reference(case, src, valid, half_valid=False)
+        # Where strata widens Bilinear or Cubic and gdalwarp, from 3.13.0,
+        # does not: its values are judged against the reference under its
+        # rule instead.
+        flat = None
+        widens = any(ref.stretch(case["method"], abs(s)) > 1
+                     for s in (dg["rx"] / sg["rx"], dg["ry"] / sg["ry"]))
+        if FOUR_SAMPLE_TO_HALF and widens and ref.unwidened_to_half(case):
+            flat = ref.reference(case, src, valid, four_sample_to_half=True)
         differs, wx, wy = pixel_stretch(case)
-        bad_valid = bad_val = excluded = halfvalid = 0
+        bad_valid = bad_val = excluded = halfvalid = unwidened = 0
         worst = 0.0
         for r in range(dg["height"]):
             for c in range(dg["width"]):
@@ -151,9 +170,16 @@ def main():
                 if differs:
                     excluded += 1
                     continue
-                t = tols[r][c]
+                t, want = tols[r][c], ours[i]
+                if flat:
+                    unwidened += 1
+                    t = flat[r][c]
+                    if t is None:
+                        bad_val += 1
+                        continue
+                    want = t[0]
                 tol = 2 * t[1] + 2 * ref.EPS * abs(theirs[i]) if t is not None else 1e-6 * abs(theirs[i])
-                err = abs(ours[i] - theirs[i])
+                err = abs(want - theirs[i])
                 if err > tol:
                     bad_val += 1
                     worst = max(worst, err / max(tol, 1e-300))
@@ -171,6 +197,8 @@ def main():
                 "within tolerance" if bad_val == 0 else "%d cells out (worst %.3g x tolerance)" % (bad_val, worst),
                 ", %d edge cells excluded" % excluded if excluded else "",
                 ", %d half-valid cells gdalwarp keeps" % halfvalid if halfvalid else "")
+            if flat:
+                line += " (%d cells against the reference unwidened, as gdalwarp from 3.13.0 is, not strata)" % unwidened
         print(line)
         if not ok:
             failures.append(line)
