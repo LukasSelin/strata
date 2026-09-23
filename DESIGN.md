@@ -1933,13 +1933,18 @@ findings carry a `#nosec` comment giving the reason. Neither tool
 detected the overflow in `raster.Validate` found by fuzzing: gosec's
 integer overflow rule covers conversions, not arithmetic.
 
-CI (`.github/workflows/ci.yml`) runs all of this on every push and pull
-request: build, vet and test on Linux, Windows and macOS; the same under
-`GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS (arm64, NEON);
-`go test -race`; golangci-lint; and `kernelborder` (§12), a custom
-analyzer in the separate `lint/` module, run as a vet tool. The race and
-lint jobs run in both builds, and in the SIMD build for arm64 too (lint
-cross-compiled), so the vet tool sees each backend's files:
+CI (`.github/workflows/ci.yml`) runs in two tiers. Every pull request
+and push to master gets the quick one: build, vet and test on Linux, and
+the same under `GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS
+(arm64, NEON); `go test -race` on `internal/exec` and `engine`, the
+packages that start goroutines; golangci-lint; and `kernelborder` (§12),
+a custom analyzer in the separate `lint/` module, run as a vet tool. The
+lint jobs run in both builds, and in the SIMD build for arm64 too
+(cross-compiled), so the vet tool sees each backend's files. A release
+tag (`v*`) or a manual run gets the full tier, which adds the scalar
+build on Windows and macOS, the race detector over every package in both
+builds and on both SIMD backends, and the `cog` module on all three
+platforms with its race run and a minute of fuzzing:
 
 ```text
 (cd lint && go build -o /tmp/kernelborder ./cmd/kernelborder)
