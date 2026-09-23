@@ -3622,10 +3622,11 @@ inverted for the weights. What it does, and strata now does:
   cubic with a = −0.5, and the Lanczos-3 window. When an axis downsamples,
   s is its source cells per output cell, which stretches the kernel so it
   averages: for Bilinear and Cubic once 1/s < 0.95, for Lanczos once s > 1,
-  per axis. Average weighs by area of overlap. Weights are renormalised
-  over the source cells inside the source, so the edge renormalises; an
-  output cell whose centre lies outside the source is invalid (Average:
-  one that overlaps no source cell).
+  per axis (gdalwarp 3.13.0 moved the first threshold, below). Average
+  weighs by area of overlap. Weights are renormalised over the source
+  cells inside the source, so the edge renormalises; an output cell
+  whose centre lies outside the source is invalid (Average: one that
+  overlaps no source cell).
 - Cubic has two modes. With neither axis stretched it is gdalwarp's
   four-sample formula, which falls back to unstretched Bilinear for a
   cell whose 4×4 taps of non-zero weight lose one to the edge or, with a
@@ -3678,9 +3679,9 @@ derived from the sums (A/|D|, not a fixed ulp count) for that reason.
 Only where gdalwarp departs from its own definitions, or has changed them
 since they were measured:
 
-- the stretch: gdalwarp derives it for each warp chunk from pixel
-  counts, the chunk's source window (clipped to the source) over its
-  destination cells, not from the resolutions. The two agree for a
+- the stretch, before GDAL 3.13.0: gdalwarp derives it for each warp
+  chunk from pixel counts, the chunk's source window (clipped to the
+  source) over its destination cells, not from the resolutions. The two agree for a
   destination inside the source on its cell edges, and nearly agree in
   the interior of a large warp, but where the destination overhangs the
   source, or gdalwarp splits a warp into chunks, its kernel width depends
@@ -3688,7 +3689,15 @@ since they were measured:
   under 59 cells of 1.37 is stretched by 80/59 = 1.356). strata keeps the
   resolution ratio, which is the geometry and the same for every tiling,
   as §23 needs. The acceptance cases compare a non-integer stretch on a
-  grid where the two agree (1.25) and record the others as excluded;
+  grid where the two agree (1.25) and record the others as excluded.
+  From 3.13.0 (OSGeo/gdal commit 7e18bd36cf) gdalwarp takes it from the
+  geometry instead, the source extent of unit squares of the destination,
+  which in one CRS is the resolution ratio: the 1.37 grids' Lanczos
+  values, 1004 to 1473 cells out per case on 3.12.2, all agree on
+  3.13.0. The acceptance cases still exclude those grids, because on 3.13.0 two cells of the
+  masked 1.37 Lanczos case, next to the source's bottom edge (31 of 63
+  window cells valid), are valid in gdalwarp and not in strata, which the
+  exclusion had hidden and which is not yet explained;
 - Lanczos downsampling by an odd integer factor (3, 5): gdalwarp gives the
   tap at an output centre about 83 times its weight, which looks like a
   defect in its optimised Lanczos path;
@@ -3697,6 +3706,17 @@ since they were measured:
 - a source one cell wide or high, where gdalwarp's Bilinear degrades to
   Nearest;
 - Average on output cells that extend past the source's edge, by about 1%;
+- Bilinear and Cubic downsampling by less than 2, from GDAL 3.13.0: the
+  same commit keeps the four-sample, unwidened formula until an axis's
+  scale 1/s falls to 0.5, where it had widened below 0.95, to blur less.
+  That is a changed definition, not a defect: gdalwarp's values on the
+  1.25 grids agree with §54's reference with the kernels unwidened (the
+  Cubic fallback to Bilinear included), and with strata's on 3.12.2.
+  strata keeps the 0.95 threshold, because an unwidened tent or cubic
+  downsampling by up to 2 weighs the source cells unevenly and aliases,
+  which is what widening is for. From 3.13.0 `acceptance/gdalwarp_resample.py` judges
+  those cases' gdalwarp values against the unwidened reference instead
+  of strata's, and counts them; older GDAL is held to strata's values;
 - Lanczos's half-valid rule, from GDAL 3.13.1: gdalwarp dropped it
   (OSGeo/gdal commit c9507793, issue #14560, which found it erased text
   drawn on a transparent background), and its source now leaves the right
