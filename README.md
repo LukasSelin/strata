@@ -201,10 +201,10 @@ program written from published definitions then judges the results.
 raster, and `cogcheck.sh` requires the `cog` reader to read every cell of
 98 GDAL-written GeoTIFFs exactly as GDAL does.
 
-CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
-race detector, and `golangci-lint` in both the default and the
+CI runs the tests and `golangci-lint` in both the default and the
 `GOEXPERIMENT=simd` build, since the vector kernels are behind a build tag
-and a default build never compiles them.
+and a default build never compiles them. Release tags also run the suite
+on Windows and macOS and the race detector over every package.
 
 ## Documentation
 

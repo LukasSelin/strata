@@ -5,12 +5,20 @@
 # compiles, tests or lints them. Everything that can see them therefore
 # runs in both build configurations, and the SIMD one on both
 # architectures.
+#
+# Two tiers. Pushes to master and pull requests get the quick one: every
+# test once in each build and on each SIMD backend, lint in every
+# configuration, and the race detector on the packages that start
+# goroutines. A release tag (v*), or a manual run, gets the full one: the
+# scalar build on Linux, Windows and macOS, the race detector over
+# everything in every build, and the cog adapter's race run and fuzzing.
 
 name: CI
 
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -22,41 +30,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FULL: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+
 jobs:
   test:
-    # The scalar path, on each OS with platform-specific files in the
-    # benchmark suite (cores_*.go, memory_*.go). Without the experiment,
-    # every architecture runs scalar.
-    name: test (${{ matrix.os }})
+    # Quick: the scalar build on Linux, and the SIMD build on each backend,
+    # AVX2 on the amd64 runner and NEON on the arm64 macOS one. The macOS
+    # entry also covers arm64's multiply-add fusion (DESIGN.md §39,
+    # Determinism), which amd64 never exercises. Full adds the scalar
+    # build on Windows and macOS, for the platform-specific files in the
+    # benchmark suite (cores_*.go, memory_*.go).
+    #
+    # Kernels dispatch at runtime, so on an amd64 runner without AVX2 the
+    # SIMD entry falls back to scalar and its agreement tests are vacuous
+    # rather than failing. NEON is baseline on arm64, so there it always
+    # runs.
+    name: test (${{ matrix.goexperiment || 'default' }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
-
-  test-simd:
-    # The vector path: AVX2 on the amd64 runner, NEON on the arm64 macOS
-    # runner. Kernels dispatch at runtime, so this job proves the SIMD
-    # build compiles and its bit-for-bit agreement tests pass; on an amd64
-    # runner without AVX2 the dispatch falls back to scalar and the
-    # comparison is vacuous rather than failing. NEON is baseline on arm64,
-    # so there it always runs.
-    name: test (simd, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+        include: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '[{"os":"ubuntu-latest","goexperiment":""},{"os":"windows-latest","goexperiment":""},{"os":"macos-latest","goexperiment":""},{"os":"ubuntu-latest","goexperiment":"simd"},{"os":"macos-latest","goexperiment":"simd"}]' || '[{"os":"ubuntu-latest","goexperiment":""},{"os":"ubuntu-latest","goexperiment":"simd"},{"os":"macos-latest","goexperiment":"simd"}]') }}
     env:
-      GOEXPERIMENT: simd
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -68,23 +65,16 @@ jobs:
 
   race:
     # internal/exec is the only package that starts goroutines; its tests
-    # and engine's also fail on a leaked goroutine (goleak). Both builds,
-    # and both SIMD backends, since the kernels run under those workers.
+    # and engine's also fail on a leaked goroutine (goleak). Quick runs
+    # just those two, in the default build. Full runs everything in both
+    # builds and on both SIMD backends, since the kernels run under those
+    # workers.
     name: race (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: default
-            os: ubuntu-latest
-            goexperiment: ""
-          - name: simd
-            os: ubuntu-latest
-            goexperiment: simd
-          - name: simd-arm64
-            os: macos-latest
-            goexperiment: simd
+        include: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '[{"name":"default","os":"ubuntu-latest","goexperiment":""},{"name":"simd","os":"ubuntu-latest","goexperiment":"simd"},{"name":"simd-arm64","os":"macos-latest","goexperiment":"simd"}]' || '[{"name":"default","os":"ubuntu-latest","goexperiment":""}]') }}
     env:
       GOEXPERIMENT: ${{ matrix.goexperiment }}
     steps:
@@ -92,7 +82,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - name: Race (goroutine packages)
+        if: env.FULL != 'true'
+        run: go test -race ./internal/exec/... ./engine/...
+      - name: Race (everything)
+        if: env.FULL == 'true'
+        run: go test -race ./...
 
   lint:
     # golangci-lint must be built with a Go version at least this module's
@@ -157,12 +152,16 @@ jobs:
     # has no SIMD code, so the default build is the only one. Its
     # correctness against GDAL is judged by acceptance/cogcheck.sh, which
     # needs Docker and is run by hand, like the other GDAL checks.
+    #
+    # Quick is build, vet, test and lint on Linux. Full adds Windows and
+    # macOS, the race detector (about seven minutes) and a minute of
+    # fuzzing Open.
     name: cog (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","windows-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     defaults:
       run:
         working-directory: cog
@@ -176,10 +175,10 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - name: Race
-        if: matrix.os == 'ubuntu-latest'
+        if: env.FULL == 'true' && matrix.os == 'ubuntu-latest'
         run: go test -race ./...
       - name: Fuzz Open briefly
-        if: matrix.os == 'ubuntu-latest'
+        if: env.FULL == 'true' && matrix.os == 'ubuntu-latest'
         run: go test -run='^$' -fuzz=FuzzOpen -fuzztime=60s .
       - name: Install golangci-lint
         if: matrix.os == 'ubuntu-latest'
