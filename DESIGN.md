@@ -3642,7 +3642,8 @@ Lanczos downsampling by four — around every NoData cell:
   stays valid), except a cell whose centre lies exactly on a source
   centre on both axes, which copies that cell. The first probes had
   missed the rule below 1:1, because the 1:1 probe was aligned, which is
-  the exception; the gdalwarp comparison found it;
+  the exception; the gdalwarp comparison found it. gdalwarp has dropped
+  the rule since 3.13.1 (below);
 - its value is Σ w·v·x / Σ w·v over the valid cells, where v is 0 or 1.
 
 Both sums are separable, so the masked path runs the same passes over
@@ -3663,7 +3664,8 @@ derived from the sums (A/|D|, not a fixed ulp count) for that reason.
 
 ### Where strata departs from gdalwarp
 
-Only where gdalwarp departs from its own definitions:
+Only where gdalwarp departs from its own definitions, or has changed them
+since they were measured:
 
 - the stretch: gdalwarp derives it for each warp chunk from pixel
   counts, the chunk's source window (clipped to the source) over its
@@ -3683,7 +3685,22 @@ Only where gdalwarp departs from its own definitions:
   kernels;
 - a source one cell wide or high, where gdalwarp's Bilinear degrades to
   Nearest;
-- Average on output cells that extend past the source's edge, by about 1%.
+- Average on output cells that extend past the source's edge, by about 1%;
+- Lanczos's half-valid rule, from GDAL 3.13.1: gdalwarp dropped it
+  (OSGeo/gdal commit c9507793, issue #14560, which found it erased text
+  drawn on a transparent background), and its source now leaves the right
+  rule as an open TODO. It keeps any cell whose centre cell is valid and
+  whose valid weight is at least 1e-6, so it keeps cells, never drops
+  them, and only where fewer than half of the window's cells are valid.
+  strata keeps the rule as measured on 3.12.1. On the benchmark suite's
+  11264² canopy grid halved (3.14.0dev) that is 42 of 30.8M cells, all
+  at inside corners of NoData blocks, with 36 to 64 of 144 window cells
+  valid. The rule without the count gives gdalwarp's validity on all
+  31.5M interior cells, and the rule with it gives strata's. It is not
+  chunking: `-wm 2048` already warps that grid in one chunk, and
+  `-wm 6000` gives the same cells. `acceptance/gdalwarp_resample.py`
+  counts these cells on GDAL 3.13.1 and later, and holds older GDAL to
+  exact validity.
 
 Values otherwise agree with gdalwarp to within float32 rounding, and
 validity exactly (`acceptance/gdalwarp_resample.py`).
