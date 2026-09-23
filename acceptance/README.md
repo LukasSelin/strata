@@ -28,6 +28,7 @@ python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ./cogcheck.sh [some.tif]        # the GeoTIFF/COG reader against GDAL's reading, in Docker
 python cogsabotage.py out-cog   # ... and check that comparison's checker
+./coghttpcheck.sh               # the same files read over HTTP range requests, from nginx
 ```
 
 `check.py` needs numpy; with scipy installed it also cross-checks its
@@ -324,8 +325,74 @@ What it does not cover:
 - files GDAL did not write: other writers' quirks, such as old-style LZW
   or odd strip layouts;
 - compressions the reader refuses (JPEG, WebP, LERC);
-- reading over HTTP;
 - decode speed, which nothing here measures yet.
+
+### Over HTTP: coghttpcheck.sh
+
+`cog.HTTPReaderAt` is an `io.ReaderAt` over HTTP range requests, so the
+reader above runs unchanged on a COG in S3, GCS or behind any HTTPS URL.
+Its unit tests (`cog/http_test.go`) use Go's own file server and inject
+faults: 200 instead of 206, another range than the one asked for,
+truncated bodies, dropped connections, 429 and 5xx, 412 and 416 from a
+replaced file, and cancellation while waiting for a response, a retry or
+a request slot. `coghttpcheck.sh` checks it from outside, against a
+server strata did not write:
+
+1. It runs `cogcheck.sh` first if `out-cog/` is empty, then deletes
+   strata's local reading, so that reading cannot be what gets compared.
+2. nginx (`nginx:alpine`, in Docker) serves `out-cog/` on a loopback
+   port.
+3. `go run ./cog -url <nginx> -workers 8` reads every file through
+   `cog.NewHTTPReaderAt`, with eight goroutines reading windows of each
+   source at once, and records each file's requests and bytes.
+4. `cogcompare.py` judges the result exactly as before.
+5. `cogblocks.py` counts, through GDAL's `BLOCK_OFFSET_x_y` and
+   `BLOCK_SIZE_x_y` metadata, the blocks each file stores, the block
+   reads strata's per-band sources need, and how many of those end past
+   the 64 KiB prefetch. It prints them next to the requests, and fails
+   if any file was not read over HTTP.
+
+With GDAL 3.14 and nginx 1.31, in about 25 s, all 98 files are identical to GDAL's
+reading, as they are from disk. The request counts:
+
+```
+file                                              KiB blocks  reads fetches requests other fetched
+cog-Float32-DEFLATE-FLOATING_POINT                958     39     39      34       35     0    100%
+cog-Byte-ZSTD-STANDARD                            129     39     39      20       21     0    100%
+gtiff-Float32-tiles-BAND-be                      3624    561    561     554      555     0    100%
+gtiff-Float32-tiles-PIXEL-be                     3310    187    561     555      556     0    296%
+...
+98/98 files read over HTTP. The 97 counted: 10,814 requests for 8,789 blocks (11,399 block reads,
+10,717 of them past the prefetch) = 97 prefetches + 10,717 fetches + 0 other.
+217.0 MiB fetched of 165.7 MiB
+```
+
+On every counted file, requests = 1 prefetch + 1 per block read that
+ends past the prefetch, and nothing else. Open never needed a request
+beyond the prefetch, not even for the stripped GeoTIFFs. The cache meant
+no block was fetched twice by one source, although eight goroutines read
+100×77 windows that cut every block. A COG stores its smallest overviews
+first, so those blocks sit inside the prefetch: a 129 KiB ZSTD COG with
+39 blocks took 21 requests. Merging adjacent reads could only save
+requests between blocks, and nothing issues those as one read, so the
+reader does not merge.
+
+Two costs show up that the reader itself cannot fix:
+- **Pixel-interleaved files are fetched once per band.** A `Source`
+  reads one band and its cache is its own, so reading the three bands
+  of a pixel-interleaved file fetches each block three times (`reads`
+  is 3 × `blocks`; `fetched` near 300%). Band-interleaved files and
+  single-band COGs are not affected. A block cache shared by a file's
+  sources would fix it.
+- **Blocks over 1 MiB take one request per MiB.** `cog` reads a block in
+  1 MiB pieces, so that a corrupt byte count cannot make it allocate
+  before it reads. `gtiff-Float32-onestrip`, a single 1.4 MB strip,
+  takes 3 requests: the prefetch and two pieces. GDAL reports that strip
+  as virtual strips of 2 rows, so `cogblocks.py` prints it with a note
+  and leaves it out of the counts.
+
+A planted defect, one bit flipped in the middle of every fetched range,
+makes 0 of 98 files identical, so the comparison sees the HTTP path.
 
 ## What this does not tell you
 
