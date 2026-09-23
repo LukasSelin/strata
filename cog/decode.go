@@ -15,6 +15,7 @@ import (
 	"github.com/klauspost/compress/zlib"
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/LukasSelin/strata/cog/internal/kern"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -283,7 +284,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		// into the samples, without being put back into data first.
 		v := newValidator(float32Test(nd), n)
 		for r := range rows {
-			planesRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
+			kern.PlanesRow(b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes])
 			v.upto(b.vals, (r+1)*im.blockW)
 		}
 		b.valid = v.finish(b.vals)
@@ -315,7 +316,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 			for r := range rows {
 				vals, row := b.vals[r*im.blockW:(r+1)*im.blockW], data[r*rowBytes:(r+1)*rowBytes]
 				if im.bits == 16 {
-					uint16Row(vals, row, signed, pred)
+					kern.Uint16Row(vals, row, signed, pred)
 				} else {
 					intRow(vals, row, im.bits, signed, pred)
 				}
@@ -624,22 +625,6 @@ func floatPredictorRow(row, tmp []byte, size, stride int) {
 	}
 }
 
-// floatPredictorRow32 is floatPredictorRow for one row of single-band
-// float32 samples, writing them to vals rather than back into row, which
-// it uses as scratch.
-func floatPredictorRow32(vals []float32, row []byte) {
-	var acc byte
-	for i, b := range row {
-		acc += b
-		row[i] = acc
-	}
-	n := len(vals)
-	p0, p1, p2, p3 := row[:n], row[n:2*n], row[2*n:3*n], row[3*n:4*n]
-	for i := range vals {
-		vals[i] = math.Float32frombits(uint32(p3[i]) | uint32(p2[i])<<8 | uint32(p1[i])<<16 | uint32(p0[i])<<24)
-	}
-}
-
 // overflow32 is the smallest float64 that rounds to +Inf as a float32:
 // MaxFloat32 plus half its ulp, a tie that rounds to even, which is Inf.
 const overflow32 = math.MaxFloat32 + 0x1p103
@@ -683,38 +668,8 @@ func copyFloat32(vals []float32, data []byte, stride, first int) {
 // tolerance of a finite, non-zero NoData are a run of adjacent bit
 // patterns, found once here, so each cell's test is a range check.
 func float32Validity(vals []float32, nd noData) []uint64 {
-	if !nd.set {
-		return nil
-	}
-	valid := make([]uint64, raster.MaskWords(len(vals)))
-	// The test is on the bits, as integers, so that it has no branch:
-	// a cell is valid where (bits ^ want) & care is not zero. Only ±0
-	// compare equal with different bits, so NoData 0 ignores the sign;
-	// and NaN, which never equals NoData, has bits that never do.
-	want, care := math.Float32bits(nd.cmp32), ^uint32(0)
-	if nd.cmp32 == 0 {
-		want, care = 0, 0x7fffffff
-	}
-	lo, span, ranged := realEqualRun32(nd.cmp32)
-	all := true
-	for k := range valid {
-		chunk := vals[k*64 : min(k*64+64, len(vals))]
-		var word uint64
-		switch {
-		case nd.nan:
-			word = notNaNWord(chunk)
-		case ranged:
-			word = outsideWord(chunk, lo, span)
-		default:
-			word = notEqualWord(chunk, want, care)
-		}
-		valid[k] = word
-		all = all && word == ^uint64(0)>>(64-uint(len(chunk)))
-	}
-	if all {
-		return nil
-	}
-	return valid
+	v := newValidator(float32Test(nd), len(vals))
+	return v.finish(vals)
 }
 
 // realEqualRun32 returns the bit patterns of the float32 values that
@@ -741,39 +696,6 @@ func realEqualRun32(b float32) (lo uint32, span uint64, ok bool) {
 		x, y = y, x
 	}
 	return x, uint64(y - x), true
-}
-
-// outsideWord returns bit j set where the bits of chunk[j] are not in
-// the run of span+1 patterns from lo, for at most 64 cells.
-func outsideWord(chunk []float32, lo uint32, span uint64) uint64 {
-	var word uint64
-	for j, v := range chunk {
-		d := uint64(math.Float32bits(v) - lo)
-		word |= (span - d) >> 63 << (uint(j) & 63)
-	}
-	return word
-}
-
-// notEqualWord returns bit j set where (bits of chunk[j] ^ want) & care
-// is not zero, for at most 64 cells.
-func notEqualWord(chunk []float32, want, care uint32) uint64 {
-	var word uint64
-	for j, v := range chunk {
-		d := (math.Float32bits(v) ^ want) & care
-		word |= uint64((d|-d)>>31) << (uint(j) & 63)
-	}
-	return word
-}
-
-// notNaNWord returns bit j set where chunk[j] is not NaN: its magnitude
-// bits are at most +Inf's. For at most 64 cells.
-func notNaNWord(chunk []float32) uint64 {
-	var word uint64
-	for j, v := range chunk {
-		m := math.Float32bits(v) & 0x7fffffff
-		word |= uint64((0x7f800000-m)>>31^1) << (uint(j) & 63)
-	}
-	return word
 }
 
 // intRow writes one row of single-band little-endian integer samples of
@@ -854,25 +776,8 @@ func convertInts(vals []float32, data []byte, bits int, signed bool, stride, fir
 // a cell is NoData if and only if its value equals it. It returns nil if
 // every cell is valid.
 func exactValidity(vals []float32, nd noData) []uint64 {
-	if !nd.set {
-		return nil
-	}
-	want, care := math.Float32bits(float32(nd.cmp)), ^uint32(0)
-	if nd.cmp == 0 {
-		want, care = 0, 0x7fffffff // -0, from truncating -0.5, is 0
-	}
-	valid := make([]uint64, raster.MaskWords(len(vals)))
-	all := true
-	for k := range valid {
-		chunk := vals[k*64 : min(k*64+64, len(vals))]
-		word := notEqualWord(chunk, want, care)
-		valid[k] = word
-		all = all && word == ^uint64(0)>>(64-uint(len(chunk)))
-	}
-	if all {
-		return nil
-	}
-	return valid
+	v := newValidator(intTest(nd), len(vals))
+	return v.finish(vals)
 }
 
 // convert writes every stride-th little-endian sample of data, from the

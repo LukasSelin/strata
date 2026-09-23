@@ -3,6 +3,7 @@ package cog
 import (
 	"math"
 
+	"github.com/LukasSelin/strata/cog/internal/kern"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -10,7 +11,8 @@ import (
 // written to the block's values, and the validity of every 64 cells
 // written so far is worked out straight after, while they are still in
 // the first-level cache, rather than in a second pass over the whole
-// block once it has left it.
+// block once it has left it. The per-row kernels are in internal/kern,
+// with AVX2 forms in GOEXPERIMENT=simd builds.
 
 // nodataTest is a block's NoData test on the bits of its float32
 // values, prepared once per block.
@@ -22,10 +24,10 @@ type nodataTest struct {
 }
 
 const (
-	testNone  = iota // no NoData: every cell is valid
-	testExact        // one bit pattern, or ±0
-	testRange        // a run of patterns: ARE_REAL_EQUAL on float32
-	testNaN          // NoData is NaN: every NaN
+	testNone  = 0              // no NoData: every cell is valid
+	testExact = kern.ModeExact // one bit pattern, or ±0
+	testRange = kern.ModeRange // a run of patterns: ARE_REAL_EQUAL on float32
+	testNaN   = kern.ModeNaN   // NoData is NaN: every NaN
 )
 
 // float32Test is float32 samples' test: GDAL's ARE_REAL_EQUAL, which
@@ -61,13 +63,7 @@ func exactTest(v float32) nodataTest {
 
 // word returns the validity bits of chunk, at most 64 cells.
 func (t *nodataTest) word(chunk []float32) uint64 {
-	switch t.mode {
-	case testNaN:
-		return notNaNWord(chunk)
-	case testRange:
-		return outsideWord(chunk, t.lo, t.span)
-	}
-	return notEqualWord(chunk, t.want, t.care)
+	return kern.Word(chunk, t.mode, t.want, t.care, t.lo, t.span)
 }
 
 // validator builds a block's validity bits as its rows are written.
@@ -93,7 +89,7 @@ func (v *validator) upto(vals []float32, n int) {
 		return
 	}
 	for ; v.done+64 <= n; v.done += 64 {
-		w := wordOf(&v.t, vals[v.done:v.done+64])
+		w := v.t.word(vals[v.done : v.done+64])
 		v.valid[v.done>>6] = w
 		v.all = v.all && w == ^uint64(0)
 	}
@@ -116,16 +112,3 @@ func (v *validator) finish(vals []float32) []uint64 {
 	}
 	return v.valid
 }
-
-// The kernels a row is decoded with. A GOEXPERIMENT=simd build on a CPU
-// with AVX2 replaces them (rows_amd64.go); these are the scalar ones.
-var (
-	// planesRow is floatPredictorRow32: one row of single-band float32
-	// samples from the floating-point predictor's byte planes.
-	planesRow = floatPredictorRow32
-	// wordOf is nodataTest.word on exactly 64 cells.
-	wordOf = func(t *nodataTest, chunk []float32) uint64 { return t.word(chunk) }
-	// uint16Row is intRow for 16-bit samples: one row of single-band
-	// little-endian samples, horizontally differenced if pred.
-	uint16Row = func(vals []float32, row []byte, signed, pred bool) { intRow(vals, row, 16, signed, pred) }
-)
