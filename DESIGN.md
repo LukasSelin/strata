@@ -52,7 +52,7 @@ the detailed record; this table only points at it.
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
-| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files; writing, HTTP range reads open |
+| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode, mosaics and AVX2 numbers open |
@@ -1596,9 +1596,18 @@ BigTIFF, tiles and strips, chunky and planar, 8/16/32-bit integers and
 overviews, sparse blocks, GDAL NoData (compared in the native type) and
 the geotransform and EPSG code. It is bit-identical to GDAL 3.14 on 98
 files, 58.5M cells, and all eight of `cogsabotage.py`'s planted defects
-fail that comparison. Open: writing (a COG sink), a byte-range
-`io.ReaderAt` over HTTP, internal masks, and a benchmark of decode
-throughput against GDAL.
+fail that comparison. `cog.NewHTTPReaderAt` reads the same files from a
+URL (S3, GCS, any HTTPS server, presigned or public) with range requests
+and the standard library only: a 64 KiB header prefetch that serves Open,
+then one request per block past it, 206 required, bounded retries of 429,
+5xx and truncated bodies, at most 8 requests in flight, and If-Match on
+the ETag so a replaced file fails instead of mixing versions. Read through
+it from nginx, all 98 files are again identical to GDAL's reading, and
+every file but one costs exactly one prefetch plus one request per block
+past it (`acceptance/coghttpcheck.sh`). Open: writing (a COG sink),
+internal masks, a block cache shared by a file's bands (each band of a
+pixel-interleaved file fetches every block again), and a benchmark of
+decode throughput against GDAL.
 
 ## 35. Use Existing Format Libraries Where Possible
 
