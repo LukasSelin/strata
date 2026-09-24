@@ -25,6 +25,12 @@
 #
 # and one `agree ...` line per operation (agree.py) saying how far the
 # two tools' results are apart. Lines starting with # are notes.
+#
+# A workflow op (surface: slope, aspect and hillshade of one DEM) is one
+# job with several outputs, timed three ways at every tier: cfg=fused,
+# strata's one pass writing all of them; cfg=separate, one stratasuite
+# process per product, one after another, timed as one case; and GDAL,
+# one gdaldem run per product, likewise. See workflow() below.
 set -uo pipefail
 
 WORK=${WORK:-/work}
@@ -227,7 +233,13 @@ has_tier compute && in_process "tier=floor op=none tool=gdal cfg=mem-copy thread
   python3 gdalcompute.py copy dem.tif dem2.tif "$REPEATS" 1
 
 # --- the operations -------------------------------------------------------
+# products <op> — the ops a workflow op writes in one pass; empty for
+# every other op.
+products() { case $1 in surface) echo "slope aspect hillshade" ;; esac; }
+is_workflow() { [[ -n $(products "$1") ]]; }
+
 for op in $OPS; do
+  is_workflow "$op" && continue
   echo "# --- $op ($(family "$op"))" >&2
   two=$(inputs "$op")
   r2=$([[ $two == 2 ]] && echo dem2.raw || echo -)
@@ -315,4 +327,113 @@ for op in $OPS; do
     fi
   fi
   rm -f gdal-* strata-*
+done
+
+# --- workflows: several products of one DEM -------------------------------
+# separate_strata <workflow> <workers> <src kind> <file> — the workflow's
+# products the way a user without the fused call gets them: one
+# stratasuite process each, one after another. Prints one run=0 line,
+# the sum of the processes' in-process times.
+separate_strata() {
+  local wf=$1 n=$2 kind=$3 f=$4 p ms total=0
+  for p in $(products "$wf"); do
+    strata_args "$p" "$kind" "$f" -
+    GOMAXPROCS="$n" ./stratasuite -mode chunked -workers "$n" "${SARGS[@]}" >/tmp/sep-out 2>&1 ||
+      { cat /tmp/sep-out; return 1; }
+    ms=$(sed -n 's/^run=0 ms=\([0-9.]*\).*/\1/p' /tmp/sep-out)
+    total=$(awk -v a="$total" -v b="$ms" 'BEGIN { printf "%.2f", a + b }')
+  done
+  echo "run=0 ms=$total"
+}
+
+# separate_gdal <workflow> <in> <format> <extension> <threads> — the same
+# job in GDAL: one gdaldem run per product, one after another.
+separate_gdal() {
+  local wf=$1 in=$2 fmt=$3 ext=$4 n=$5 p
+  for p in $(products "$wf"); do
+    gdal_cmd "$p" "$in" - "gdal-$p.$ext" "$fmt" "$n"
+    GDAL_NUM_THREADS="$n" "${GCMD[@]}" || return 1
+  done
+}
+
+# workflow <op> — time a workflow op: fused, separate and GDAL, at every
+# tier; then check that the fused outputs are the separate ones bit for
+# bit, how far each is from gdaldem's, and that the fused whole flow
+# from the COG on N workers is the raw path on one.
+workflow() {
+  local wf=$1 n p
+  echo "# --- $wf (workflow: $(products "$wf"))" >&2
+
+  if has_tier compute; then
+    # gdaldem runs its algorithms on one thread (gdal_mt), so GDAL gets
+    # one row; strata gets the fused call and its products' own calls,
+    # one after another, in the same timed run.
+    in_process "tier=compute op=$wf tool=gdal cfg=mem threads=1" \
+      python3 gdalcompute.py "$wf" dem.tif dem2.tif "$REPEATS" 1
+    strata_args "$wf" raw dem.raw -
+    for n in 1 "$N"; do
+      in_process "tier=compute op=$wf tool=strata cfg=fused threads=$n" \
+        env GOMAXPROCS="$n" ./stratasuite -mode memory -repeat "$REPEATS" -workers "$n" "${SARGS[@]}"
+      in_process "tier=compute op=$wf tool=strata cfg=separate threads=$n" \
+        env GOMAXPROCS="$n" ./stratasuite -mode memory -separate -repeat "$REPEATS" -workers "$n" "${SARGS[@]}"
+    done
+  fi
+
+  if has_tier raw; then
+    whole_process "tier=raw op=$wf tool=gdal cfg=envi threads=1" separate_gdal "$wf" dem.raw ENVI raw 1
+    whole_process "tier=raw op=$wf tool=gdal cfg=gtiff threads=1" separate_gdal "$wf" dem.tif GTiff tif 1
+    strata_args "$wf" raw dem.raw -
+    for n in 1 "$N"; do
+      whole_process "tier=raw op=$wf tool=strata cfg=fused threads=$n" \
+        env GOMAXPROCS="$n" ./stratasuite -mode chunked -workers "$n" "${SARGS[@]}"
+      whole_process "tier=raw op=$wf tool=strata cfg=separate threads=$n" \
+        separate_strata "$wf" "$n" raw dem.raw
+    done
+  fi
+
+  if has_tier cog; then
+    strata_args "$wf" cog dem-cog.tif -
+    for n in 1 "$N"; do
+      whole_process "tier=cog op=$wf tool=gdal cfg=to-gtiff threads=$n" \
+        separate_gdal "$wf" dem-cog.tif GTiff tif "$n"
+      whole_process "tier=cog op=$wf tool=gdal cfg=to-envi threads=$n" \
+        separate_gdal "$wf" dem-cog.tif ENVI raw "$n"
+      whole_process "tier=cog op=$wf tool=strata cfg=fused threads=$n" \
+        env GOMAXPROCS="$n" ./stratasuite -mode chunked -workers "$n" "${SARGS[@]}"
+      whole_process "tier=cog op=$wf tool=strata cfg=separate threads=$n" \
+        separate_strata "$wf" "$n" cog dem-cog.tif
+    done
+  fi
+
+  # --- the checks -----------------------------------------------------------
+  rm -f gdal-* strata-*
+  strata_args "$wf" raw dem.raw -
+  GOMAXPROCS=1 ./stratasuite -mode chunked -workers 1 "${SARGS[@]}" >/dev/null
+  separate_strata "$wf" 1 raw dem.raw >/dev/null
+  separate_gdal "$wf" dem.raw ENVI raw 1 >/dev/null 2>&1
+  for p in $(products "$wf"); do
+    if cmp -s "strata-$wf-$p.raw" "strata-$p.raw"; then
+      echo "# workflow identical: $wf $p fused-vs-separate: fused from the raw file on 1 == $p alone from the raw file on 1"
+    else
+      echo "# workflow DIFFERENT: $wf $p fused-vs-separate: fused from the raw file on 1 != $p alone from the raw file on 1"
+    fi
+    python3 agree.py raster "$wf-$p" "strata-$wf-$p.raw" "gdal-$p.raw" "$W" "$H" "$(border "$p")"
+  done
+  if has_tier cog; then
+    for p in $(products "$wf"); do mv "strata-$wf-$p.raw" "strata-$wf-$p-fromraw.raw"; done
+    strata_args "$wf" cog dem-cog.tif -
+    GOMAXPROCS="$N" ./stratasuite -mode chunked -workers "$N" "${SARGS[@]}" >/dev/null
+    for p in $(products "$wf"); do
+      if cmp -s "strata-$wf-$p.raw" "strata-$wf-$p-fromraw.raw"; then
+        echo "# workflow identical: $wf $p cog-vs-raw: fused from the COG on $N workers == fused from the raw file on 1"
+      else
+        echo "# workflow DIFFERENT: $wf $p cog-vs-raw: fused from the COG on $N workers != fused from the raw file on 1"
+      fi
+    done
+  fi
+  rm -f gdal-* strata-*
+}
+
+for op in $OPS; do
+  is_workflow "$op" && workflow "$op"
 done
