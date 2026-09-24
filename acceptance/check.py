@@ -57,6 +57,19 @@ float64 numpy:
     equality with that float32 arithmetic, as for the 3x3; and against
     the definition in float64, computed as a sliding window rather than
     by shifted sums, within a derived bound (check 14).
+  * heat load and potential direct incident radiation (cases with an
+    "equation"), McCune & Keon (2002), Journal of Vegetation Science
+    13: 603-606, Table 2, as they write it, in angles:
+        v = k0 + k1 cos(L) cos(S) + k2 cos(A) sin(S) sin(L)
+               + k3 sin(L) sin(S) + k4 sin(A) sin(S) + k5 cos(A) sin(S)
+    with S = atan(hypot(dx, dy)) and A the folded aspect, from the
+    compass aspect above: 180 - |aspect - 180| for radiation, and
+    |180 - |aspect - 225|| for heat load. South of the equator, McCune's
+    2004 supplement (Hemispheres.pdf) takes L = |latitude| and folds by
+    |aspect - 180| and |180 - |aspect - 315||. Equations 1 and 2 give
+    ln(radiation), and "linear" cases exp of it; Equation 3 gives
+    radiation itself. Check 15 holds strata to the authors' own numbers:
+    their test spreadsheet (testrad.xls), transcribed below.
 
 The focal operations are checked against their definitions as shifted
 sums of the float32 input, in float64:
@@ -280,6 +293,9 @@ def curvature_ref(op, z, case):
 
 
 def ref_name(case):
+    if case.get("equation"):
+        how = f"fit r={case['fit']}" if case.get("fit") else "Horn"
+        return f"McCune & Keon eq. {case['equation']} ({how} gradient)"
     if case.get("fit"):
         return f"least-squares fit reference, r={case['fit']}"
     return "Zevenbergen-Thorne reference" if base_op(case["op"]) in CURVATURES else "Horn reference"
@@ -465,6 +481,8 @@ def expected(op, z, case):
         return focal_expected(z, case)
     dx, dy, tolx, toly = gradient_ref(z, case)
     gtol = np.hypot(tolx, toly)
+    if case.get("equation"):
+        return heat_load_ref(dx, dy, gtol, case)
 
     if op == "gradient_dx":
         return dx, tolx + EPS * np.abs(dx)
@@ -501,6 +519,56 @@ def expected(op, z, case):
         # |d cos_i / d(dx or dy)| <= 1 for a unit light vector.
         return hs, 255.0 * 2 * gtol + EPS * 255.0
     return None, None
+
+
+# McCune & Keon (2002), Table 2: k0 to k5 above for Equations 1, 2 and 3.
+MCCUNE_KEON = {
+    1: (-1.467, 1.582, -1.500, -0.262, 0.607, 0.0),
+    2: (-1.236, 1.350, -1.376, -0.331, 0.375, 0.0),
+    3: (0.339, 0.808, 0.0, -0.196, 0.0, -0.482),
+}
+
+
+def heat_load(dx, dy, lat, eq, radiation, linear):
+    """McCune & Keon's equation at the gradient (dx, dy), in angles, and
+    the constant C that bounds how far it moves with the gradient.
+
+    Every term is a linear function of the unit surface normal
+    n = (-dx, dy, 1) / sqrt(1 + dx^2 + dy^2), or the absolute value of
+    one, with a unit coefficient vector: cos(S) is n's vertical part,
+    sin(S) the length of its horizontal part, and sin(S) cos(A) and
+    sin(S) |sin(A)| its horizontal part along and across the coolest
+    bearing. The map from the gradient to n moves by at most as much as
+    the gradient does (its Jacobian has norm 1 / |(-dx, dy, 1)| <= 1),
+    so v moves by at most C times the gradient's error, with
+        C = |k1 cos L| + |k2 sin L + k5| + |k3 sin L| + |k4|.
+    """
+    k0, k1, k2, k3, k4, k5 = MCCUNE_KEON[eq]
+    L = np.radians(abs(lat))
+    S = np.arctan(np.hypot(dx, dy))
+    aspect = (DEG * np.arctan2(-dx, dy)) % 360.0
+    if lat >= 0:
+        folded = 180.0 - np.abs(aspect - 180.0) if radiation else np.abs(180.0 - np.abs(aspect - 225.0))
+    else:
+        folded = np.abs(aspect - 180.0) if radiation else np.abs(180.0 - np.abs(aspect - 315.0))
+    A = np.radians(folded)
+    v = (k0 + k1 * np.cos(L) * np.cos(S) + k2 * np.cos(A) * np.sin(S) * np.sin(L)
+         + k3 * np.sin(L) * np.sin(S) + k4 * np.sin(A) * np.sin(S) + k5 * np.cos(A) * np.sin(S))
+    C = abs(k1 * np.cos(L)) + abs(k2 * np.sin(L) + k5) + abs(k3 * np.sin(L)) + abs(k4)
+    return (np.exp(v) if linear and eq != 3 else v), C
+
+
+def heat_load_ref(dx, dy, gtol, case):
+    """heat_load() for a case, and its tolerance: C times the gradient's
+    error, through exp for the arithmetic scale (exp(v) grows by at most
+    exp(v + C gtol) - exp(v)), plus one float32 rounding of the result
+    (strata evaluates the equation in float64 and rounds once)."""
+    eq, linear = case["equation"], case.get("linear", False)
+    v, C = heat_load(dx, dy, case["latitude"], eq, case.get("radiation", False), False)
+    if linear and eq != 3:
+        ev = np.exp(v)
+        return ev, ev * np.expm1(C * gtol) + EPS * ev + 1e-12
+    return v, C * gtol + EPS * np.abs(v) + 1e-12
 
 
 def defined(out_mask, r=1):
@@ -631,7 +699,8 @@ for case in MAN["rasters"]:
 PLANE_A, PLANE_B = 0.3, -0.7  # rise per column, rise per row (see main.go)
 
 for case in MAN["rasters"]:
-    if case["surface"] != "plane" or not (base_op(case["op"]) in ("slope_deg", "aspect") + CURVATURES or rug_kind(case["op"])):
+    if case["surface"] != "plane" or not (base_op(case["op"]) in ("slope_deg", "aspect") + CURVATURES
+                                          or rug_kind(case["op"]) or case.get("equation")):
         continue
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
@@ -669,6 +738,18 @@ for case in MAN["rasters"]:
         _, tol, _, _ = curvature_ref(base_op(case["op"]), z, case)
         worst = (np.abs(got[keep]) / tol[keep]).max()
         record(f"{case['name']} = analytic 0", worst <= 1.0, f"max {np.abs(got[keep]).max():.2e} ({worst:.2f}x)")
+        continue
+    if case.get("equation"):
+        # One value for the whole plane, from its exact gradient; the
+        # float32 elevations move the computed gradient by gtol at most.
+        z, _ = load(case["dem"])
+        _, _, tolx, toly = gradient_ref(z, case)
+        want, tol = heat_load_ref(np.float64(tdx), np.float64(tdy), np.hypot(tolx, toly), case)
+        tol = np.broadcast_to(tol, got.shape)[keep]
+        err = np.abs(got[keep] - want)
+        worst = (err / tol).max()
+        record(f"{case['name']} = analytic {float(want):.6f}", worst <= 1.0,
+               f"max error {err.max():.2e} ({worst:.2f}x tolerance)")
         continue
     if base_op(case["op"]) == "slope_deg":
         want = DEG * np.arctan(np.hypot(tdx, tdy))
@@ -1040,6 +1121,60 @@ for case in MAN["rasters"]:
 # --------------------------------------------------------------------
 # Pictures, for the eyeball check.
 # --------------------------------------------------------------------
+
+# --------------------------------------------------------------------
+# 15. Heat load against its authors' numbers. McCune and Keon publish a
+#     test spreadsheet with their paper (testrad.xls, at
+#     sites.science.oregonstate.edu/~mccuneb/radiation.htm) that
+#     evaluates all three equations, radiation and heat load, at six
+#     latitude, slope and aspect points; its first rows are Table 2's
+#     examples (with the erratum: Eq. 1, north aspect, -0.984). The
+#     values are transcribed here from the spreadsheet, not computed.
+#     main.go runs HeatLoad on a plane at each point, north of the
+#     equator and mirrored south of it (latitude -L, aspect 180 minus
+#     the aspect), which McCune's 2004 southern-hemisphere rule maps to
+#     the same values. The plane is checked to be the one described; its
+#     float32 elevations, at most 4 tan(slope), move the Horn gradient by
+#     at most gtol = 3 u max|z| (TOLERANCES), so the result by C gtol,
+#     plus the result's rounding.
+# --------------------------------------------------------------------
+
+# (latitude, slope, aspect): (radiation Eq. 1, 2, 3), (heat load Eq. 1, 2, 3)
+TESTRAD = {
+    (40, 0, 0): ((-0.25511769098577686, -0.20184000178937955, 0.9579639100401343),
+                 (-0.25511769098577686, -0.20184000178937955, 0.9579639100401343)),
+    (40, 30, 0): ((-0.9837750181305804, -0.8890103948393941, 0.5710452843712215),
+                  (-0.6279670110295916, -0.6268993985409437, 0.6416325501052635)),
+    (40, 30, 180): ((-0.01959360360077163, -0.00453464391071629, 1.0530452843712215),
+                    (0.053812205478473735, -0.001480597264211625, 0.9824580186371794)),
+    (60, 0, 0): ((-0.6759999999999998, -0.5609999999999998, 0.7430000000000001),
+                 (-0.6759999999999998, -0.5609999999999998, 0.7430000000000001)),
+    (60, 30, 0): ((-1.544942286340599, -1.3905855345755218, 0.36300377355803837),
+                  (-1.1400956521839989, -1.0834897710580573, 0.4335910392920804)),
+    (60, 30, 180): ((-0.24590418066394135, -0.19893457896813463, 0.8450037735580384),
+                    (-0.22153699864030738, -0.24086529954064415, 0.7744165078239963)),
+}
+
+points = MAN.get("heat_points") or []
+record("heat load points present", len(points) == 2 * 2 * 3 * len(TESTRAD), f"{len(points)} points")
+for pt in points:
+    lat, slope, aspect = pt["latitude"], pt["slope"], pt["aspect"]
+    north = (abs(lat), slope, aspect if lat >= 0 else 180 - aspect)
+    want = TESTRAD[north][0 if pt["radiation"] else 1][pt["equation"] - 1]
+    t = np.tan(np.radians(slope)) * (1 if aspect == 0 else -1)
+    plane = np.array([[np.float32(t * y)] * 5 for y in range(5)], np.float32).ravel()
+    same_plane = np.array_equal(np.array(pt["dem"], np.float32), plane)
+    _, C = heat_load(0.0, 0.0, lat, pt["equation"], pt["radiation"], False)
+    tol = C * 3 * EPS * np.abs(plane).max() + EPS * abs(want) + 1e-12
+    value = float(np.float32(pt["value"]))  # the float32 Go wrote, exactly
+    err = abs(value - want)
+    what = "radiation" if pt["radiation"] else "heat load"
+    where = f"{abs(lat)}{'N' if lat >= 0 else 'S'}"
+    record(f"McCune & Keon eq. {pt['equation']} {what} at {where} slope {slope} aspect {aspect}",
+           same_plane and err <= tol,
+           f"{value:.7f} vs testrad.xls {want:.7f}, error {err:.1e}, tolerance {tol:.1e}"
+           + ("" if same_plane else ", NOT THE DESCRIBED PLANE"))
+
 
 if WANT_PNG:
     import matplotlib

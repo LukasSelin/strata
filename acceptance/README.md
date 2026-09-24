@@ -55,13 +55,18 @@ runs at radius 3 and 8, and `Features` writes a stack of slope, plan
 curvature, TPI at radius 1, 3 and 8, TRI at 3 and roughness at 8 in one
 call, each output emitted as its own case. Slope, aspect, hillshade and
 the three curvatures also run with the quadratic fit (`FitRadius` 1 and
-4). 1778 checks come out of that (1772 without scipy):
+4). `HeatLoad` runs four ways on each DEM: heat load and direct radiation
+from Equation 1 at 45°N, Equation 3 heat load at 33.5°S, and Equation 2
+radiation on the arithmetic scale. It also runs fitted at radius 1 and
+4, and in the `Features` stack. It runs as well on small planes at the
+points of McCune and Keon's test spreadsheet. 2085 checks come out of
+that (2079 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; fitted results against Wood's quadratic, solved by least squares with numpy's pseudo-inverse of the full design matrix; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; heat load against McCune and Keon's equation in angles on that gradient; fitted results against Wood's quadratic, solved by least squares with numpy's pseudo-inverse of the full design matrix; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
 | 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
-| 3 | The plane against its analytic slope, aspect, zero curvature and closed-form ruggedness | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
+| 3 | The plane against its analytic slope, aspect, zero curvature, closed-form ruggedness and heat load at its exact gradient | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
 | 5 | Validity after a (2r+1)×(2r+1) erosion of the input mask, 3×3 for terrain | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
@@ -73,6 +78,7 @@ the three curvatures also run with the quadratic fit (`FitRadius` 1 and
 | 13 | Every `Features` output (3×3 derivatives next to ruggedness at radius 1, 3 and 8, all in one call) is the standalone function's file bit for bit, Data and validity, in every form | A fused pass that gives every output the largest window's border or erosion, an output wired to the wrong operation. The standalone files are judged by checks 1–5 and 14 |
 | 14 | Ruggedness over a larger window against its definition in float64, taken with numpy's `sliding_window_view` rather than check 1's shifted sums, within derived bounds; roughness exactly | A misreading of the window that check 1's transcription could share: the centre counted, the wrong n, a shifted window |
 | 11 | `WeightedSlope` against the float64 Horn slope times the weight, and its validity against the DEM's mask eroded 3×3 AND the weight's mask not eroded; and that the case tells the two readings apart | A weight's NoData wiping out its neighbours (one erosion over every input, the engine's rule before per-input reach, DESIGN.md §52), a weight's NoData ignored, a weight read from the wrong cell |
+| 15 | Heat load on planes at the six latitude, slope and aspect points of McCune and Keon's own test spreadsheet (`testrad.xls`, published with the paper), transcribed rather than computed: all three equations, radiation and heat load, north of the equator and mirrored south of it, within a derived bound | A misread coefficient (the paper itself misprints one), heat load folded about the wrong axis, ln and arithmetic scales mixed up, the southern-hemisphere rule not applied. This compares against the authors' numbers, not only against a reading of their equation |
 
 N-dimensional arrays are judged by `check_array.py` (DESIGN.md §10).
 `array.go` builds a masked [time, y, x] = [5, 23, 300] float32 stack. Its
@@ -123,6 +129,14 @@ are strata's own generalisation (the eight neighbours become the window's
 other n cells, "/ 8" becomes "/ n"), so gdaldem has nothing to say about
 them: check 1 transcribes that documented arithmetic the same way, and
 check 14 judges it against the float64 definition by a separate route.
+Heat load's reference is McCune and Keon's (2002) Table 2 in its
+published form, in angles: aspect by `atan2`, folded by their formulas
+(and McCune's 2004 southern-hemisphere supplement), then cos and sin. It
+does not use strata's rewrite of it as a function of the gradient. The
+tolerance is the gradient's error times a constant C, the sum of the
+coefficients' magnitudes. Every term is linear in the unit surface
+normal, which moves by at most as much as the gradient does. Check 15
+then compares against the authors' own evaluated numbers.
 The quadratic fit's reference does not use strata's closed forms for the
 coefficients either: it solves the least-squares problem for every
 window with the pseudo-inverse of the six-column design matrix, and

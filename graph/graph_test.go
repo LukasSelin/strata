@@ -137,6 +137,7 @@ func TestTerrainStack(t *testing.T) {
 	sl := terrain.SlopeOptions{CellSize: 12.5, CellSizeY: 9, ZFactor: 1.5, Units: terrain.SlopePercent}
 	as := terrain.AspectOptions{CellSize: 12.5, CellSizeY: 9, ZFactor: 1.5, ZeroForFlat: true}
 	hs := terrain.HillshadeOptions{CellSize: 12.5, CellSizeY: 9, ZFactor: 1.5, Azimuth: 200, Altitude: 30}
+	hl := terrain.HeatLoadOptions{CellSize: 12.5, CellSizeY: 9, ZFactor: 1.5, Latitude: 44}
 	cu := terrain.CurvatureOptions{CellSize: 12.5}
 	ru := terrain.RuggednessOptions{}
 	g := New()
@@ -145,6 +146,7 @@ func TestTerrainStack(t *testing.T) {
 	g.Output("slope", slope)
 	g.Output("aspect", Aspect(dem, as))
 	g.Output("hillshade", Hillshade(dem, hs))
+	g.Output("heatload", HeatLoad(dem, hl))
 	g.Output("curvature", Curvature(dem, cu))
 	g.Output("tri", Ruggedness(dem, ru))
 	g.Stats("slope", slope)
@@ -153,18 +155,19 @@ func TestTerrainStack(t *testing.T) {
 		t.Fatalf("want one pass reading the DEM once:\n%v", p)
 	}
 	if !strings.Contains(p.String(), "is computed once for every product") {
-		t.Fatalf("want slope, aspect and hillshade to share a gradient:\n%v", p)
+		t.Fatalf("want slope, aspect, hillshade and heat load to share a gradient:\n%v", p)
 	}
 	for _, masked := range []bool{false, true} {
 		rng := rand.New(rand.NewPCG(1, 2))
 		d := operand(rng, 800, masked)
 		want := map[string]raster.Float32Raster{}
-		for _, name := range []string{"slope", "aspect", "hillshade", "curvature", "tri"} {
+		for _, name := range []string{"slope", "aspect", "hillshade", "heatload", "curvature", "tri"} {
 			want[name] = blank(masked)
 		}
 		terrain.Slope(want["slope"], d, sl)
 		terrain.Aspect(want["aspect"], d, as)
 		terrain.Hillshade(want["hillshade"], d, hs)
+		terrain.HeatLoad(want["heatload"], d, hl)
 		terrain.Curvature(want["curvature"], d, cu)
 		terrain.Ruggedness(want["tri"], d, ru)
 		check(t, "terrain stack", p, map[string]raster.Float32Raster{"dem": d}, want,
@@ -173,7 +176,7 @@ func TestTerrainStack(t *testing.T) {
 }
 
 // TestMultiScaleStack is the same measures at several scales of one DEM:
-// slope, aspect and hillshade from the quadratic fit over 7×7, which
+// slope, aspect, hillshade and heat load from the quadratic fit over 7×7, which
 // share that fit's gradient, next to Horn's slope, which must not share
 // it, a slope from the fit over 11×11, which is its gradient's only
 // reader and so runs the standalone kernel, a fitted curvature and TPI at
@@ -182,6 +185,7 @@ func TestMultiScaleStack(t *testing.T) {
 	sl := terrain.SlopeOptions{CellSize: 12.5, CellSizeY: 9, Units: terrain.SlopePercent}
 	fsl, fas, fhs := sl, terrain.AspectOptions{CellSize: 12.5, CellSizeY: 9}, terrain.HillshadeOptions{CellSize: 12.5, CellSizeY: 9}
 	fsl.FitRadius, fas.FitRadius, fhs.FitRadius = 3, 3, 3
+	fhl := terrain.HeatLoadOptions{CellSize: 12.5, CellSizeY: 9, FitRadius: 3, Latitude: -41, Radiation: true}
 	lone := sl
 	lone.FitRadius = 5
 	cu := terrain.CurvatureOptions{CellSize: 12.5, CellSizeY: 9, Type: terrain.CurvaturePlan, FitRadius: 2}
@@ -193,6 +197,7 @@ func TestMultiScaleStack(t *testing.T) {
 	g.Output("slope7", Slope(dem, fsl))
 	g.Output("aspect7", Aspect(dem, fas))
 	g.Output("hillshade7", Hillshade(dem, fhs))
+	g.Output("heatload7", HeatLoad(dem, fhl))
 	g.Output("slope11", Slope(dem, lone))
 	g.Output("curvature5", Curvature(dem, cu))
 	g.Output("tpi3", Ruggedness(dem, tpi1))
@@ -204,13 +209,14 @@ func TestMultiScaleStack(t *testing.T) {
 	for _, masked := range []bool{false, true} {
 		d := operand(rand.New(rand.NewPCG(5, 6)), 800, masked)
 		want := map[string]raster.Float32Raster{}
-		for _, name := range []string{"slope", "slope7", "aspect7", "hillshade7", "slope11", "curvature5", "tpi3", "tpi11"} {
+		for _, name := range []string{"slope", "slope7", "aspect7", "hillshade7", "heatload7", "slope11", "curvature5", "tpi3", "tpi11"} {
 			want[name] = blank(masked)
 		}
 		terrain.Slope(want["slope"], d, sl)
 		terrain.Slope(want["slope7"], d, fsl)
 		terrain.Aspect(want["aspect7"], d, fas)
 		terrain.Hillshade(want["hillshade7"], d, fhs)
+		terrain.HeatLoad(want["heatload7"], d, fhl)
 		terrain.Slope(want["slope11"], d, lone)
 		terrain.Curvature(want["curvature5"], d, cu)
 		terrain.Ruggedness(want["tpi3"], d, tpi1)

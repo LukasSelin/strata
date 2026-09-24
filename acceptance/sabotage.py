@@ -401,6 +401,56 @@ def fit_slope_drift(d):
             write(d, name, read(d, name) * np.float32(1.0001))
 
 
+# Heat load. check.py has McCune and Keon's equation in angles, and
+# their own spreadsheet's values, so a wrong fold, a wrong scale or a
+# hemisphere rule not applied must fail it.
+
+
+def heat_folded_as_radiation(d):
+    """Heat load folded about north-south (direct radiation's axis)
+    instead of northeast-southwest."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-heatload_eq1-{form}.f32", read(d, f"{stem}-radiation_eq1-{form}.f32"))
+
+
+def heat_log_scale(d):
+    """ln(radiation) written where the arithmetic scale was asked for."""
+    for stem in STEMS:
+        for form in FORMS:
+            name = f"{stem}-radiation_eq2_linear-{form}.f32"
+            write(d, name, np.log(read(d, name)))
+
+
+def heat_drift(d):
+    """Every Equation 3 heat load 0.05% too large."""
+    for stem in STEMS:
+        for form in FORMS:
+            name = f"{stem}-heatload_eq3_south-{form}.f32"
+            write(d, name, read(d, name) * np.float32(1.0005))
+
+
+def heat_fit_is_horn(d):
+    """The r = 4 fitted heat load computed from Horn's 3x3 gradient."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-heatload_eq1_fit4-{form}.f32", read(d, f"{stem}-heatload_eq1-{form}.f32"))
+
+
+def heat_south_unfolded(d):
+    """South of the equator, the northern folds used with |latitude|: each
+    southern point gets the value the northern rule gives its aspect."""
+    p = os.path.join(d, "manifest.json")
+    man = json.load(open(p))
+    pts = man["heat_points"]
+    north = {(q["latitude"], q["slope"], q["aspect"], q["equation"], q["radiation"]): q["value"]
+             for q in pts if q["latitude"] > 0}
+    for q in pts:
+        if q["latitude"] < 0 and q["slope"] > 0:
+            q["value"] = north[(-q["latitude"], q["slope"], q["aspect"], q["equation"], q["radiation"])]
+    json.dump(man, open(p, "w"))
+
+
 def _weighted(d, f):
     """Apply f(values, mask) -> (values, mask) to every weighted slope."""
     for c in MAN["rasters"]:
@@ -504,6 +554,11 @@ MUTATIONS = [
     ("r=1 fit slope is Horn's", fit_is_horn),
     ("r=4 fit curvature over 3x3", fit_wrong_radius),
     ("r=4 fit slope 0.01% too large", fit_slope_drift),
+    ("heat load folded N-S", heat_folded_as_radiation),
+    ("ln where linear was asked", heat_log_scale),
+    ("heat load 0.05% too large", heat_drift),
+    ("r=4 heat load from Horn's gradient", heat_fit_is_horn),
+    ("southern fold not applied", heat_south_unfolded),
 ]
 
 

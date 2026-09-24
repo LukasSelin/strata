@@ -42,6 +42,7 @@ the detailed record; this table only points at it.
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
 | `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
 | `terrain`: multi-scale Ruggedness (radius 1–8), Wood's fit (`FitRadius` 1–8) and `Features` | §20 | done; SIMD ruggedness sums for r > 1 open |
+| `terrain`: HeatLoad, McCune–Keon heat load and direct radiation | §20 | done; float32/SIMD tail and per-row latitude open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -733,6 +734,7 @@ terrain/
 ├── slope.go       Slope(dst, dem, SlopeOptions)       degrees | radians | percent
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
+├── heatload.go    HeatLoad(dst, dem, HeatLoadOptions)     McCune–Keon heat load | direct radiation
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
 ├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness, radius 1–8
 ├── fit.go         FitRadius: Wood's least-squares quadratic over (2r+1)², for the derivatives
@@ -987,6 +989,140 @@ Open:
 - **Distance-weighted fits** (r.param.scale's exponent), and annulus and
   distance-weighted TPI.
 - **Timing a `Features` stack against GDAL in `benchmarks/gdalsuite`.**
+
+### Heat load and direct radiation
+
+`HeatLoad(dst, dem, HeatLoadOptions)` is McCune and Keon's (2002)
+index of heat load, and with `Radiation` their estimate of potential
+annual direct incident radiation. Both come from latitude, slope and
+aspect. It is the measure that ecology and forestry feature stacks
+usually mean by "heat load" or "solar exposure" (spatialEco's `hli`, for
+example). It is a regression fitted to Buffo et al.'s (1972) tables of
+direct radiation, not a simulation of the sun. So it has no cloud, no
+atmosphere, and no shading by the terrain around a cell. A horizon- and
+time-resolved insolation model (GRASS `r.sun`, ArcGIS Area Solar
+Radiation) is a different and far larger operation, and not built.
+
+- **The equation.** McCune and Keon's Table 2 gives
+  v = k0 + k1·cos L·cos S + k2·cos A'·sin S·sin L + k3·sin L·sin S +
+  k4·sin A'·sin S + k5·cos A'·sin S. It comes in three variants, and
+  `Equation` selects one:
+  - Equation 1: ln(radiation) over slopes of 0–90°. It is the default.
+  - Equation 2: ln(radiation) over slopes of 0–60°.
+  - Equation 3: radiation itself, over slopes of 0–60° at latitudes
+    30–60°.
+
+  A' is the aspect folded about an axis. For heat load the axis runs
+  northeast–southwest, so southwest slopes, which take the afternoon
+  sun, score highest. For radiation it runs north–south. `Linear` writes
+  exp of Equations 1 and 2, in MJ·cm⁻²·yr⁻¹. `Latitude` is one value per
+  call. The package has no georeferencing (§36), and over the extent of
+  a typical DEM the equation varies little with latitude.
+- **South of the equator,** a negative `Latitude` applies McCune's 2004
+  supplement (`Hemispheres.pdf`): the equation uses |L|, and the folds
+  move to the southeast–northwest and south–north axes.
+  `TestHeatLoadHemispheres` checks this as a symmetry. A DEM mirrored
+  north to south at −L gives the original's values at L, bit for bit on
+  Horn's gradient.
+- **No angles.** With the cool bearing c (the direction A' is measured
+  from), every term is a function of the gradient:
+  - cos S = w = 1/√(1 + dx² + dy²);
+  - sin S·cos A' = w·(dy·cos c − dx·sin c);
+  - sin S·sin A' = w·|dx·cos c + dy·sin c|;
+  - sin S = w·√(dx² + dy²).
+
+  So the equation needs one call to `stencil.HeatLoadFromGradientRow`
+  with no arctangent, like Hillshade's. A flat cell, whose aspect is
+  undefined, has sin S = 0 and gets k0 + k1·cos L exactly, with no
+  special case.
+- **Float64 tail, one rounding.** The gradient is float32, as Gradient
+  writes it. The equation is evaluated in float64, every product
+  converted so no multiply-add fuses, and rounded once. This makes the
+  tail's error half an ulp. The acceptance bound is then the gradient's
+  error times one constant, with nothing else to derive. It is scalar on
+  every build, as the fit's curvature tail is. The Horn kernel computes
+  the gradient a block of 256 cells at a time into stack buffers and
+  hands it to the tail. So `HeatLoad` is `Gradient` followed by the
+  from-gradient stage by construction, and it can be a `Features` stage.
+  `graph.HeatLoad` shares its gradient with Slope, Aspect and Hillshade
+  of the same geometry and `FitRadius`. `Linear`'s exp is Go's
+  `math.Exp`, which is not correctly rounded on every architecture. A
+  result can therefore differ by an ulp between two machines, though
+  never between forms or tilings.
+
+On the Zen 2 desktop (1024², masked, one worker, AVX2 build, 20
+iterations on a machine in use, so direction only), heat load costs 6.3
+ns a cell, and 19 with `Linear`. Hillshade costs 0.84, and
+slope in degrees 1.5. The float64 tail, with two square roots and a
+division, is most of that, and `math.Exp` adds 12 ns.
+
+The tests:
+
+- **The authors' numbers.** McCune and Keon publish a spreadsheet,
+  `testrad.xls`, with the paper. It evaluates all three equations, for
+  radiation and heat load, at six latitude, slope and aspect points. Its
+  first rows are Table 2's examples, including the erratum's
+  corrected −0.984. `TestHeatLoadMcCuneKeon` holds HeatLoad to all 36
+  of its values on planes, and to their exp, within 2·10⁻⁶.
+- **The angle form.** On a rough DEM, for every equation, fold,
+  hemisphere and scale, the result is within an ulp of the paper's form
+  (aspect by atan2, folded by their formulas, then cos and sin) at the
+  gradient Gradient writes.
+- **Composition.** Heat load is bit for bit `Gradient` followed by the
+  stage, on both backends. `Features` and the graph write the standalone
+  bits, and Tiled and Chunked the plain function's. Validity is Slope's
+  at the same `FitRadius`.
+- **Mutations.** Seven defects each fail the tests:
+  - the paper's own misprint of −1.5 as −1.0;
+  - a flipped dy term;
+  - a signed latitude;
+  - heat load folded north–south;
+  - the southern fold left at northeast;
+  - exp applied to Equation 3;
+  - one sign in Equation 3.
+
+  The misprint fails only the spreadsheet test. The other tests share
+  the coefficient table, which is why that test exists.
+
+In `acceptance/`, `check.py` has its own transcription of Table 2 and
+of the folds. It evaluates them in angles in float64 from its Horn and
+fit references. The tolerance is derived, not tuned. Every term is a
+linear function of the unit normal, or the absolute value of one, and
+the map from gradient to unit normal moves by at most as much as the
+gradient does. So the result moves by at most
+C = |k1 cos L| + |k2 sin L + k5| + |k3 sin L| + |k4| times the
+gradient's error, plus one rounding.
+
+The harness runs the following cases on the three DEMs in every form:
+
+- Equation 1 heat load at 45°N;
+- the same with the radiation fold;
+- Equation 3 heat load at 33.5°S;
+- Equation 2 radiation on the arithmetic scale;
+- Equation 1 fitted at r = 1 and 4;
+- two `Features` outputs.
+
+Errors are 0.00–0.06× the bounds (check 1), and 0.00–0.04× on the
+plane's closed form (check 3). Check 15 holds strata to `testrad.xls`
+itself. That is 36 values north of the equator and the same 36 mirrored
+south, 72 in all, with errors of 3·10⁻¹⁰ to 4·10⁻⁸ against bounds of
+10⁻⁸ to 10⁻⁶. `sabotage.py` adds five defects, all caught:
+
+- heat load folded north–south;
+- ln written where the arithmetic scale was asked for;
+- Equation 3 0.05% too large;
+- the r = 4 fit replaced by Horn's gradient;
+- the southern fold not applied.
+
+Open:
+
+- **A float32 or SIMD tail**, if heat load's 6 ns a cell matters in a
+  stack.
+- **Latitude per row,** for a DEM that spans many degrees, once a grid
+  can say where its rows are.
+- **McCune's 2007 non-parametric estimates.** These are kernel
+  regression over his published tables, not an equation, and are more
+  accurate.
 
 Terrain is useful because it exercises:
 

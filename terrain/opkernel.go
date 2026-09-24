@@ -16,6 +16,7 @@ func init() {
 	opkernel.Register("terrain.Slope", func(o any) exec.Kernel { return slopeOp(o.(SlopeOptions)) })
 	opkernel.Register("terrain.Aspect", func(o any) exec.Kernel { return aspectOp(o.(AspectOptions)) })
 	opkernel.Register("terrain.Hillshade", func(o any) exec.Kernel { return hillshadeOp(o.(HillshadeOptions)) })
+	opkernel.Register("terrain.HeatLoad", func(o any) exec.Kernel { return heatLoadOp(o.(HeatLoadOptions)) })
 	opkernel.Register("terrain.Curvature", func(o any) exec.Kernel { return curvatureOp(o.(CurvatureOptions)) })
 	opkernel.Register("terrain.Ruggedness", func(o any) exec.Kernel { return newRuggednessKernel(o.(RuggednessOptions)) })
 	opkernel.Register("terrain.SlopeFromGradient", func(o any) exec.Kernel {
@@ -30,5 +31,8 @@ func init() {
 		h := o.(HillshadeOptions)
 		c, bx, by := hillshadeLight(h.Azimuth, h.Altitude)
 		return hillshadeFromGradient{c, bx, by}
+	})
+	opkernel.Register("terrain.HeatLoadFromGradient", func(o any) exec.Kernel {
+		return heatLoadFromGradient{heatLoadTerms(o.(HeatLoadOptions))}
 	})
 }
