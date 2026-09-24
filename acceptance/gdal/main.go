@@ -123,7 +123,7 @@ func run() error {
 
 		// Chunked: streamed from the file with bounded memory.
 		outPath := filepath.Join(*dir, "strata-"+j.name+".raw")
-		out, err := engine.OpenRawFile(outPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, 0)
+		out, err := engine.CreateRawFile(outPath, 4*int64(w)*int64(h), 0o644, 0)
 		if err != nil {
 			return err
 		}

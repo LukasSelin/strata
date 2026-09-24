@@ -105,6 +105,8 @@ whole_process() {
     exit 1
   fi
   for ((i = 1; i <= REPEATS; i++)); do
+    # On a real disk, write back earlier runs' output first, untimed.
+    [[ -n ${SYNC:-} ]] && sync
     t=$( { time "$@" >/tmp/bench-out 2>&1; } 2>&1 | tail -1 )
     ms=$(sed -n 's/^run=0 ms=\([0-9.]*\).*/\1/p' /tmp/bench-out)
     echo "$label run=$i real=$(cut -d' ' -f1 <<<"$t")" \

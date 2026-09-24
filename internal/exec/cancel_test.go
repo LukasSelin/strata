@@ -291,13 +291,14 @@ func TestChunkedIOErrors(t *testing.T) {
 					// The nth read, or write, belongs to round q = (n-1)/used.
 					// A failed read stops the workers during round q, which
 					// all of them claimed. A failed write happens at the end
-					// of round q, when the other workers claim round q+1
-					// while the failing one is still writing.
+					// of round q, behind the workers (write-behind), which
+					// have all claimed round q+1 by then, the failing
+					// tile's worker included.
 					_, used := claimed(workers, len(plan), 0)
 					q := (n - 1) / used
 					want := min(len(plan), used*(q+1))
 					if inSink {
-						want = min(len(plan), used*(q+2)-1)
+						want = min(len(plan), used*(q+2))
 					}
 					synctest.Test(t, func(t *testing.T) {
 						got := out.clone()

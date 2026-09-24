@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"time"
 
 	"github.com/LukasSelin/strata/cog"
@@ -58,6 +59,7 @@ var (
 	cacheB  = flag.Int64("cache", 0, "cog.SourceOptions.CacheBytes: 0 the default, negative none")
 	repeat  = flag.Int("repeat", 1, "timed runs in this process")
 	list    = flag.Bool("list", false, "print the operations and stop")
+	cpuprof = flag.String("cpuprofile", "", "write a CPU profile of the whole process here")
 	kernel  = flag.Bool("kernel", false, "print conv5's weights in gdal raster neighbors syntax and stop")
 )
 
@@ -67,8 +69,21 @@ const outFill = -9999
 func main() {
 	start := time.Now()
 	flag.Parse()
+	if *cpuprof != "" {
+		f, err := os.Create(*cpuprof)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "stratasuite:", err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintln(os.Stderr, "stratasuite:", err)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "stratasuite:", err)
+		pprof.StopCPUProfile()
 		os.Exit(1)
 	}
 	if !*list && !*kernel {
@@ -250,19 +265,26 @@ func chunkedOnce(ctx context.Context, o op, files []string, eo engine.Options, i
 		return nil
 	}
 	g := dstGrid(grids[0], o.scale)
-	out, err := engine.OpenRawFile(filepath.Join(*dir, "strata-"+o.name+".raw"),
-		os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, max(*workers, 1))
+	out, err := engine.CreateRawFile(filepath.Join(*dir, "strata-"+o.name+".raw"),
+		4*int64(g.Width)*int64(g.Height), 0o644, max(*workers, 1))
 	if err != nil {
 		return err
 	}
+	tCreate := time.Now()
 	sink := engine.NewRawSink(out, g.Width, g.Height, engine.RawOptions{Fill: outFill, HasFill: true})
 	if _, err := o.chunked(ctx, sink, g, srcs, grids, eo); err != nil {
 		_ = out.Close() // the operation's error matters more
 		return err
 	}
+	tRun, mapped := time.Now(), out.Mapped()
 	if err := out.Close(); err != nil {
 		return err
 	}
+	// Where the time went: opening the inputs and creating the output
+	// (which frees an earlier run's output), the operation, and closing
+	// (unmapping) the output.
+	fmt.Printf("phases open ms=%.1f run ms=%.1f close ms=%.1f mapped=%v\n",
+		tCreate.Sub(t0).Seconds()*1000, tRun.Sub(tCreate).Seconds()*1000, time.Since(tRun).Seconds()*1000, mapped)
 	report(i, time.Since(t0), fmt.Sprintf("out=%dx%d", g.Width, g.Height))
 	return nil
 }

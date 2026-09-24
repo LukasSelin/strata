@@ -436,7 +436,7 @@ func (d dem) runChunked(ctx context.Context, o op) (raster.Float32Raster, error)
 	defer in.Close()
 
 	tmp := filepath.Join(*dir, d.name+"-"+o.name+".chunked.tmp")
-	out, err := engine.OpenRawFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, 4)
+	out, err := engine.CreateRawFile(tmp, 4*int64(width)*int64(height), 0o644, 4)
 	if err != nil {
 		return zero, err
 	}
