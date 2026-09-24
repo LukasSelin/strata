@@ -180,6 +180,13 @@ func resampleRelations(t rastertest.TB, d fuzzdata.Source) {
 				if u == math.Trunc(u) || base.IsValid(col, r) != mr.IsValid(mc, r) {
 					continue // a tie on a cell edge: the centre rule rounds the other way
 				}
+				if c.m == resample.Cubic && u-0.5 == math.Trunc(u-0.5) {
+					// On a source centre, gdalwarp's four-sample window runs
+					// from the cell before to two cells after, so its
+					// mirror image reads another window and may fall back
+					// to bilinear where this one does not (DESIGN.md §54).
+					continue
+				}
 				if !base.IsValid(col, r) {
 					continue
 				}

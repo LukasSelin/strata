@@ -160,6 +160,9 @@ func run() error {
 	if err := runResample(); err != nil {
 		return err
 	}
+	if err := runMosaic(); err != nil {
+		return err
+	}
 
 	f, err := os.Create(filepath.Join(*dir, "manifest.json"))
 	if err != nil {
