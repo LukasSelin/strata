@@ -1,0 +1,10 @@
+== tmpfs 100 MB, 12 workers (mapped)
+stratasuite: engine: writing dst[0] at (0, 2816): engine: raw sink: writing rows 2977 to 2999: engine: memory fault in a mapped file at offset 134131712 (address 0x791111077000): the system could not back the page; is the disk full?
+exit=1
+== tmpfs 100 MB, 1 worker (WriteAt)
+stratasuite: engine: writing dst[0] at (0, 2304): engine: raw sink: writing rows 2327 to 2349: write /small/strata-slope.raw: no space left on device
+exit=1
+== ext4 100 MB, 12 workers
+stratasuite: create /ext/strata-slope.raw: fallocate: no space left on device
+exit=1
+left behind: /ext/strata-slope.raw 0 bytes

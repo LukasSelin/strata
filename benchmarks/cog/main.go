@@ -267,8 +267,8 @@ func readAll(src engine.RasterSource, w, h int) error {
 
 // slope runs terrain.SlopeChunked from src to a raw float32 file.
 func slope(src engine.RasterSource, w, h int) error {
-	out, err := engine.OpenRawFile(filepath.Join(*dir, "strata-slope.raw"),
-		os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, max(*workers, 1))
+	out, err := engine.CreateRawFile(filepath.Join(*dir, "strata-slope.raw"),
+		4*int64(w)*int64(h), 0o644, max(*workers, 1))
 	if err != nil {
 		return err
 	}

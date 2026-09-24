@@ -136,7 +136,7 @@ func run(start time.Time) error {
 		}
 		defer in.Close()
 		for i := range *repeat {
-			out, err := engine.OpenRawFile(outPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, *workers)
+			out, err := engine.CreateRawFile(outPath, 4*int64(w)*int64(h), 0o644, *workers)
 			if err != nil {
 				return err
 			}
