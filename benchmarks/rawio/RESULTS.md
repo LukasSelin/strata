@@ -209,12 +209,12 @@ binary. This benchmark overwrites an existing output, the cheap case
 | 16384² | 24 | 378 | 357 | −6% |
 
 **gdalsuite**, `OPS="slope stats" TIERS="raw cog"
-BASELINE=testdata/timings.txt ./gdalsuite.sh HGV_leaf.tif 1024 320 11264
+BASELINE=testdata/timings-3ed48ad.txt ./gdalsuite.sh HGV_leaf.tif 1024 320 11264
 11264`, whole-process medians of 5. It ran once on tmpfs and once with
 `WORKVOL=` a Docker volume on ext4, which is new in `gdalsuite.sh` for
 this ([`testdata/gdalsuite-tmpfs.txt`](testdata/gdalsuite-tmpfs.txt),
 [`testdata/gdalsuite-ext4.txt`](testdata/gdalsuite-ext4.txt)). The
-baseline in `testdata/timings.txt` is 3ed48ad, from before the cog
+baseline, `testdata/timings-3ed48ad.txt`, is 3ed48ad, from before the cog
 inflater work, so its "since" column mixes both changes. The A/B above
 isolates this one.
 
@@ -341,8 +341,8 @@ What the table shows:
 ./benchmarks/rawio/ab.sh <HGV_leaf.tif> 8ad43da
 GMP=2 NS=1 ./benchmarks/rawio/ab.sh <HGV_leaf.tif> 8ad43da
 ./benchmarks/rawio/probe.sh <probe binary> <dir>...
-OPS="slope stats" TIERS="raw cog" BASELINE=testdata/timings.txt ./benchmarks/gdalsuite/gdalsuite.sh <HGV_leaf.tif> 1024 320 11264 11264
-WORKVOL=strata-suite OPS="slope stats" TIERS="raw cog" BASELINE=testdata/timings.txt ./benchmarks/gdalsuite/gdalsuite.sh <HGV_leaf.tif> 1024 320 11264 11264
+OPS="slope stats" TIERS="raw cog" BASELINE=testdata/timings-3ed48ad.txt ./benchmarks/gdalsuite/gdalsuite.sh <HGV_leaf.tif> 1024 320 11264 11264
+WORKVOL=strata-suite OPS="slope stats" TIERS="raw cog" BASELINE=testdata/timings-3ed48ad.txt ./benchmarks/gdalsuite/gdalsuite.sh <HGV_leaf.tif> 1024 320 11264 11264
 ```
 
 On Windows, run `abrun.sh` with `DIRS=. BINDIR=. EXE=.exe NOSYNC=1` from

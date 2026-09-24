@@ -108,6 +108,12 @@ whole_process() {
     # On a real disk, write back earlier runs' output first, untimed.
     [[ -n ${SYNC:-} ]] && sync
     t=$( { time "$@" >/tmp/bench-out 2>&1; } 2>&1 | tail -1 )
+    # bash's time now and then prints a garbled field (e.g. "6.:00"):
+    # time that run again rather than record a number that is not one.
+    while ! [[ $t =~ ^[0-9]+\.[0-9]+\ [0-9]+\.[0-9]+\ [0-9]+\.[0-9]+$ ]]; do
+      echo "# re-timed, unreadable time: $label run=$i $t"
+      t=$( { time "$@" >/tmp/bench-out 2>&1; } 2>&1 | tail -1 )
+    done
     ms=$(sed -n 's/^run=0 ms=\([0-9.]*\).*/\1/p' /tmp/bench-out)
     echo "$label run=$i real=$(cut -d' ' -f1 <<<"$t")" \
          "user=$(cut -d' ' -f2 <<<"$t") sys=$(cut -d' ' -f3 <<<"$t") ms=${ms:--}"
