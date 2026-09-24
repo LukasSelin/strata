@@ -26,6 +26,8 @@ python3 check_resample.py out --sabotage   # ... which must fail on a half-cell 
 python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's Python bindings)
 ./gdalcheck.sh <some.tif>       # difference against gdaldem in Docker
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
+./grasscheck.sh <some.tif>      # FitRadius against GRASS r.param.scale in Docker
+python grasssabotage.py out-grass 4096 4096 65535 12.5 1,4,8   # ... and its checker
 ./cogcheck.sh [some.tif]        # the GeoTIFF/COG reader against GDAL's reading, in Docker
 python cogsabotage.py out-cog   # ... and check that comparison's checker
 ./coghttpcheck.sh               # the same files read over HTTP range requests, from nginx
@@ -303,6 +305,167 @@ single ulp and confirms the comparison fails.
 be featureless speckle following the terrain texture; horizontal bands
 every `TileHeight` rows would mean a seam bug that a tolerance could
 have hidden.
+
+## Multi-scale derivatives against GRASS r.param.scale
+
+`FitRadius` (DESIGN.md §20) fits Wood's (1996) quadratic by least
+squares to the (2r+1)² window. GRASS GIS `r.param.scale` is Wood's own
+implementation of that method, so it is the outside opinion for it.
+It solves the fit differently. It subtracts the centre elevation, forms
+the six normal equations in float64 and solves them by LU
+decomposition. strata applies closed-form integer taps to the raw
+window in float32. `grasscheck.sh` runs GRASS 8.5.0
+(`osgeo/grass-gis:8.5.0-ubuntu`) in Docker:
+
+```bash
+./grasscheck.sh "C:/Users/you/Downloads/HGV_leaf.tif" 0 6127 4096
+python grasssabotage.py out-grass 4096 4096 65535 12.5 1,4,8
+```
+
+It extracts the window with GDAL and imports it into a throwaway GRASS
+project that takes the file's CRS ([grassrun.sh](grassrun.sh)). It
+refuses a lat/long project, where `r.param.scale` would fit in degrees.
+It runs `r.param.scale` with `size` 3, 9 and 17, `exponent=0`
+(unweighted) and `zscale=1`, for `slope`, `aspect`, `profc`, `planc`,
+`crosc`, `minic` and `maxic`, and exports each as float64. It then runs
+strata's Slope, Aspect and Curvature (profile, plan, mean) at
+`FitRadius` 1, 4 and 8, plain and Chunked, and requires the two to be
+bit for bit equal ([grass/main.go](grass/main.go)). Finally it
+differences strata's results against GRASS's
+([grasscompare.py](grasscompare.py)).
+
+None of GRASS's conventions was assumed. Each was read from the 8.5.0
+source (`raster/r.param.scale`, `lib/gmath/lu.c`) and confirmed by the
+comparison:
+
+| | r.param.scale | strata | compared as |
+| - | ------------- | ------ | ----------- |
+| Frame | x = res·(col − edge), y = res·(row − edge): y runs south | the same | d, e = p, q; 2a, 2b = r, t; c = s |
+| `slope` | atan(√(d² + e²)), degrees | `SlopeDegrees` | directly |
+| `aspect` | atan2(e, d): downslope, West 0, North +90, East ±180 | bearing clockwise from north | (270 + GRASS) mod 360 |
+| Flat (d = e = 0) aspect | 0 | -1 | agreement |
+| `profc` | −(p²r + 2pqs + q²t) / (g(1+g)^1.5) | `CurvatureProfile`, same formula and sign | directly |
+| `planc` | (q²r − 2pqs + p²t) / g^1.5 | `CurvaturePlan`, opposite sign | −planc |
+| Mean curvature | not an output | `CurvatureMean` | (minic + maxic + g·crosc) / (2(1+g)^1.5), g = tan²(slope) |
+| Flat profile, plan | 0 | 0 | directly |
+| `slope_tolerance`, `curvature_tolerance` | read only by `method=feature` | — | set to 0 anyway |
+| Border, NULL | (size−1)/2 cells NULL; NULL if any window cell is | validity cleared in the same places | same set required |
+| Precision | float64, written as DCELL | float32 | GRASS exported as float64 |
+| Cell size | `ns_res`; the mean of the two if they differ by 1% or more | CellSize, CellSizeY | square cells only |
+
+The mean-curvature row is an identity, not an approximation:
+minic + maxic = −(r + t), and crosc = −(q²r − 2pqs + p²t)/g, so
+Florinsky's mean curvature follows from the three exactly, including at
+g = 0. `longc` has no strata counterpart and is not used.
+
+**A GRASS bug on the way.** With the default thread count (24 here), 2 of
+12 identical runs of `method=slope size=9` wrote a wrong map: maximum
+90° instead of 72.9°. Another run wrote an aspect map quantised to
+0, ±90 and ±180. `G_ludcmp` in 8.5.0 searches for its pivot in an OpenMP
+loop that races on the shared best pivot and its row. So the normal
+equations are sometimes factorised with a wrong pivot. This is
+[OSGeo/grass#7539](https://github.com/OSGeo/grass/issues/7539), fixed
+after 8.5.0. `grassrun.sh` sets `OMP_NUM_THREADS=1`, which made 12 of 12
+runs identical and correct.
+
+**Tolerances** are derived, not tuned. Each tool's error in each
+derivative is bounded from its own arithmetic. The gap may be the sum of
+the two, carried through each product's formula:
+
+- **strata:** `check.py`'s bound for the documented float32 separable
+  sums, γ₂ₖ·zmax·Σ|taps| over the factor plus 2u of the result, with
+  zmax the largest |z| in the cell's own window. Then the documented
+  float32 atan (≤ 1.5e-7 rad) and atan2 (≤ 3e-7 rad), the roundings of
+  |∇z| and of each result, and `check.py`'s first-order propagation for
+  the curvatures.
+- **GRASS:** its normal matrix is exact for 12.5 m cells (checked with
+  exact rationals). Its right-hand side is summed in float64 from the
+  centred window, so it is off by at most γₘ₊₂·(window range)·Σ|basis|.
+  Its LU solve is backward stable,
+  |ĉ − c| ≤ |N⁻¹|(γ₁₈·Pᵀ|L||U|·|c| + |δobs|) (Higham, Thm 9.4), with
+  L, U and P from `G_ludcmp`'s own pivoting, replicated in Python. At
+  the median cell that is 1e-14 against strata's 1e-6. GRASS is
+  effectively exact here.
+
+As in `check.py`, some cells are too flat to judge and are reported
+rather than judged. For aspect, that is a tolerance over 5°. For profile
+and plan, it is a gradient error over 1% of the gradient's length.
+Both tools are also scored against a float64 reference from the closed
+forms. The elevations are whole numbers, so its sums are exact.
+
+Last run, the same window as the gdaldem check (4096² of the 12.5 m
+canopy-height raster, 76.7% valid, elevations 0 to 498). Every check
+passed, 24 of 24:
+
+| r (size) | cells with data | slope max / mean diff, worst | aspect max / mean diff, worst | profile max diff, worst | plan max diff, worst | mean max diff, worst |
+| - | - | - | - | - | - | - |
+| 1 (3) | 12,849,874 | 1.30e-05 / 2.28e-06°, 0.46× | 2.83e-05 / 5.65e-06°, 0.23× | 5.85e-07 /m, 0.067× | 2.60e-05 /m, 0.041× | 5.48e-07 /m, 0.083× |
+| 4 (9) | 12,795,976 | 1.32e-05 / 1.20e-06°, 0.18× | 2.86e-05 / 5.97e-06°, 0.097× | 4.66e-08 /m, 0.017× | 4.17e-06 /m, 0.012× | 3.28e-08 /m, 0.036× |
+| 8 (17) | 12,724,336 | 1.14e-05 / 9.33e-07°, 0.068× | 2.88e-05 / 6.01e-06°, 0.057× | 1.37e-08 /m, 0.008× | 1.33e-06 /m, 0.006× | 9.30e-09 /m, 0.025× |
+
+- **Validity:** at every radius the cells carrying data are the same
+  set in both tools and in every product. The set is exactly the cells
+  whose whole window is valid, with 0 differences. At r = 1 the count
+  equals gdaldem's 3×3 count on this window.
+- **Flat cells:** 2,681,104, 1,265,836 and 761,346 cells at r = 1, 4
+  and 8 have p = q = 0 exactly. There strata writes aspect -1 and GRASS
+  writes 0, and both write profile and plan 0. No other cell gets
+  strata's -1.
+- **Judged cells:** aspect is judged on 10.2M, 11.5M and 12.0M sloped
+  cells. Profile and plan are too flat to judge on 0, 51 and 235 of
+  them; aspect on 0, 0 and 1.
+- **Against the float64 reference:** GRASS's mean error is 1e-16° in
+  slope and 1e-18 /m in curvature. strata's is 9e-07–2e-06° and
+  3e-10–9e-09 /m. So the differences above are strata's float32
+  rounding, and they sit at 0.006–0.46× the bound derived for it.
+
+`grasssabotage.py` damages one strata product at a time, at each radius,
+and requires the named check to fail:
+
+```
+                          r = 1 (size 3)   r = 4 (size 9)   r = 8 (size 17)
+slope x 1.0005            caught, 1953x    caught, 777x     caught, 260x
+slope x 1.00002           caught, 79x      caught, 31x      caught, 10x
+slope one column off      caught, 1.0e7x   caught, 7.4e6x   caught, 2.1e6x
+one slope cell invalid    caught (validity: 1 cell differs)
+aspect + 0.01 deg         caught, 83x      caught, 42x      caught, 24x
+aspect ccw from east      caught, 1.4e6x   caught, 6.7e5x   caught, 3.7e5x
+profile x 1.0005          caught, 68x      caught, 25x      caught, 12x
+plan x -1 (GRASS's sign)  caught, 2.6e5x   caught, 8.7e4x   caught, 4.6e4x
+plan x 1.0005             caught, 65x      caught, 22x      caught, 12x
+mean x 1.0005             caught, 221x     caught, 81x      caught, 52x
+mean x -1                 caught, 8.9e5x   caught, 3.3e5x   caught, 2.1e5x
+```
+
+33 of 33 are caught, each by the check it targets, as a multiple of that
+check's bound. The weakest is a 0.002% slope error at r = 8, at 10× its
+bound. The bounds loosen relative to the signal as r grows, because
+strata's summation bound grows with the window while the fit smooths
+the signal.
+
+**What this does not cover.**
+
+- **Square cells only.** `r.param.scale` averages `ewres` and `nsres`
+  when they differ by 1% or more, where strata fits x and y with their
+  own sizes. So rectangular cells cannot be compared.
+- **ZFactor, hillshade and the fused forms.** `zscale` and ZFactor stay
+  at 1. GRASS has no hillshade or separate gradient. `Surface` and
+  `Features` with a `FitRadius` are not run here; the unit tests and
+  `check.py` hold them to the standalone results bit for bit.
+- **Other radii.** Radii 2, 3, 5, 6 and 7 are not run.
+- **Float32 summation error.** The elevations are whole numbers up to
+  498, so strata's integer-tap sums are exact on this raster. The
+  observed error comes only from the factor, product and formula
+  roundings. The bound allows for summation error, but this raster does
+  not exercise it. `check.py`'s `noisy` DEM does, against numpy only.
+- **Distance weighting and `-c`.** `exponent` > 0 and the fit
+  constrained through the centre are not compared, because strata has
+  neither.
+- **The data.** This is canopy height in decimetres with 12.5 m cells,
+  not a terrain DEM, so the slopes are steep. The median is 47°, 26°
+  and 16° and the maximum 87°, 80° and 71° at size 3, 9 and 17. The
+  arithmetic does not care what z means.
+- **GRASS versions.** Only 8.5.0 is checked, and only single-threaded.
 
 ## Reading GeoTIFFs: the cog module against GDAL
 
