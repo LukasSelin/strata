@@ -48,6 +48,9 @@ func init() {
 	simdHillshade = hornHillshadeRowAVX2
 	simdCurvature = ztCurvatureRowAVX2
 	simdRuggedness = ruggednessRowAVX2
+	simdSlopeGrad = slopeFromGradientRowAVX2
+	simdAspectGrad = aspectFromGradientRowAVX2
+	simdHillshadeGrad = hillshadeFromGradientRowAVX2
 	UseScalar(false)
 }
 
@@ -108,7 +111,11 @@ func hornSlopeRowAVX2(dst, r0, r1, r2 []float32, kx, ky, scale float32, atan boo
 // hornMagnitude8 is sqrt(gx² + gy²) for eight adjacent cells.
 func hornMagnitude8(r0, r1, r2 []float32, kx, ky archsimd.Float32x8) archsimd.Float32x8 {
 	dx, dy := hornDiff8(r0, r1, r2)
-	gx, gy := dx.Mul(kx), dy.Mul(ky)
+	return magnitude8(dx.Mul(kx), dy.Mul(ky))
+}
+
+// magnitude8 is magnitude lanewise.
+func magnitude8(gx, gy archsimd.Float32x8) archsimd.Float32x8 {
 	return gx.Mul(gx).Add(gy.Mul(gy)).Sqrt()
 }
 
@@ -216,11 +223,13 @@ func hornAspectLanes(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
 		dx, dy := hornDiff8(r0, r1, r2)
 		gx, gy := dx.Mul(vkx), dy.Mul(vky)
+		// aspect8, written out: it does not inline, and the call costs
+		// this loop 8% at 254 cells a row (BenchmarkRowWidth).
+		// TestFromGradientMatchesFused holds the two to the same bits.
 		y, x := c.zero.Sub(gx), gy
 		if trig {
 			y, x = gy, c.zero.Sub(gx)
 		}
-		// aspectDegrees lanewise.
 		d := atan2_8(y, x, c).Mul(c.deg)
 		d = d.Add(c.full.IfElse(d.Less(c.zero), c.zero))
 		d = c.zero.IfElse(d.GreaterEqual(c.full), d)
@@ -230,6 +239,18 @@ func hornAspectLanes(dst, r0, r1, r2 []float32, kx, ky, flat float32, trig bool)
 	}
 	archsimd.ClearAVXUpperBits()
 	return n - len(dst)
+}
+
+// aspect8 is aspectArgs and aspectDegrees lanewise.
+func aspect8(gx, gy, vflat archsimd.Float32x8, trig bool, c *laneConsts) archsimd.Float32x8 {
+	y, x := c.zero.Sub(gx), gy
+	if trig {
+		y, x = gy, c.zero.Sub(gx)
+	}
+	d := atan2_8(y, x, c).Mul(c.deg)
+	d = d.Add(c.full.IfElse(d.Less(c.zero), c.zero))
+	d = c.zero.IfElse(d.GreaterEqual(c.full), d)
+	return vflat.IfElse(y.Equal(c.zero).And(x.Equal(c.zero)), d)
 }
 
 // atan2_8 is Atan2F32 lanewise, with the same reductions in the same
@@ -260,14 +281,78 @@ func hornHillshadeLanes(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32) in
 	r0, r1, r2 = r0[:n+2], r1[:n+2], r2[:n+2]
 	for len(dst) >= lane && len(r0) >= lane+2 && len(r1) >= lane+2 && len(r2) >= lane+2 {
 		dx, dy := hornDiff8(r0, r1, r2)
-		gx, gy := dx.Mul(vkx), dy.Mul(vky)
-		num := vc.Add(vbx.Mul(gx).Add(vby.Mul(gy)))
-		den := k.one.Add(gx.Mul(gx).Add(gy.Mul(gy))).Sqrt()
-		v := num.Div(den)
-		v = k.zero.IfElse(v.Less(k.zero), v)
-		v = k.hi.IfElse(v.Greater(k.hi), v)
-		store8(v, dst)
+		store8(shade8(dx.Mul(vkx), dy.Mul(vky), vc, vbx, vby, k), dst)
 		dst, r0, r1, r2 = dst[lane:], r0[lane:], r1[lane:], r2[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+// shade8 is shade lanewise.
+func shade8(gx, gy, vc, vbx, vby archsimd.Float32x8, k *laneConsts) archsimd.Float32x8 {
+	num := vc.Add(vbx.Mul(gx).Add(vby.Mul(gy)))
+	den := k.one.Add(gx.Mul(gx).Add(gy.Mul(gy))).Sqrt()
+	v := num.Div(den)
+	v = k.zero.IfElse(v.Less(k.zero), v)
+	return k.hi.IfElse(v.Greater(k.hi), v)
+}
+
+// The from-gradient kernels (gradrow.go): the fused kernels' lanes after
+// hornDiff8 and the scaling, over gradient rows instead.
+
+func slopeFromGradientRowAVX2(dst, gx, gy []float32, scale float32, atan bool) {
+	i := slopeFromGradientLanes(dst, gx, gy, scale, atan)
+	scalarSlopeFromGradientRow(dst[i:], gx[i:], gy[i:], scale, atan)
+}
+
+func slopeFromGradientLanes(dst, gx, gy []float32, scale float32, atan bool) int {
+	vs := archsimd.BroadcastFloat32x8(scale)
+	n := len(dst)
+	gx, gy = gx[:n], gy[:n]
+	for len(dst) >= lane && len(gx) >= lane && len(gy) >= lane {
+		m := magnitude8(load8(gx), load8(gy))
+		if atan {
+			m = atan8(m, &consts)
+		}
+		store8(m.Mul(vs), dst)
+		dst, gx, gy = dst[lane:], gx[lane:], gy[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func aspectFromGradientRowAVX2(dst, gx, gy []float32, flat float32, trig bool) {
+	i := aspectFromGradientLanes(dst, gx, gy, flat, trig)
+	scalarAspectFromGradientRow(dst[i:], gx[i:], gy[i:], flat, trig)
+}
+
+func aspectFromGradientLanes(dst, gx, gy []float32, flat float32, trig bool) int {
+	vflat := archsimd.BroadcastFloat32x8(flat)
+	c := &consts
+	n := len(dst)
+	gx, gy = gx[:n], gy[:n]
+	for len(dst) >= lane && len(gx) >= lane && len(gy) >= lane {
+		store8(aspect8(load8(gx), load8(gy), vflat, trig, c), dst)
+		dst, gx, gy = dst[lane:], gx[lane:], gy[lane:]
+	}
+	archsimd.ClearAVXUpperBits()
+	return n - len(dst)
+}
+
+func hillshadeFromGradientRowAVX2(dst, gx, gy []float32, c, bx, by float32) {
+	i := hillshadeFromGradientLanes(dst, gx, gy, c, bx, by)
+	scalarHillshadeFromGradientRow(dst[i:], gx[i:], gy[i:], c, bx, by)
+}
+
+func hillshadeFromGradientLanes(dst, gx, gy []float32, c, bx, by float32) int {
+	b := archsimd.BroadcastFloat32x8
+	vc, vbx, vby := b(c), b(bx), b(by)
+	k := &consts
+	n := len(dst)
+	gx, gy = gx[:n], gy[:n]
+	for len(dst) >= lane && len(gx) >= lane && len(gy) >= lane {
+		store8(shade8(load8(gx), load8(gy), vc, vbx, vby, k), dst)
+		dst, gx, gy = dst[lane:], gx[lane:], gy[lane:]
 	}
 	archsimd.ClearAVXUpperBits()
 	return n - len(dst)

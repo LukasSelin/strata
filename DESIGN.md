@@ -765,12 +765,13 @@ call typed entry points (§25). STRATA-8 settled a first shape:
   which keeps fusion (§29) possible: a fused pipeline is one kernel.
 - Kernels write only Data. The engine derives validity: the AND of every
   masked input over the (2r+1)×(2r+1) neighbourhood, with word-level
-  erosion.
+  erosion, or over each input's own reach for a `ReachKernel` (§52).
 
 It stays internal until worker pools, sources and fusion have exercised
-it. Worker pools (§26) and sources (§24) now have, and so has tile-level
-fusion, as the radius-0 `Pipeline` (§52); §52's "Where it lives" is why
-the contract is still not published.
+it. Worker pools (§26) and sources (§24) now have, and so has fusion, as
+the `Pipeline` of §52 with stages of any radius and several outputs.
+Publishing was then decided against, for now: §52's "Publishing
+`Kernel`: the decision" records the evidence and what would change it.
 
 `Reducer` is the fold counterpart (§49): inputs and no outputs, radius
 fixed at 0, and a value rather than a raster. It is a separate interface
@@ -3331,7 +3332,335 @@ Still to do, in the order the spec gives them: radius > 0 stages, which
 need `erodedValidity` extracted from `job` and the suffix-sum window;
 more than one output; and the decision about publishing `Kernel`, which
 is what would let a caller build one of these. Register-level fusion on
-top of the radius-0 cut is §29, and is done.
+top of the radius-0 cut is §29, and is done. The next subsection settles
+how each of the three is to be done; it lands as three changes, in that
+order.
+
+### The rest: reach, several outputs, and not publishing
+
+Two things the sketch above gets wrong once a stage has a radius, and
+both are about validity rather than arithmetic.
+
+**Validity is per input, not per kernel.** The engine's rule for any
+kernel is one erosion: an output cell is valid iff every masked input is
+valid over the whole (2R+1)² neighbourhood. For `Mul(Slope(a), b)` run as
+separate calls the result is `erode(va, 1) ∧ vb`; the engine's rule
+gives `erode(va ∧ vb, 1)`, so one invalid `b` cell would invalidate the
+3×3 around it. The fused chain must not do that. It is the radius > 0
+form of the reachability rule, and it has the same fix: say which
+inputs an output depends on, and now also how far.
+
+```go
+// ReachKernel is a Kernel whose outputs do not all read every input
+// over the full Radius. Reach(out, in) is the largest distance, over
+// every path, at which output out reads input in, or -1 when it does
+// not read it at all. The engine erodes each input's validity by its
+// own reach and ANDs the results. A kernel that does not implement it
+// has Reach(out, in) == Radius() for every pair.
+type ReachKernel interface {
+    Kernel
+    Reach(out, in int) int
+}
+```
+
+It is exact because erosion is monotone in the radius: the AND of
+`erode(v, r)` over every path from an input is `erode(v, max r)`, so one
+number per (output, input) pair is all validity needs. A `Pipeline`
+computes it by walking its stages backwards, adding each stage's
+radius, and it is an optional interface beside `EdgeKernel` and
+`ScratchKernel` rather than a type switch on `*Pipeline`: the principle
+of this section is that nothing above `Kernel` knows a pipeline exists,
+and a multi-output kernel of the ordinary kind could use it too. The
+all-pointwise case is the special case where every reach is 0 or −1,
+and the reachability rule stands: an input no output reaches still
+panics, for the reason given above.
+
+**Edges are per output.** With several outputs the composite radii can
+differ, A at 1 and B at 3. The engine only calls `Process` where the
+pipeline's full radius-3 window exists, but A's cells one and two from
+the true edge are real values when A is computed on its own, and a
+fused pipeline must equal its unfused form. So an output's edge ring is
+its own largest reach, not the pipeline's radius. The cells between the
+two are computed by padding. A span that touches the true edge gets
+windows padded out to the full radius, filled with NaN, and `Process`
+runs as usual. By the definition of reach, A's cells at distance ≥ 1
+read no padding, so they are bit-exact. B's cells read padding only in
+its own ring, which the edge policy overwrites. It needs no second
+kernel interface, and it costs a copy on edge tiles only. The
+alternative, a projected sub-kernel per output run over the strips
+between the rings, needs both a new interface and a second planning
+pass in `halo.go`.
+
+Three restrictions keep the cut small, each one liftable when a caller
+asks:
+
+- Every output's final stage declares the same edge value. With more
+  than one output the pipeline's `Edge()` is one value, and NaN is
+  every kernel's value today. The non-final rule above stands.
+- A value that is an output may not also feed a later stage of
+  radius > 0. That stage needs the value grown by its radius, larger
+  than the output's W×H view, so it would have to be produced in
+  scratch and copied out. That is correct and cheap, but no one is
+  asking for it.
+- Register-level fusion (§29) lowers all-pointwise pipelines only. A
+  pointwise run inside a mixed pipeline runs staged. Lowering such a
+  segment is a second lowering path to test, and it waits for a
+  benchmark that wants it.
+
+`NewPipeline` takes `outs []int` in place of `out int`, the order the
+Span's views take.
+
+**Consumers.** `Kernel` stays internal, so each change ships behind a
+typed entry point, and each entry point has an oracle outside strata
+(gdalsuite):
+
+- Radius > 0 ships with `terrain.WeightedSlope{,Tiled,Chunked}`, which
+  computes Slope(dem) · weight. Its reach is 1 from the DEM and 0 from
+  the weight, which is the case above. It is checked against `gdaldem
+  slope` and `gdal_calc`.
+- Several outputs ship with `terrain.Surface{,Tiled,Chunked}(dem,
+  SurfaceOutputs{Slope, Aspect, Hillshade}, opts)`, where a nil raster
+  is an output not wanted. The three share one gradient. Surface is
+  bit-equal to each standalone call because the standalone Slope,
+  Aspect and Hillshade kernels are refactored to compute through the
+  same gradient-then-pointwise arithmetic. Any change that makes to
+  their results is re-checked against `gdaldem` and recorded in
+  `benchmarks/gdalsuite/RESULTS.md`. Surface's outputs all have radius
+  1, so an internal test pipeline with unequal radii covers the
+  per-output edges.
+
+**Testing** is the list above, for every new shape: the §23 matrix
+against the unfused whole-raster calls, bit for bit, validity included;
+a one-stage pipeline equals its stage; a permutation of the stages into
+another valid order changes nothing; and scratch that is exactly enough,
+checked with poisoned blocks.
+
+**Publishing `Kernel`: not yet.** The third change is this document
+rather than code. After the first two, §22 and this section record which
+parts of the contract changed shape to support them (`ReachKernel`,
+padded windows, scratch that grows with the suffix radius) and what
+would trigger publishing. Until then a caller gets typed entry points.
+It is recorded below, under "Publishing `Kernel`: the decision".
+
+Status: radius > 0 is done, as specified above, with three things the
+spec did not say and the code had to:
+
+- **A stage the output does not depend on does not run.** The radius-0
+  cut ran every stage. With radii that is no longer harmless: a dead
+  stage of radius 3 would need its inputs 3 beyond the span, wider than
+  the pipeline's own window. So `NewPipeline` works backwards from the
+  output, marks the stages it reads and gives each its grow (how far
+  beyond the span it runs, the largest suffix sum over the paths from
+  it). The pipeline's radius is the largest reach, and nothing else
+  widens it.
+- **Where an edge value other than NaN is allowed.** The rule above bans
+  it on a non-final stage. The final stage needs a rule too: its ring
+  is only its own radius wide, and inside that the earlier stages' NaN
+  came through its arithmetic. So a non-NaN edge is allowed only on the
+  stage that writes the output, and only when its radius is the
+  pipeline's. For NaN the fused ring and the unfused one agree whenever
+  the later stages carry NaN through, which arithmetic does. A stage
+  that maps NaN to a number, such as a comparison, would not. No kernel
+  in the tree does that, and the engine cannot check it, so it is a
+  documented assumption on `Pipeline`.
+- **No stage may be a `ScratchKernel`.** The radius-0 pipeline handed
+  its stages a `Span` whose `Scratch` was nil. That was harmless while
+  every stage was pointwise and asked for none, but it would crash
+  focal's separable kernels. Lending a stage its own scratch needs a
+  second `Scratch` value per worker, so `NewPipeline` panics for now,
+  and stages get a shared empty one so that `Span.Scratch` is never nil.
+
+The engine side is `ReachKernel` and `stencil.ErodeReach`, which is
+`ErodeBox` with a radius per source. Sources of equal radius share one
+accumulated row, so a kernel that is not a `ReachKernel` does exactly
+the work it did before. Each output's rule (masked inputs, their
+reaches, or "copy output k's bits") is worked out once per call. For a
+one-output kernel it is carved from the same allocation as the masked
+input list, because `benchmarks/fusion`'s allocation bound caught the
+first version adding three allocations per call. Scratch per value is
+(W+2g)(H+2g) for its grow g, and a value's offset is
+nWH + 2(W+H)Σg + 4Σg² over the values before it. That is prefix sums
+kept at construction, so `Process` works it out without allocating for
+any span size.
+
+The acceptance checks are external:
+
+- `acceptance/check.py` (check 11) judges `WeightedSlope` against a
+  float64 Horn slope times the weight. Its validity must be the DEM's
+  mask eroded 3×3 AND the weight's mask not eroded, on a weight whose
+  NoData stripe makes the two readings differ in 4,095 cells.
+  `sabotage.py` confirms that an eroded weight, an ignored weight, and a
+  weight read one cell over each turn it red.
+- `acceptance/gdalcheck.sh` runs `gdaldem slope` and then `gdal_calc.py
+  A*B` on a 4096² real raster. The cells carrying data are the same
+  11,644,877, and 1,204,997 of them lose their weight's NoData and
+  nothing else. The values are within 0.11× the float32 bound, and
+  78.1% are bit-identical.
+- `internal/exec/pipeline_radius_test.go` runs six shapes through the
+  §23 matrix against their unfused calls. The shapes are a stencil
+  times a pointwise input, a chain, a pointwise stage before a stencil,
+  two paths of different lengths, a grown intermediate, and a
+  two-output stage with a dead stage after it. Mutating either `Reach`
+  or the window offset fails the tests.
+
+Status: several outputs are done, as specified above. `NewPipeline`
+takes `outs []int`, `Reach(out, in)` is per output, and each output's
+edge ring is its own largest reach. The engine does the rings for any
+`ReachKernel`, not for `*Pipeline` alone:
+
+- **Rings and padding.** The job keeps a width per output (nil when
+  every ring is the radius, which is every kernel but such a
+  `ReachKernel`). It runs the kernel over the cells outside the
+  narrowest ring and gives each output the edge policy over its own.
+  A span whose window leaves the rasters gets a per-worker pad buffer
+  per input: NaN Data and cleared bits, with the part inside the
+  rasters copied in. Only bands on the true edge pay for the copy, and
+  only for such kernels.
+- **The restrictions are as specified.** An output's stage must run
+  over the span itself, so neither the output nor another output of
+  its stage may feed a later stage with a radius (this is the
+  sibling case the spec did not name). Every output's edge value must
+  agree. A non-NaN edge is allowed only on a stage whose values are
+  all outputs no later stage reads, at their ring's radius. An input
+  that no output reads still panics. It is no longer needed for
+  correctness, since an unread input's reach is -1 and its mask is not
+  ANDed, but it catches wiring mistakes.
+- **Register-level fusion stays single-output.**
+
+`terrain.Surface{,Tiled,Chunked}` writes any of dx, dy, slope, aspect
+and hillshade from one gradient. dx and dy go past the spec's three,
+because they are already values in the pipeline. The spec's refactor
+turned out to be an extraction, not a rewrite: every fused row kernel
+already computed `gx = float32(hornDX·kx)` exactly as
+`HornGradientRow` does, and everything after that was a function of
+(gx, gy) with explicit float32 roundings. So the per-cell tails became
+shared helpers (`magnitude`, `aspectArgs`, `shade`, and `magnitude8`
+and `shade8` lanewise). `SlopeFromGradientRow`,
+`AspectFromGradientRow` and `HillshadeFromGradientRow` call the same
+helpers, and no standalone result changed. There are two exceptions:
+
+- **The fused AVX2 aspect loop keeps its tail written out.**
+  `aspect8` does not inline (it calls `atan2_8`), and calling it cost
+  that loop 8% at 254 cells a row. With the body restored, a pinned
+  interleaved A/B of `BenchmarkRowWidth` shows every fused kernel at
+  parity or better, on both builds.
+- **arm64 runs the scalar from-gradient kernels.** They match NEON bit
+  for bit, as the scalar kernels always do, and CI only runs NEON on
+  release tags. So an untested NEON copy would be the riskier choice.
+
+`TestFromGradientMatchesFused` holds a gradient row followed by each
+from-gradient kernel to the fused kernel's bits, on scalar and AVX2,
+with hazards and flat runs. `TestSurfaceIsTheStandaloneProducts` holds
+Surface to each standalone function across every subset of products,
+both backends, every entry point and tiling, masked and windowed. At
+the engine level, `TestReachKernelOutputsMatchAlone` runs a
+`ReachKernel` whose outputs are boxes of different radii over different
+inputs, and each output must equal a box run alone. Six multi-output
+pipeline shapes run against their unfused stages the same way.
+Disabling the per-output rings, or shifting the pad copy by a cell,
+fails both.
+
+The external checks:
+
+- `acceptance/check.py` check 12 requires every Surface product, from
+  one call writing all five, to be the standalone file bit for bit:
+  863/863 pass. `sabotage.py` catches an aspect cell one ulp off and
+  swapped dx and dy (30/30).
+- `acceptance/gdal/main.go` runs `SurfaceChunked` on the 4096² real
+  raster and fails unless slope, aspect and hillshade are bit for bit
+  the standalone results that `gdalcompare.py` compares with gdaldem;
+  15/15 pass.
+
+On one 12-core Zen 2, AVX2, masked, the median of six pinned runs of
+`BenchmarkSurface` (slope, aspect and hillshade) gave:
+
+| 4096², ns/cell | three calls | Surface |
+|---|---:|---:|
+| 1 worker | 4.50 | 3.84 |
+| 12 workers | 1.29 | 1.00 |
+
+The spreads were 2–20%, so the table shows direction, not a published
+result.
+
+### Publishing `Kernel`: the decision
+
+**Not yet.** `Kernel`, `Span`, `Window` and the optional interfaces stay
+in `internal/exec`. A caller who wants operations composed gets a typed
+entry point for that composition, as `WeightedSlope` and `Surface` are:
+each is about fifty lines over a `Pipeline`, and needs no public
+contract. The two changes above were the test this section set, and the
+evidence came out on the side of waiting.
+
+**The contract has not settled.** Since STRATA-8 made it internal
+(2026-09-17), every change to what a kernel sees came from a real use.
+Published, each one would have been a breaking or semantic change for
+someone else's implementation:
+
+| date | change | forced by |
+|---|---|---|
+| 09-19 | `ScratchKernel`, `ScratchSize`, `Scratch`, `Span.Scratch` | the radius-0 pipeline's intermediates |
+| 09-22 | scratch pooled and unzeroed: what a call finds there is unspecified | allocation cost more than the pipeline saved |
+| 09-22 | `FusableKernel` | register-level fusion (§29) |
+| 09-24 | `ReachKernel`: validity per output and input | `Slope(a)·b` must not erode `b` |
+| 09-24 | `ReachKernel` edge rings; `Window` no longer promises every cell exists | several outputs of different radii |
+
+The last row is the telling one. "Every view cell exists" was a promise
+a kernel could rely on. Keeping it would have cost a second kernel
+interface and a second planning pass (the rejected projected-sub-kernel
+design). Internally it could be loosened, for the one kind of kernel
+that opts in, in an afternoon.
+
+**The contract has gaps that a public version would expose.** Each is
+harmless inside the module, where every kernel is ours and tested
+against its unfused form, and none is harmless outside:
+
+- **`FusableKernel` returns a `vec.Step`,** an `internal/vec` type.
+  Publishing it means publishing the vector op set, or leaving caller
+  kernels permanently unfusable.
+- **A stage may not be a `ScratchKernel`.** A caller's kernel that
+  needs working memory could not join a pipeline until stages get
+  scratch lent to them, which needs a second `Scratch` value per worker.
+- **A pipeline equals its unfused form at the edge only if its later
+  stages carry NaN through.** Every strata kernel does, and the engine
+  cannot check it. A caller's comparison or NaN-filling stage would
+  break the rule silently.
+- **A `ReachKernel` must report its reach exactly.** One that
+  under-reports reads padding into kept cells without any error. Our
+  tests catch that for our kernels; a public contract could only say
+  "must".
+- **One edge value per kernel, and one kind of validity rule** (AND
+  and erosion). The focal mean that skips NoData (§22) is the known
+  case that needs more.
+
+**No caller is asking.** Both compositions §52 was written for, a
+weighted factor product and several terrain products at once, were
+served by typed entry points.
+
+**What would change the decision.** It takes all three:
+
+1. **A need typed entry points cannot meet.** That means a concrete
+   request to compose a caller's own operation with strata's in one
+   pass, not a wish for generality. "Several of strata's operations in
+   one pass" alone is met more cheaply by a public pipeline builder
+   over strata's own operations (`Slope` then `Mul`, as values a caller
+   wires together). That publishes names of operations, not the kernel
+   contract, so it comes first if demand appears.
+2. **A quiet contract.** No change to the exported surface of
+   `internal/exec/kernel.go` across the next three operation families
+   to use the engine. `git log -- internal/exec/kernel.go` is the
+   measure.
+3. **The gaps closed or fenced off.** `FusableKernel` stays unexported
+   or stops returning an internal type. Stages get scratch, or the rule
+   is documented as permanent. The NaN assumption becomes a
+   declaration the pipeline checks. For instance, a stage could declare
+   itself NaN-preserving, and `Pipeline` could refuse any stage that
+   has not declared it after a stage with a radius.
+
+**Where it would live.** In package `engine`, beside `Options`, the
+sources and the sinks, with `ProcessN` and `ProcessChunked` joining
+them. `internal/exec` already imports `engine`, so the move creates no
+cycle. The alternative, a new package, would split one runtime across
+two import paths for no benefit a caller can see.
 
 ## 53. Focal Operations
 

@@ -116,6 +116,10 @@ type chunkJob struct {
 	src []engine.RasterSource
 	// masked lists the Masked sources.
 	masked []int
+	// valid is how each output's validity is derived from all of them
+	// (outValidities), shared by every worker for tiles that keep every
+	// mask; nil when no output has a mask.
+	valid []outValidity
 
 	workers []chunkWorker
 	// out is the caller's Options.Stats, or nil.
@@ -141,6 +145,11 @@ type chunkWorker struct {
 	// live holds the masked sources whose current tile has an invalid
 	// cell, with room for all of them. See unmaskAllValid.
 	live []int
+	// valid and validInts hold the validity rules of a tile that dropped
+	// a mask, derived from live alone; nil when no output or no source
+	// has a mask.
+	valid     []outValidity
+	validInts []int
 	// stats counts the bytes this worker's tiles read from sources and
 	// wrote to sinks. Padded like worker.stats.
 	stats engine.Stats
@@ -190,6 +199,10 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		return stride, cells, words
 	}
 
+	valid := outValidities(k, r, masked, dstMasked,
+		make([]outValidity, len(dst)), make([]int, validityInts(len(masked), len(dst))))
+	c.valid = valid
+	edgeW := edgeWidths(k, r, len(src), len(dst))
 	c.workers = make([]chunkWorker, workerCount(opts.Workers, c.tiles))
 	for i := range c.workers {
 		wk := &c.workers[i]
@@ -236,12 +249,19 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			}
 		}
 
-		wk.live = make([]int, 0, len(masked))
+		// live and a tile's validity rules share one allocation.
+		ints := make([]int, len(masked)+validityInts(len(masked), len(dst)))
+		wk.live = ints[:0:len(masked)]
+		if valid != nil && len(masked) > 0 {
+			wk.valid = make([]outValidity, len(dst))
+			wk.validInts = ints[len(masked):]
+		}
 		t := &wk.t
 		t.src, t.dst = views[nin+2*nout:2*nin+2*nout:2*nin+2*nout], views[2*nin+2*nout:]
-		t.setup(k, r, c.w, c.h, masked, dstMasked)
+		t.setup(k, r, c.w, c.h, masked, dstMasked, valid, edgeW)
 		t.allocWorkers(1, c.tileW)
 		t.allocScratch(c.spanSize())
+		t.allocPad(c.spanSize())
 	}
 	return c
 }
@@ -332,6 +352,14 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, b *Behind, i int) 
 		t.src[j] = v
 	}
 	t.masked = unmaskAllValid(t.src, c.masked, wk.live)
+	t.valid = c.valid
+	if c.valid != nil && len(t.masked) < len(c.masked) {
+		// The shared rules name inputs whose masks this tile dropped, and
+		// would erode a nil mask: derive the tile's from the inputs that
+		// kept theirs. Dropping all-valid inputs from an AND changes no
+		// bit (DESIGN.md §31).
+		t.valid = outValidities(t.k, c.r, t.masked, true, wk.valid, wk.validInts)
+	}
 	// The output buffers are taken after the reads, so that the last
 	// tile's write overlaps them too.
 	set := b.Acquire()

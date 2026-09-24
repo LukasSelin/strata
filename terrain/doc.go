@@ -3,7 +3,10 @@
 // profile, plan and mean Curvature from the Zevenbergen–Thorne quadratic
 // fitted to the same 3×3 window, and Ruggedness (the terrain ruggedness
 // index, topographic position index and roughness) from the window's
-// differences, bit-identical to GDAL gdaldem's.
+// differences, bit-identical to GDAL gdaldem's. WeightedSlope is Slope
+// multiplied cell by cell by a weight raster, in one pass. Surface writes
+// any of Gradient, Slope, Aspect and Hillshade at once from one gradient,
+// each bit for bit what the standalone function writes.
 //
 // # Conventions
 //
@@ -39,8 +42,8 @@
 //
 // # Tiled execution
 //
-// SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled, CurvatureTiled
-// and RuggednessTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
+// SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled, CurvatureTiled,
+// RuggednessTiled, WeightedSlopeTiled and SurfaceTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
 // from the DEM, so the result is bit-for-bit the plain function's for
@@ -48,7 +51,8 @@
 // as one tile with one worker, on the calling goroutine.
 //
 // SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked,
-// CurvatureChunked and RuggednessChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// CurvatureChunked, RuggednessChunked, WeightedSlopeChunked and
+// SurfaceChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
 // files, run in Workers × tile buffers (DESIGN.md §27). They give the
 // same bits as the plain functions on the same data, for every tiling and
@@ -62,7 +66,8 @@
 // such as the aspect of a flat cell, are ordinary valid values too. If the DEM has a mask, an output cell is
 // valid iff it is interior and all nine cells of its 3×3 neighbourhood are
 // valid (the centre too, which Curvature and Ruggedness read although
-// Horn gives it zero weight). Data under
+// Horn gives it zero weight). WeightedSlope's weight is read at the
+// cell alone, so it narrows validity by that cell only. Data under
 // an invalid output cell is unspecified. The output masks are computed
 // with word-level operations, separately from the arithmetic.
 //

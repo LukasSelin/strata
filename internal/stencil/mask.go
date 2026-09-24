@@ -81,6 +81,85 @@ func ErodeBox(dst MaskRegion, srcs []MaskRegion, w, h, r int, scratch []uint64) 
 	}
 }
 
+// ErodeReachScratch returns the number of scratch words ErodeReach needs
+// for a destination w cells wide whose largest radius is r.
+func ErodeReachScratch(w, r int) int { return wordsFor(w+2*r) + wordsFor(w) }
+
+// ErodeReach is ErodeBox with a radius per source: destination cell
+// (x, y) becomes valid iff, for every source i, the cells within
+// radii[i] of it are valid in that source. Source i's region is its
+// input's (w+2·radii[i])×(h+2·radii[i]) cells, whose cell
+// (x+radii[i], y+radii[i]) is centred on destination cell (x, y).
+//
+// It is what a kernel needs whose outputs read different inputs over
+// different distances, such as a pipeline that multiplies a stencil's
+// result by a pointwise input (DESIGN.md §52). Sources of equal radius
+// that are adjacent in srcs share one accumulated row, so with every
+// radius equal it does exactly ErodeBox's work. scratch must hold at
+// least ErodeReachScratch(w, max radius) words. It allocates nothing,
+// and panics as ErodeBox does, or if radii does not give one radius of
+// at least 0 per source.
+func ErodeReach(dst MaskRegion, srcs []MaskRegion, radii []int, w, h int, scratch []uint64) {
+	if len(srcs) == 0 {
+		panic("stencil: ErodeReach needs at least one source")
+	}
+	if len(radii) != len(srcs) {
+		panic("stencil: ErodeReach needs one radius per source")
+	}
+	rmax := 0
+	for i, s := range srcs {
+		r := radii[i]
+		if r < 0 {
+			panic("stencil: ErodeReach radius is negative")
+		}
+		rmax = max(rmax, r)
+		requireBits(s.Bits, s.Off, s.Stride, w+2*r, h+2*r)
+	}
+	requireBits(dst.Bits, dst.Off, dst.Stride, w, h)
+	acc := scratch[:wordsFor(w+2*rmax)]
+	total := scratch[len(acc) : len(acc)+wordsFor(w)]
+	for y := range h {
+		first := true
+		for i := 0; i < len(srcs); {
+			r := radii[i]
+			sw := w + 2*r
+			a := acc[:wordsFor(sw)]
+			j := i
+			for ; j < len(srcs) && radii[j] == r; j++ {
+				s := srcs[j]
+				off := s.Off + y*s.Stride
+				for k := range 2*r + 1 {
+					if j == i && k == 0 {
+						extractBits(a, s.Bits, off, sw)
+					} else {
+						andBits(a, s.Bits, off, sw)
+					}
+					off += s.Stride
+				}
+			}
+			for range r {
+				shrink2Row(a)
+			}
+			// After r shrinks the bits from w on are zero, so the first
+			// wordsFor(w) words are the group's row.
+			a = a[:len(total)]
+			if first && j == len(srcs) {
+				total = a // one group: deposit it as ErodeBox would
+			} else if first {
+				copy(total, a)
+			} else {
+				for k := range total {
+					total[k] &= a[k]
+				}
+			}
+			first = false
+			i = j
+		}
+		depositBits(dst.Bits, dst.Off+y*dst.Stride, total, w)
+		total = scratch[len(acc) : len(acc)+wordsFor(w)]
+	}
+}
+
 // ClearBorder clears the validity bits of the one-cell border of a w×h
 // region: its first and last rows and columns.
 func ClearBorder(m []uint64, off, stride, w, h int) {

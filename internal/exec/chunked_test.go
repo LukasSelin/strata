@@ -528,11 +528,12 @@ func TestChunkedAllocs(t *testing.T) {
 	for _, workers := range []int{1, 4} {
 		few := allocs(engine.Options{TileWidth: 64, TileHeight: 48, Workers: workers})
 		many := allocs(engine.Options{TileWidth: 4, TileHeight: 3, Workers: workers})
-		// Per worker: its buffers and views, and a writer (goroutine,
-		// channels, views).
-		if many != few || few > float64(14+17*workers) {
+		// Per call: the validity rules. Per worker: its buffers and
+		// views, a writer (goroutine, channels, views), and the rules of
+		// a tile that dropped a mask.
+		if many != few || few > float64(16+18*workers) {
 			t.Errorf("workers=%d: %v allocs/op with 4 tiles, %v with 1024; want equal and at most %d",
-				workers, few, many, 14+17*workers)
+				workers, few, many, 16+18*workers)
 		}
 	}
 }

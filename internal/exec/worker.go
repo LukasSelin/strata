@@ -19,6 +19,9 @@ type worker struct {
 	// regions and scratch are ErodeBox's arguments for radius > 0.
 	regions []stencil.MaskRegion
 	scratch []uint64
+	// pad holds one buffer per input for windows that leave the rasters,
+	// when the outputs' edge rings differ (job.edgeW); nil otherwise.
+	pad []raster.Float32Raster
 	// kscratch is the working memory a ScratchKernel asked for, lent to
 	// every Process call this worker makes. Zero for every other kernel.
 	kscratch Scratch

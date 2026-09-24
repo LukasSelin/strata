@@ -25,7 +25,7 @@ import (
 func staged(t *testing.T, inputs int, stages []exec.Stage, out int) *exec.Pipeline {
 	t.Helper()
 	defer exec.SetFusion(false)()
-	p := exec.NewPipeline(inputs, stages, out)
+	p := exec.NewPipeline(inputs, stages, []int{out})
 	if p.Fused() {
 		t.Fatal("a pipeline built with fusion off is fused")
 	}
@@ -36,7 +36,7 @@ func staged(t *testing.T, inputs int, stages []exec.Stage, out int) *exec.Pipeli
 // it lowered to a chain.
 func fused(t *testing.T, inputs int, stages []exec.Stage, out int) *exec.Pipeline {
 	t.Helper()
-	p := exec.NewPipeline(inputs, stages, out)
+	p := exec.NewPipeline(inputs, stages, []int{out})
 	if !p.Fused() {
 		t.Fatal("the pipeline did not lower to a fused chain")
 	}
@@ -281,7 +281,7 @@ func TestPipelineFallsBackOffTheCut(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := exec.NewPipeline(tc.inputs, tc.stages, tc.out)
+			p := exec.NewPipeline(tc.inputs, tc.stages, []int{tc.out})
 			if p.Fused() {
 				t.Fatal("lowered to a fused chain; this shape is off the cut")
 			}
@@ -330,7 +330,7 @@ func TestPipelineFuseArityMismatchPanics(t *testing.T) {
 	}()
 	exec.NewPipeline(1, []exec.Stage{
 		{Kernel: liarKernel{}, In: []int{0}},
-	}, 1)
+	}, []int{1})
 }
 
 // opKernel is one vec operation as a Kernel, so that a test can build a

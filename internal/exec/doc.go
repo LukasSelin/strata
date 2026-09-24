@@ -63,6 +63,13 @@
 // beyond them; widening the input to the parent and narrowing the output
 // is the caller's choice.
 //
+// A ReachKernel's outputs can have narrower rings: an output's ring is
+// the largest distance at which it reads an input, which may be less
+// than Radius. Process then calls the kernel for every cell outside the
+// narrowest ring, with each window padded with NaN (and invalid bits)
+// where it leaves the rasters, and gives each output the edge policy
+// over its own ring. No kept cell reads the padding (DESIGN.md §52).
+//
 // This is package terrain's policy, which is why terrain's plain
 // functions also run through Process, with zero Options.
 //
@@ -73,15 +80,21 @@
 // is valid in every input with a mask, and it is not an edge cell. For
 // radius 0 that is algebra's AND of the inputs. Data under an invalid
 // cell is whatever the kernel wrote there: every cell is computed, valid
-// or not, and validity is never inferred from Data (STRATA-3). Kernels
-// whose validity rule is different, such as a focal mean that skips
-// invalid cells, need an extension of this interface.
+// or not, and validity is never inferred from Data (STRATA-3). A
+// ReachKernel narrows that per output and input: each masked input is
+// eroded by the distance at which the output reads it, or not ANDed at
+// all, which is how a Pipeline that multiplies a stencil's result by a
+// pointwise input keeps the pointwise input's NoData from spreading
+// (DESIGN.md §52). Kernels whose validity rule is different in kind,
+// such as a focal mean that skips invalid cells, need an extension of
+// this interface.
 //
 // Masks are processed in words, apart from the arithmetic: radius 0 uses
 // raster's range functions, with one pass over the whole span when every
 // operand is compact and in place when an output shares its input's bits;
-// larger radii use stencil.ErodeBox, which ANDs the 2r+1 halo rows of
-// every masked input and shrinks each row by 2r cells with shifts.
+// larger radii use stencil.ErodeReach, which ANDs the 2r+1 halo rows of
+// every masked input and shrinks each row by 2r cells with shifts, per
+// group of inputs of equal reach.
 //
 //   - If no input and no output has a mask, no mask work is done.
 //   - If no input has a mask but an output does, its non-edge cells are

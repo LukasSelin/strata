@@ -1,8 +1,10 @@
 package exec
 
 import (
+	"fmt"
 	"math"
 	"runtime"
+	"slices"
 	"sync"
 
 	"github.com/LukasSelin/strata/engine"
@@ -53,6 +55,18 @@ type job struct {
 	// sameBits[i] is the masked input whose bits are dst[i]'s own (radius
 	// 0 in place), or -1. It is set whenever pointwise validity runs.
 	sameBits []int
+	// valid[i] is how dst[i]'s validity is derived, when an output has a
+	// mask: see outValidity. valid1 holds it for a kernel of one output,
+	// so that the common case allocates nothing for it.
+	valid  []outValidity
+	valid1 [1]outValidity
+	// edgeW[i] is the width of dst[i]'s edge ring, when the outputs'
+	// rings differ (see edgeWidths); nil when every ring is r wide. rmin
+	// is the narrowest ring: the kernel runs over every cell at least
+	// rmin from the edge, with its window padded where it leaves the
+	// rasters.
+	edgeW []int
+	rmin  int
 
 	// workers holds each worker's views and scratch; workers[0] runs on
 	// the calling goroutine.
@@ -69,23 +83,38 @@ type job struct {
 
 func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Options) *job {
 	e := &job{dst: dst, src: src, out: opts.Stats}
-	var masked []int
+	dstMasked := false
+	for _, d := range dst {
+		dstMasked = dstMasked || d.Valid != nil
+	}
+	var masked, rules []int
+	for _, s := range src {
+		if s.Valid != nil {
+			// The masked inputs and the validity rules' ints in one
+			// allocation: see validityInts.
+			n := len(src)
+			ints := make([]int, n+validityInts(n, len(dst)))
+			masked, rules = ints[:0:n], ints[n:]
+			break
+		}
+	}
 	for j, s := range src {
 		if s.Valid != nil {
 			masked = append(masked, j)
 		}
 	}
-	dstMasked := false
-	for _, d := range dst {
-		dstMasked = dstMasked || d.Valid != nil
+	valid := e.valid1[:]
+	if len(dst) > 1 {
+		valid = make([]outValidity, len(dst))
 	}
-	e.setup(k, r, dst[0].Width, dst[0].Height, masked, dstMasked)
+	e.setup(k, r, dst[0].Width, dst[0].Height, masked, dstMasked,
+		outValidities(k, r, masked, dstMasked, valid, rules), edgeWidths(k, r, len(src), len(dst)))
 	e.plan = newPlan(e.w, e.h, opts.TileWidth, opts.TileHeight)
 	for i, d := range dst {
 		if e.sameBits == nil {
 			break
 		}
-		for _, j := range masked {
+		for _, j := range e.valid[i].ins {
 			if overlap.Bits(d, src[j]) == overlap.Same {
 				e.sameBits[i] = j
 				break
@@ -94,25 +123,139 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 	}
 	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.tileW)
 	e.allocScratch(e.plan.spanSize())
+	e.allocPad(e.plan.spanSize())
 	return e
 }
 
 // setup sets what a job takes from its kernel and the masks of its
 // operands: the kernel, its radius and edge value, the raster size, the
-// masked inputs and whether any output has a mask.
-func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool) {
+// masked inputs, whether any output has a mask and, from outValidities,
+// how each output's validity is derived, and from edgeWidths the width
+// of each output's edge ring. valid and edgeW are only read, so a
+// chunked call's tiles share them.
+func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool, valid []outValidity, edgeW []int) {
 	e.k, e.r, e.w, e.h = k, r, w, h
+	e.edgeW, e.rmin = edgeW, r
+	for _, b := range edgeW {
+		e.rmin = min(e.rmin, b)
+	}
 	e.edge = float32(math.NaN())
 	if ek, ok := k.(EdgeKernel); ok {
 		e.edge = ek.Edge()
 	}
-	e.masked, e.dstMasked = masked, dstMasked
+	e.masked, e.dstMasked, e.valid = masked, dstMasked, valid
 	if dstMasked && len(masked) > 0 && r == 0 {
 		e.sameBits = make([]int, len(e.dst))
 		for i := range e.sameBits {
 			e.sameBits[i] = -1
 		}
 	}
+}
+
+// edgeWidths returns the width of each output's edge ring, or nil when
+// every ring is r wide, which is the case for every kernel but a
+// ReachKernel whose outputs read less far than its radius. An output's
+// ring is the largest distance at which it reads any input: its cells
+// beyond that read only cells inside the rasters, so they get real
+// values, as they would from a kernel computing that output alone
+// (DESIGN.md §52). An output that reads no input has a ring of r.
+func edgeWidths(k Kernel, r, nin, nout int) []int {
+	rk, ok := k.(ReachKernel)
+	if !ok || r == 0 {
+		return nil
+	}
+	width := func(o int) int {
+		b := -1
+		for in := range nin {
+			b = max(b, rk.Reach(o, in))
+		}
+		if b < 0 {
+			return r
+		}
+		return min(b, r)
+	}
+	for o := range nout {
+		if width(o) != r {
+			w := make([]int, nout)
+			for o := range w {
+				w[o] = width(o)
+			}
+			return w
+		}
+	}
+	return nil
+}
+
+// outValidity is how one output's validity is derived: the AND of the
+// masked inputs it reads, ins, each eroded by its reach in reach. Equal
+// reaches are adjacent, so stencil.ErodeReach erodes each group once.
+// from is an earlier output with the same ins and reaches, whose bits
+// this one copies, or -1.
+type outValidity struct {
+	ins, reach []int
+	from       int
+}
+
+// validityInts is how many ints outValidities needs for a kernel of nin
+// inputs and nout outputs, at most: an input list and a reach list per
+// output.
+func validityInts(nin, nout int) int { return 2 * nin * nout }
+
+// outValidities fills v, one rule per output of k, from the masked
+// inputs, and returns it, or nil when no output has a mask: every masked
+// input over radius r, unless k is a ReachKernel. The rules' lists are
+// carved from ints, which holds at least validityInts(len(masked),
+// len(v)). It panics if a ReachKernel reports a reach outside [-1, r].
+func outValidities(k Kernel, r int, masked []int, dstMasked bool, v []outValidity, ints []int) []outValidity {
+	if !dstMasked {
+		return nil
+	}
+	carve := func() []int {
+		s := ints[:0:len(masked)]
+		ints = ints[len(masked):]
+		return s
+	}
+	rk, ok := k.(ReachKernel)
+	if !ok {
+		// Every output reads every masked input over r: erode once into
+		// the first output and copy it to the others, as the engine
+		// always has.
+		reach := carve()
+		for range masked {
+			reach = append(reach, r)
+		}
+		for o := range v {
+			v[o] = outValidity{ins: masked, reach: reach, from: min(o, 1) - 1}
+		}
+		return v
+	}
+	for o := range v {
+		v[o] = outValidity{ins: carve(), reach: carve(), from: -1}
+		for _, j := range masked {
+			reach := rk.Reach(o, j)
+			if reach < -1 || reach > r {
+				panic(fmt.Sprintf("engine: kernel reports reach %d from input %d to output %d; "+
+					"a reach is -1 or 0 to its radius %d", reach, j, o, r))
+			}
+			if reach < 0 {
+				continue
+			}
+			// Insert keeping equal reaches together, largest first.
+			at := len(v[o].ins)
+			for at > 0 && v[o].reach[at-1] < reach {
+				at--
+			}
+			v[o].ins = slices.Insert(v[o].ins, at, j)
+			v[o].reach = slices.Insert(v[o].reach, at, reach)
+		}
+		for p := range o {
+			if len(v[o].ins) > 0 && slices.Equal(v[p].ins, v[o].ins) && slices.Equal(v[p].reach, v[o].reach) {
+				v[o].from = p
+				break
+			}
+		}
+	}
+	return v
 }
 
 // workerCount resolves Options.Workers for a plan of n units of work.
@@ -138,7 +281,7 @@ func (e *job) allocWorkers(n, tileW int) {
 	sw := 0
 	if erode {
 		regions = make([]stencil.MaskRegion, n*len(e.masked))
-		sw = stencil.ErodeScratch(tileW, e.r)
+		sw = stencil.ErodeReachScratch(tileW, e.r)
 		scratch = make([]uint64, n*sw)
 	}
 	for i := range e.workers {

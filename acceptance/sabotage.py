@@ -321,6 +321,63 @@ def tri_float32_sum(d):
     _rewrite(d, "ruggedness_tri", f)
 
 
+def _weighted(d, f):
+    """Apply f(values, mask) -> (values, mask) to every weighted slope."""
+    for c in MAN["rasters"]:
+        if c.get("weight"):
+            m = np.fromfile(os.path.join(d, c["out_mask"]), dtype=np.uint8).reshape(H, W)
+            a, m = f(read(d, c["out"]), m)
+            write(d, c["out"], a)
+            m.astype(np.uint8).tofile(os.path.join(d, c["out_mask"]))
+
+
+def weight_eroded(d):
+    """The weight's validity eroded 3x3 like the DEM's - one erosion over
+    every input, the engine's rule before per-input reach."""
+    wm = np.fromfile(os.path.join(d, "weight.mask.u8"), dtype=np.uint8).reshape(H, W).astype(bool)
+    er = np.zeros((H, W), bool)
+    er[1:-1, 1:-1] = True
+    for j in range(3):
+        for i in range(3):
+            er[1:-1, 1:-1] &= wm[j : H - 2 + j, i : W - 2 + i]
+    _weighted(d, lambda a, m: (a, m & er))
+
+
+def weight_ignored(d):
+    """The weight's NoData cells marked valid, as if its mask were never
+    read."""
+    wm = np.fromfile(os.path.join(d, "weight.mask.u8"), dtype=np.uint8).reshape(H, W)
+    interior = np.zeros((H, W), np.uint8)
+    interior[1:-1, 1:-1] = 1
+    _weighted(d, lambda a, m: (a, m | ((1 - wm) & interior)))
+
+
+def weight_neighbour(d):
+    """The weight read one cell to the right of the slope it multiplies."""
+    wt = read(d, "weight.f32")
+    shifted = np.roll(wt, -1, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        _weighted(d, lambda a, m: (np.where(m == 1, a / wt * shifted, a), m))
+
+
+def surface_ulp(d):
+    """One Surface aspect cell one ulp off - a from-gradient kernel that
+    rounds once differently from the fused one."""
+    name = "hill-surface_aspect-tiled.f32"
+    a = read(d, name).astype("<f4")
+    a[40, 50] = np.nextafter(a[40, 50], np.float32(np.inf))
+    write(d, name, a)
+
+
+def surface_swapped(d):
+    """Surface's dx and dy written to each other's output."""
+    for form in ("plain", "tiled", "chunked"):
+        dx = read(d, f"noisy-surface_gradient_dx-{form}.f32")
+        dy = read(d, f"noisy-surface_gradient_dy-{form}.f32")
+        write(d, f"noisy-surface_gradient_dx-{form}.f32", dy)
+        write(d, f"noisy-surface_gradient_dy-{form}.f32", dx)
+
+
 def focal_seam(d):
     """One tiled Gaussian cell wrong, as a halo bug at a seam would be:
     row 46 and column 74 are tile edges of the 37x23 tiling."""
@@ -331,6 +388,11 @@ def focal_seam(d):
 
 MUTATIONS = [
     ("slope 0.05% too large", drift),
+    ("weight validity eroded 3x3", weight_eroded),
+    ("weight NoData ignored", weight_ignored),
+    ("weight read one cell over", weight_neighbour),
+    ("Surface aspect one ulp off", surface_ulp),
+    ("Surface dx and dy swapped", surface_swapped),
     ("dx and dy swapped", transpose_kernel),
     ("aspect mirrored", mirror_aspect),
     ("one bad cell on a tile seam", tile_seam),

@@ -599,8 +599,8 @@ for forms in groups.values():
 
 for case in MAN["rasters"]:
     r = radius(case)
-    if not case.get("out_mask") or r == 0:
-        continue
+    if not case.get("out_mask") or r == 0 or case.get("weight"):
+        continue  # a weighted case's validity is check 11's
     src = load_mask(case["dem_mask"])
     want = np.zeros((H, W), bool)
     eroded = np.ones((H - 2 * r, W - 2 * r), bool)
@@ -744,6 +744,81 @@ if ndimage is not None:
         scale = np.abs(ref[inner]).max()
         record(f"{case['name']} definition == scipy.ndimage.{fn.__name__}", err <= 1e-12 * max(scale, 1),
                f"max {err:.2e}")
+
+
+# --------------------------------------------------------------------
+# 11. Weighted slope: Horn's slope in degrees times a weight read at the
+#     cell itself. Data against the float64 reference, with the slope's
+#     tolerance scaled by the weight and one more rounding for the
+#     product; validity the 3x3 erosion of the DEM's mask AND the
+#     weight's own mask, not eroded. An implementation that eroded the
+#     weight too would lose the 3x3 around every NoData weight.
+# --------------------------------------------------------------------
+
+for case in MAN["rasters"]:
+    if not case.get("weight"):
+        continue
+    z, _ = load(case["dem"])
+    dem_mask = load_mask(case.get("dem_mask"))
+    if dem_mask is not None:
+        z = np.where(dem_mask, z, np.nan)
+    wt, _ = load(case["weight"])
+    wmask = load_mask(case["weight_mask"])
+    wt = np.where(wmask, wt, np.nan)
+    slope, stol = expected("slope_deg", z, case)
+    ref = slope * wt
+    tol = stol * np.abs(wt) + EPS * np.abs(ref)
+    got, _ = load(case["out"])
+    out_mask = load_mask(case["out_mask"])
+
+    want = np.zeros((H, W), bool)
+    eroded = np.ones((H - 2, W - 2), bool)
+    for _, _, v in shifted(dem_mask if dem_mask is not None else np.ones((H, W), bool), 1):
+        eroded &= v
+    want[1 : H - 1, 1 : W - 1] = eroded
+    want &= wmask
+    bad = int((out_mask != want).sum())
+    record(f"{case['name']} validity == eroded DEM AND weight", bad == 0,
+           f"{bad} cells with the wrong validity")
+    # The eroded-everything reading is wrong here; make sure the case can
+    # tell the two apart, or the check above proves nothing.
+    wrong = want.copy()
+    weroded = np.ones((H - 2, W - 2), bool)
+    for _, _, v in shifted(wmask, 1):
+        weroded &= v
+    wrong[1 : H - 1, 1 : W - 1] &= weroded
+    record(f"{case['name']} case distinguishes an eroded weight", int((wrong != want).sum()) > 0,
+           f"{int((wrong != want).sum())} cells differ between the two readings")
+
+    keep = defined(out_mask) & np.isfinite(ref)
+    err = np.abs(got - ref)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(err == 0, 0.0, err / tol)
+    worst = ratio[keep].max() if keep.any() else 0.0
+    record(f"{case['name']} vs Horn reference times weight", worst <= 1.0,
+           f"max error {err[keep].max():.3e} ({worst:.2f}x tolerance) over {int(keep.sum())} cells")
+
+
+# --------------------------------------------------------------------
+# 12. Surface: every product it writes, several at once from one
+#     gradient, is the standalone operation's file bit for bit, Data
+#     and validity, in every form. The standalone files are judged
+#     against their references above (and against gdaldem by
+#     gdalcompare.py), so this carries those verdicts over to Surface.
+# --------------------------------------------------------------------
+
+for case in MAN["rasters"]:
+    if not case["op"].startswith("surface_"):
+        continue
+    alone = f"{case['dem'][:-4]}-{case['op'][len('surface_'):]}-{case['form']}"
+    got, gbits = load(case["out"])
+    want, wbits = load(alone + ".f32")
+    differ = int(((gbits != wbits) & ~(np.isnan(got) & np.isnan(want))).sum())
+    mask_same = True
+    if case.get("out_mask"):
+        mask_same = np.array_equal(load_mask(case["out_mask"]), load_mask(alone + ".mask.u8"))
+    record(f"{case['name']} == {alone} bit for bit", differ == 0 and mask_same,
+           f"{differ} differing cells" + ("" if mask_same else ", masks differ"))
 
 
 # --------------------------------------------------------------------
