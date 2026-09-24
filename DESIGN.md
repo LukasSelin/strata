@@ -51,8 +51,8 @@ the detailed record; this table only points at it.
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; median, skip-invalid statistics and r = 3's residual 64 KiB-stride loss open |
 | `Pipeline`, radius 0, internal | §52 | done |
-| `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
-| Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
+| `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | radius > 0 and several outputs done; public `Kernel` decided against for now |
+| Register-level operation fusion | §29 | done for left-deep chains, all three backends; Zen 2 run and generator open |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
