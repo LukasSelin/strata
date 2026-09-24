@@ -31,9 +31,19 @@ type op struct {
 
 	tiled   func(ctx context.Context, dst raster.Dataset, src []raster.Dataset, eo engine.Options) (string, error)
 	chunked func(ctx context.Context, dst engine.RasterSink, dstGrid raster.Grid, src []engine.RasterSource, grids []raster.Grid, eo engine.Options) (string, error)
+
+	// A workflow op writes several products of one input in one pass:
+	// products names them, each also an op of its own that computes it
+	// alone, and tiledN and chunkedN take one destination per product,
+	// in that order. tiled and chunked are then nil.
+	products []string
+	tiledN   func(ctx context.Context, dst []raster.Dataset, src raster.Dataset, eo engine.Options) error
+	chunkedN func(ctx context.Context, dst []engine.RasterSink, src engine.RasterSource, eo engine.Options) error
 }
 
 func (o op) reduces() bool { return o.scale == 0 }
+
+func (o op) workflow() bool { return len(o.products) > 0 }
 
 // cellSize is set from -cell before any op runs. Terrain ops need it;
 // the rest do not depend on it.
@@ -179,6 +189,11 @@ func ops() []op {
 		return o
 	}
 	named := func(name string, o op) op { o.name = name; return o }
+	// The three products' options above, as one SurfaceOptions: the
+	// same settings, so that each product is bit for bit the op's own.
+	suo := func() terrain.SurfaceOptions {
+		return terrain.SurfaceOptions{CellSize: cellSize, CellSizeY: cellSize, Azimuth: 315, Altitude: 45}
+	}
 
 	wo := focal.WeightsOptions{Radius: 2, Weights: conv5}
 	gso := focal.SeparableOptions{Radius: 2, Row: gauss5, Col: gauss5}
@@ -286,6 +301,24 @@ func ops() []op {
 		named("lanczos-half", resampler(resample.Lanczos, 0.5)),
 		named("average-half", resampler(resample.Average, 0.5)),
 		named("cubic-double", resampler(resample.Cubic, 2)),
+
+		// workflow: slope, aspect and hillshade of one DEM in one pass,
+		// against the three ops above and three gdaldem runs.
+		{
+			name: "surface", inputs: 1, scale: 1,
+			products: []string{"slope", "aspect", "hillshade"},
+			tiledN: func(ctx context.Context, dst []raster.Dataset, src raster.Dataset, eo engine.Options) error {
+				out := terrain.SurfaceOutputs{Slope: dst[0].Raster, Aspect: dst[1].Raster, Hillshade: dst[2].Raster}
+				if eo.Workers == 1 {
+					terrain.Surface(out, src.Raster, suo())
+					return nil
+				}
+				return terrain.SurfaceTiled(ctx, out, src.Raster, suo(), eo)
+			},
+			chunkedN: func(ctx context.Context, dst []engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.SurfaceChunked(ctx, terrain.SurfaceSinks{Slope: dst[0], Aspect: dst[1], Hillshade: dst[2]}, src, suo(), eo)
+			},
+		},
 	}
 }
 

@@ -123,12 +123,16 @@ OPS = {
     "average-half": warp("average", 0.5),
     "cubic-double": warp("cubic", 2),
 }
+# The workflow: slope, aspect and hillshade of one DEM, the three
+# gdaldem calls one after another, each output kept until all are done.
+OPS["surface"] = lambda: [OPS[p]() for p in ("slope", "aspect", "hillshade")]
 
 f = OPS[op]
 out = f()  # untimed: checks that it works, and warms whatever GDAL caches
-if isinstance(out, gdal.Dataset) and out.GetDriver().ShortName != "MEM":
-    sys.exit(f"gdalcompute: {op} returned a {out.GetDriver().ShortName} dataset, "
-             "which may compute lazily; the timing would not include the work")
+for o in out if isinstance(out, list) else [out]:
+    if isinstance(o, gdal.Dataset) and o.GetDriver().ShortName != "MEM":
+        sys.exit(f"gdalcompute: {op} returned a {o.GetDriver().ShortName} dataset, "
+                 "which may compute lazily; the timing would not include the work")
 out = None
 for i in range(repeat):
     t0 = time.perf_counter()

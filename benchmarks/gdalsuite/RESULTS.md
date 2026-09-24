@@ -17,6 +17,8 @@ and [`../cog/`](../cog/RESULTS.md) for reading. This directory is both,
 for everything, with the two tools' answers compared on every operation
 (see [Do they agree](#do-they-agree)).
 
+A fused workflow (slope + aspect + hillshade in one pass) against the same three as separate runs and as three gdaldem runs: [WORKFLOW.md](WORKFLOW.md).
+
 ## Headline
 
 - **The arithmetic is 25× GDAL's on one core, and 57× on twelve.** That

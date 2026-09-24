@@ -21,6 +21,11 @@
 //     run starts with an empty block cache.
 //   - none starts the process and stops: the floor under every case.
 //
+// A workflow op (surface) writes several products in one pass, to
+// strata-<op>-<product>.raw in chunked mode. With -separate, memory
+// mode times its products' own ops run one after another instead, each
+// into its own destination: the same job without the fusion.
+//
 // Every run prints `run=<i> ms=<in-process milliseconds>`; a reduction
 // adds its result, which runsuite.sh compares against GDAL's. The output
 // file is raw little-endian float32 with -9999 under invalid cells, the
@@ -62,6 +67,7 @@ var (
 	list    = flag.Bool("list", false, "print the operations and stop")
 	cpuprof = flag.String("cpuprofile", "", "write a CPU profile of the whole process here")
 	kernel  = flag.Bool("kernel", false, "print conv5's weights in gdal raster neighbors syntax and stop")
+	sep     = flag.Bool("separate", false, "memory mode, workflow op: run its products' own ops one after another")
 )
 
 // outFill is what strata writes under invalid cells: gdaldem's NoData.
@@ -214,12 +220,21 @@ func memory(ctx context.Context, o op, files []string, eo engine.Options) error 
 	}
 	fmt.Printf("read ms=%.1f\n", time.Since(t0).Seconds()*1000)
 
-	var dst raster.Dataset
-	if !o.reduces() {
+	newDst := func() raster.Dataset {
 		g := dstGrid(src[0].Grid, o.scale)
 		r := raster.NewFloat32(g.Width, g.Height, make([]float32, g.Width*g.Height))
 		r.Valid = raster.NewMask(g.Width * g.Height)
-		dst = raster.NewDataset(g, r)
+		return raster.NewDataset(g, r)
+	}
+	if o.workflow() {
+		return memoryN(ctx, o, src[0], newDst, eo)
+	}
+	if *sep {
+		return fmt.Errorf("-separate needs a workflow op")
+	}
+	var dst raster.Dataset
+	if !o.reduces() {
+		dst = newDst()
 	}
 	// One untimed run first: it faults in the destination's pages, which
 	// is the allocator's cost and not the operation's.
@@ -236,7 +251,40 @@ func memory(ctx context.Context, o op, files []string, eo engine.Options) error 
 	return nil
 }
 
+// memoryN is memory for a workflow op: one destination per product, and
+// either the fused call or, with -separate, the products' own ops in turn.
+func memoryN(ctx context.Context, o op, src raster.Dataset, newDst func() raster.Dataset, eo engine.Options) error {
+	dst := make([]raster.Dataset, len(o.products))
+	alone := make([]op, len(o.products))
+	for k, name := range o.products {
+		dst[k] = newDst()
+		var ok bool
+		if alone[k], ok = lookup(name); !ok {
+			return fmt.Errorf("%s: no op %q", o.name, name)
+		}
+	}
+	for i := -1; i < *repeat; i++ {
+		t0 := time.Now()
+		if *sep {
+			for k, a := range alone {
+				if _, err := a.tiled(ctx, dst[k], []raster.Dataset{src}, eo); err != nil {
+					return err
+				}
+			}
+		} else if err := o.tiledN(ctx, dst, src, eo); err != nil {
+			return err
+		}
+		if i >= 0 {
+			report(i, time.Since(t0), "")
+		}
+	}
+	return nil
+}
+
 func chunked(ctx context.Context, o op, files []string, eo engine.Options) error {
+	if *sep {
+		return fmt.Errorf("-separate is for memory mode; run the products' ops instead")
+	}
 	for i := range *repeat {
 		if err := chunkedOnce(ctx, o, files, eo, i); err != nil {
 			return err
@@ -270,20 +318,45 @@ func chunkedOnce(ctx context.Context, o op, files []string, eo engine.Options, i
 	if *reuse {
 		create = engine.ReuseRawFile
 	}
-	out, err := create(filepath.Join(*dir, "strata-"+o.name+".raw"),
-		4*int64(g.Width)*int64(g.Height), 0o644, max(*workers, 1))
-	if err != nil {
-		return err
+	// One output per product for a workflow op, else the op's one.
+	names := []string{"strata-" + o.name + ".raw"}
+	if o.workflow() {
+		names = names[:0]
+		for _, p := range o.products {
+			names = append(names, "strata-"+o.name+"-"+p+".raw")
+		}
+	}
+	outs := make([]*engine.RawFile, 0, len(names))
+	closeOuts := func() {
+		for _, f := range outs {
+			_ = f.Close() // the operation's error matters more
+		}
+	}
+	sinks := make([]engine.RasterSink, 0, len(names))
+	for _, name := range names {
+		out, err := create(filepath.Join(*dir, name), 4*int64(g.Width)*int64(g.Height), 0o644, max(*workers, 1))
+		if err != nil {
+			closeOuts()
+			return err
+		}
+		outs = append(outs, out)
+		sinks = append(sinks, engine.NewRawSink(out, g.Width, g.Height, engine.RawOptions{Fill: outFill, HasFill: true}))
 	}
 	tCreate := time.Now()
-	sink := engine.NewRawSink(out, g.Width, g.Height, engine.RawOptions{Fill: outFill, HasFill: true})
-	if _, err := o.chunked(ctx, sink, g, srcs, grids, eo); err != nil {
-		_ = out.Close() // the operation's error matters more
+	if o.workflow() {
+		err = o.chunkedN(ctx, sinks, srcs[0], eo)
+	} else {
+		_, err = o.chunked(ctx, sinks[0], g, srcs, grids, eo)
+	}
+	if err != nil {
+		closeOuts()
 		return err
 	}
-	tRun, mapped := time.Now(), out.Mapped()
-	if err := out.Close(); err != nil {
-		return err
+	tRun, mapped := time.Now(), outs[0].Mapped()
+	for _, out := range outs {
+		if err := out.Close(); err != nil {
+			return err
+		}
 	}
 	// Where the time went: opening the inputs and creating the output
 	// (which frees an earlier run's output), the operation, and closing

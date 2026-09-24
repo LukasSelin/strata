@@ -11,7 +11,10 @@ runsuite.sh prints, and the `agree` and `# identical` lines, and prints:
   2. where the time goes: how much of each tool's whole flow is compute;
   3. the medians behind every speedup, per tier;
   4. how far apart the two tools' answers are;
-  5. with --baseline, what changed since that run.
+  5. with --baseline, what changed since that run;
+  6. for a workflow op (surface), which runtimes WORKFLOW.md reads: one
+     job with several outputs, strata's fused pass against its separate
+     ops and against GDAL's, and the checks on the fused outputs.
 
 Every number is a median over the timed runs, never the minimum. Every
 speedup is against the *fastest* GDAL configuration for that operation
@@ -38,6 +41,9 @@ FAMILIES = [
 ]
 FAMILY = {op: fam for fam, ops in FAMILIES for op in ops}
 TIERS = [("compute", "compute"), ("raw", "file to file"), ("cog", "whole flow from a COG")]
+# Workflow ops: one job, several products, each an op of its own. Their
+# cases are kept apart from the per-operation tables.
+WORKFLOWS = {"surface": ["slope", "aspect", "hillshade"]}
 SPREAD_WARN = 0.15
 
 
@@ -45,6 +51,8 @@ class Run:
     def __init__(self, path):
         self.notes, self.agree, self.identical = [], {}, {}
         self.cases = defaultdict(list)  # key -> [(value s, cpu s | None)]
+        self.wf = defaultdict(list)  # the same, for workflow ops
+        self.wf_checks = []  # (workflow, product, check, identical)
         self.w = self.h = None
         for line in open(path, encoding="utf-8"):
             line = line.rstrip("\n")
@@ -56,6 +64,9 @@ class Run:
                 m = re.match(r"# (identical|DIFFERENT): (\S+) ", line)
                 if m:
                     self.identical[m[2]] = m[1] == "identical"
+                m = re.match(r"# workflow (identical|DIFFERENT): (\S+) (\S+) ([^:\s]+):", line)
+                if m:
+                    self.wf_checks.append((m[2], m[3], m[4], m[1] == "identical"))
                 continue
             if line.startswith("agree "):
                 f = dict(p.split("=", 1) for p in line.split()[1:] if "=" in p)
@@ -77,7 +88,7 @@ class Run:
                     cpu = None
             else:
                 val, cpu = float(f["ms"]) / 1000, None
-            self.cases[key].append((val, cpu))
+            (self.wf if f["op"] in WORKFLOWS else self.cases)[key].append((val, cpu))
         self.cells = (self.w or 0) * (self.h or 0)
         self.n = max((k[4] for k in self.cases), default=1)
         self.ops = []
@@ -85,20 +96,24 @@ class Run:
             if k[0] != "floor" and k[1] not in self.ops:
                 self.ops.append(k[1])
 
+    def runs(self, key):
+        return self.cases.get(key) or self.wf.get(key) or []
+
     def med(self, key):
-        v = self.cases.get(key)
+        v = self.runs(key)
         return statistics.median(x[0] for x in v) if v else None
 
     def cpu(self, key):
-        v = [x[1] for x in self.cases.get(key, []) if x[1] is not None]
+        v = [x[1] for x in self.runs(key) if x[1] is not None]
         return statistics.median(v) if v else None
 
     def spread(self, key):
-        v = sorted(x[0] for x in self.cases.get(key, []))
+        v = sorted(x[0] for x in self.runs(key))
         return (v[-1] - v[0]) / statistics.median(v) if len(v) > 1 else 0.0
 
     def gdal(self, tier, op, one_thread):
-        keys = [k for k in self.cases if k[0] == tier and k[1] == op and k[2] == "gdal"
+        keys = [k for k in (self.wf if op in WORKFLOWS else self.cases)
+                if k[0] == tier and k[1] == op and k[2] == "gdal"
                 and (k[4] == 1 or not one_thread)]
         if not keys:
             return None, None
@@ -275,6 +290,60 @@ def since(r, b, label):
     print()
 
 
+def workflows(r):
+    for wf in [w for w in WORKFLOWS if any(k[1] == w for k in r.wf)]:
+        prods = WORKFLOWS[wf]
+        print(f"### Workflow: {wf} = {' + '.join(prods)} of one DEM\n")
+        print("One job, three ways: (a) strata's fused pass, one process writing every "
+              "product; (b) strata's separate ops, one process per product, one after "
+              "another; (c) GDAL, one gdaldem run per product, in its fastest configuration "
+              "(on one thread its fastest single-threaded one, on N its fastest at any "
+              "thread count, named in brackets). Whole-process tiers are wall time of all "
+              "the processes together; compute is the calls with the DEM in memory. "
+              "`CPU` is user + sys seconds. A ratio is how many times faster the "
+              "denominator is: (c)/(a) is the fused pass against GDAL.\n")
+        print("| tier | threads | (a) fused | (b) separate | (c) GDAL | (b)/(a) | (c)/(a) "
+              "| (c)/(b) | CPU (a) | CPU (b) | CPU (c) | worst spread |")
+        print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for t, name in TIERS:
+            for n in (1, r.n):
+                fk, sk = (t, wf, "strata", "fused", n), (t, wf, "strata", "separate", n)
+                a, b = r.med(fk), r.med(sk)
+                c, gk = r.gdal(t, wf, n == 1)
+                if a is None and b is None and c is None:
+                    continue
+                ratio = lambda u, v: x(u / v if u and v else None)
+                cpu = lambda k: "–" if k is None or r.cpu(k) is None else f"{r.cpu(k):.2f}"
+                keys = [k for k in (fk, sk, gk) if k and r.runs(k)]
+                spread = max((r.spread(k) for k in keys), default=0)
+                warn = " ⚠" if spread > SPREAD_WARN else ""
+                gcell = f"{secs(c)} ({gk[3]}, {gk[4]})" if gk else "–"
+                print(f"| {name} | {n} | {secs(a)} | {secs(b)} | {gcell} | {ratio(b, a)} "
+                      f"| {ratio(c, a)} | {ratio(c, b)} | {cpu(fk)} | {cpu(sk)} | {cpu(gk)} "
+                      f"| {spread * 100:.0f}%{warn} |")
+        print()
+        print(f"**Checks.** `fused-vs-separate`: each fused output, from the raw file on one "
+              f"worker, against the product's own op, byte for byte. `cog-vs-raw`: the fused "
+              f"whole flow from the COG on {r.n} workers against the fused raw path on one. "
+              f"And each fused output against gdaldem's, as in the agreement table.\n")
+        print("| product | fused == separate | COG, N == raw, 1 | cells compared "
+              "| validity differs | max abs diff | mean abs diff |")
+        print("| --- | :---: | :---: | ---: | ---: | ---: | ---: |")
+        for p in prods:
+            chk = {c: ok for w, q, c, ok in r.wf_checks if w == wf and q == p}
+            yn = lambda c: {True: "yes", False: "**NO**"}.get(chk.get(c), "–")
+            line = r.agree.get(f"{wf}-{p}")
+            if line:
+                f = dict(v.split("=", 1) for v in line.split()[1:] if "=" in v)
+                n, of = int(f["compared"]), int(f["of"])
+                ag = (f"{n:,} ({n / of * 100:.1f}%) | {int(f['validity_mismatch']):,} "
+                      f"| {f.get('maxdiff', '–')} | {f.get('meandiff', '–')}")
+            else:
+                ag = "– | – | – | –"
+            print(f"| {p} | {yn('fused-vs-separate')} | {yn('cog-vs-raw')} | {ag} |")
+        print()
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
@@ -283,18 +352,21 @@ def main():
     a = ap.parse_args()
     r = Run(a.timings)
     for n in r.notes:
-        if not n.startswith(("# ---", "# identical", "# DIFFERENT")):
+        if not n.startswith(("# ---", "# identical", "# DIFFERENT", "# workflow ")):
             print(n)
-    reps = max((len(v) for v in r.cases.values()), default=0)
+    reps = max((len(v) for v in list(r.cases.values()) + list(r.wf.values())), default=0)
     print(f"\n{r.w} × {r.h} = {r.cells / 1e6:.1f}M cells, {reps} timed runs per case, "
           f"median reported. N = {r.n}.\n")
-    scoreboard(r)
-    where_time_goes(r)
-    for t, name in TIERS:
-        detail(r, t, name)
-    cpu_table(r)
+    if r.ops:
+        scoreboard(r)
+        where_time_goes(r)
+        for t, name in TIERS:
+            detail(r, t, name)
+        cpu_table(r)
     floors(r)
-    agreement(r)
+    if r.ops:
+        agreement(r)
+    workflows(r)
     if a.baseline:
         b = Run(a.baseline)
         stamp = next((n[2:] for n in b.notes if n.startswith("# strata:")), a.baseline)

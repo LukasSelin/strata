@@ -1,0 +1,152 @@
+# strata: bf20dac
+# go: go1.27.0
+# date: 2026-09-24T15:16Z
+# gdal: GDAL 3.14.0dev-17759e56cbe7d693a39c3d5ccf339364de844ee7, released 2026/08/18
+# nproc: 24
+# work: tmpfs            20G   16M   20G   1% /work
+# ops: surface
+# tiers: compute raw cog  repeats: 5  tile: 256  N: 12
+# Size is 11264, 11264
+# Pixel Size = (12.500000000000000,-12.500000000000000)
+#   NoData Value=65535
+# dem-cog.tif: 116691772 bytes; stored statistics: 0
+# cell: 12.5  nodata: 65535
+tier=floor op=none tool=gdal cfg=startup threads=1 run=1 real=0.022 user=0.004 sys=0.014 ms=-
+tier=floor op=none tool=gdal cfg=startup threads=1 run=2 real=0.023 user=0.001 sys=0.021 ms=-
+tier=floor op=none tool=gdal cfg=startup threads=1 run=3 real=0.021 user=0.012 sys=0.009 ms=-
+tier=floor op=none tool=gdal cfg=startup threads=1 run=4 real=0.022 user=0.004 sys=0.017 ms=-
+tier=floor op=none tool=gdal cfg=startup threads=1 run=5 real=0.022 user=0.012 sys=0.009 ms=-
+tier=floor op=none tool=strata cfg=startup threads=1 run=1 real=0.004 user=0.003 sys=0.001 ms=-
+tier=floor op=none tool=strata cfg=startup threads=1 run=2 real=0.004 user=0.001 sys=0.004 ms=-
+tier=floor op=none tool=strata cfg=startup threads=1 run=3 real=0.004 user=0.000 sys=0.004 ms=-
+tier=floor op=none tool=strata cfg=startup threads=1 run=4 real=0.004 user=0.001 sys=0.004 ms=-
+tier=floor op=none tool=strata cfg=startup threads=1 run=5 real=0.004 user=0.003 sys=0.001 ms=-
+tier=floor op=none tool=gdal cfg=copy-envi threads=1 run=1 real=1.329 user=0.182 sys=1.143 ms=-
+tier=floor op=none tool=gdal cfg=copy-envi threads=1 run=2 real=1.141 user=0.263 sys=0.870 ms=-
+tier=floor op=none tool=gdal cfg=copy-envi threads=1 run=3 real=1.162 user=0.271 sys=0.887 ms=-
+tier=floor op=none tool=gdal cfg=copy-envi threads=1 run=4 real=1.155 user=0.225 sys=0.929 ms=-
+tier=floor op=none tool=gdal cfg=copy-envi threads=1 run=5 real=1.139 user=0.236 sys=0.899 ms=-
+tier=floor op=none tool=gdal cfg=copy-gtiff threads=1 run=1 real=0.939 user=0.176 sys=0.762 ms=-
+tier=floor op=none tool=gdal cfg=copy-gtiff threads=1 run=2 real=0.829 user=0.191 sys=0.631 ms=-
+tier=floor op=none tool=gdal cfg=copy-gtiff threads=1 run=3 real=0.805 user=0.152 sys=0.652 ms=-
+tier=floor op=none tool=gdal cfg=copy-gtiff threads=1 run=4 real=0.782 user=0.132 sys=0.645 ms=-
+tier=floor op=none tool=gdal cfg=copy-gtiff threads=1 run=5 real=0.926 user=0.144 sys=0.781 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=1 run=1 real=1.278 user=0.618 sys=0.657 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=1 run=2 real=1.279 user=0.615 sys=0.658 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=1 run=3 real=1.240 user=0.658 sys=0.578 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=1 run=4 real=1.217 user=0.681 sys=0.525 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=1 run=5 real=1.230 user=0.640 sys=0.589 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=12 run=1 real=0.590 user=0.786 sys=0.826 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=12 run=2 real=0.586 user=0.784 sys=0.803 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=12 run=3 real=0.611 user=0.819 sys=0.794 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=12 run=4 real=0.590 user=0.810 sys=0.794 ms=-
+tier=floor op=none tool=gdal cfg=copy-cog threads=12 run=5 real=0.600 user=0.773 sys=0.836 ms=-
+tier=floor op=none tool=gdal cfg=mem-copy threads=1 run=0 real=- user=- sys=- ms=392.61
+tier=floor op=none tool=gdal cfg=mem-copy threads=1 run=1 real=- user=- sys=- ms=130.24
+tier=floor op=none tool=gdal cfg=mem-copy threads=1 run=2 real=- user=- sys=- ms=123.82
+tier=floor op=none tool=gdal cfg=mem-copy threads=1 run=3 real=- user=- sys=- ms=135.83
+tier=floor op=none tool=gdal cfg=mem-copy threads=1 run=4 real=- user=- sys=- ms=147.94
+tier=compute op=surface tool=gdal cfg=mem threads=1 run=0 real=- user=- sys=- ms=7748.83
+tier=compute op=surface tool=gdal cfg=mem threads=1 run=1 real=- user=- sys=- ms=7552.55
+tier=compute op=surface tool=gdal cfg=mem threads=1 run=2 real=- user=- sys=- ms=7595.11
+tier=compute op=surface tool=gdal cfg=mem threads=1 run=3 real=- user=- sys=- ms=7589.36
+tier=compute op=surface tool=gdal cfg=mem threads=1 run=4 real=- user=- sys=- ms=7485.57
+tier=compute op=surface tool=strata cfg=fused threads=1 run=0 real=- user=- sys=- ms=562.09 
+tier=compute op=surface tool=strata cfg=fused threads=1 run=1 real=- user=- sys=- ms=561.44 
+tier=compute op=surface tool=strata cfg=fused threads=1 run=2 real=- user=- sys=- ms=559.67 
+tier=compute op=surface tool=strata cfg=fused threads=1 run=3 real=- user=- sys=- ms=555.77 
+tier=compute op=surface tool=strata cfg=fused threads=1 run=4 real=- user=- sys=- ms=557.31 
+tier=compute op=surface tool=strata cfg=separate threads=1 run=0 real=- user=- sys=- ms=543.14 
+tier=compute op=surface tool=strata cfg=separate threads=1 run=1 real=- user=- sys=- ms=536.38 
+tier=compute op=surface tool=strata cfg=separate threads=1 run=2 real=- user=- sys=- ms=536.16 
+tier=compute op=surface tool=strata cfg=separate threads=1 run=3 real=- user=- sys=- ms=542.80 
+tier=compute op=surface tool=strata cfg=separate threads=1 run=4 real=- user=- sys=- ms=533.78 
+tier=compute op=surface tool=strata cfg=fused threads=12 run=0 real=- user=- sys=- ms=117.02 
+tier=compute op=surface tool=strata cfg=fused threads=12 run=1 real=- user=- sys=- ms=118.31 
+tier=compute op=surface tool=strata cfg=fused threads=12 run=2 real=- user=- sys=- ms=118.47 
+tier=compute op=surface tool=strata cfg=fused threads=12 run=3 real=- user=- sys=- ms=118.00 
+tier=compute op=surface tool=strata cfg=fused threads=12 run=4 real=- user=- sys=- ms=117.92 
+tier=compute op=surface tool=strata cfg=separate threads=12 run=0 real=- user=- sys=- ms=167.26 
+tier=compute op=surface tool=strata cfg=separate threads=12 run=1 real=- user=- sys=- ms=173.85 
+tier=compute op=surface tool=strata cfg=separate threads=12 run=2 real=- user=- sys=- ms=156.90 
+tier=compute op=surface tool=strata cfg=separate threads=12 run=3 real=- user=- sys=- ms=157.94 
+tier=compute op=surface tool=strata cfg=separate threads=12 run=4 real=- user=- sys=- ms=154.89 
+tier=raw op=surface tool=gdal cfg=envi threads=1 run=1 real=10.500 user=7.980 sys=2.508 ms=-
+tier=raw op=surface tool=gdal cfg=envi threads=1 run=2 real=10.492 user=7.772 sys=2.709 ms=-
+tier=raw op=surface tool=gdal cfg=envi threads=1 run=3 real=10.253 user=7.872 sys=2.366 ms=-
+tier=raw op=surface tool=gdal cfg=envi threads=1 run=4 real=10.289 user=7.841 sys=2.429 ms=-
+tier=raw op=surface tool=gdal cfg=envi threads=1 run=5 real=10.382 user=7.887 sys=2.473 ms=-
+tier=raw op=surface tool=gdal cfg=gtiff threads=1 run=1 real=9.559 user=7.579 sys=1.965 ms=-
+tier=raw op=surface tool=gdal cfg=gtiff threads=1 run=2 real=9.481 user=7.602 sys=1.870 ms=-
+tier=raw op=surface tool=gdal cfg=gtiff threads=1 run=3 real=9.530 user=7.665 sys=1.853 ms=-
+tier=raw op=surface tool=gdal cfg=gtiff threads=1 run=4 real=9.514 user=7.623 sys=1.886 ms=-
+tier=raw op=surface tool=gdal cfg=gtiff threads=1 run=5 real=9.568 user=7.507 sys=2.049 ms=-
+tier=raw op=surface tool=strata cfg=fused threads=1 run=1 real=1.628 user=0.606 sys=1.124 ms=1608.32
+tier=raw op=surface tool=strata cfg=fused threads=1 run=2 real=1.644 user=0.591 sys=1.130 ms=1625.97
+tier=raw op=surface tool=strata cfg=fused threads=1 run=3 real=1.605 user=0.551 sys=1.134 ms=1585.92
+tier=raw op=surface tool=strata cfg=fused threads=1 run=4 real=1.613 user=0.572 sys=1.116 ms=1594.99
+tier=raw op=surface tool=strata cfg=fused threads=1 run=5 real=1.623 user=0.580 sys=1.134 ms=1603.88
+tier=raw op=surface tool=strata cfg=separate threads=1 run=1 real=1.862 user=0.661 sys=1.502 ms=1808.22
+tier=raw op=surface tool=strata cfg=separate threads=1 run=2 real=1.872 user=0.597 sys=1.595 ms=1815.53
+tier=raw op=surface tool=strata cfg=separate threads=1 run=3 real=1.788 user=0.679 sys=1.433 ms=1734.32
+tier=raw op=surface tool=strata cfg=separate threads=1 run=4 real=1.847 user=0.647 sys=1.495 ms=1793.83
+tier=raw op=surface tool=strata cfg=separate threads=1 run=5 real=1.799 user=0.639 sys=1.446 ms=1746.75
+tier=raw op=surface tool=strata cfg=fused threads=12 run=1 real=0.776 user=1.297 sys=3.129 ms=664.14
+tier=raw op=surface tool=strata cfg=fused threads=12 run=2 real=0.783 user=1.193 sys=3.168 ms=674.65
+tier=raw op=surface tool=strata cfg=fused threads=12 run=3 real=0.777 user=1.228 sys=3.257 ms=667.48
+tier=raw op=surface tool=strata cfg=fused threads=12 run=4 real=0.890 user=1.232 sys=4.344 ms=779.42
+tier=raw op=surface tool=strata cfg=fused threads=12 run=5 real=0.826 user=1.375 sys=3.498 ms=711.59
+tier=raw op=surface tool=strata cfg=separate threads=12 run=1 real=1.063 user=1.726 sys=5.104 ms=880.86
+tier=raw op=surface tool=strata cfg=separate threads=12 run=2 real=1.065 user=1.687 sys=5.327 ms=888.41
+tier=raw op=surface tool=strata cfg=separate threads=12 run=3 real=1.019 user=1.721 sys=5.054 ms=847.35
+tier=raw op=surface tool=strata cfg=separate threads=12 run=4 real=1.034 user=1.719 sys=5.011 ms=853.77
+tier=raw op=surface tool=strata cfg=separate threads=12 run=5 real=1.009 user=1.653 sys=4.878 ms=839.55
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=1 run=1 real=10.933 user=9.114 sys=1.786 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=1 run=2 real=11.093 user=9.320 sys=1.761 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=1 run=3 real=10.906 user=9.233 sys=1.658 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=1 run=4 real=10.947 user=9.161 sys=1.775 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=1 run=5 real=10.922 user=9.157 sys=1.757 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=1 run=1 real=11.955 user=9.530 sys=2.412 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=1 run=2 real=12.155 user=9.589 sys=2.545 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=1 run=3 real=11.927 user=9.472 sys=2.432 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=1 run=4 real=12.137 user=9.439 sys=2.680 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=1 run=5 real=12.235 user=9.617 sys=2.597 ms=-
+tier=cog op=surface tool=strata cfg=fused threads=1 run=1 real=2.443 user=1.325 sys=1.163 ms=2405.67
+tier=cog op=surface tool=strata cfg=fused threads=1 run=2 real=2.449 user=1.327 sys=1.162 ms=2414.87
+tier=cog op=surface tool=strata cfg=fused threads=1 run=3 real=2.524 user=1.370 sys=1.201 ms=2481.65
+tier=cog op=surface tool=strata cfg=fused threads=1 run=4 real=2.483 user=1.363 sys=1.166 ms=2442.45
+tier=cog op=surface tool=strata cfg=fused threads=1 run=5 real=2.460 user=1.344 sys=1.166 ms=2424.93
+tier=cog op=surface tool=strata cfg=separate threads=1 run=1 real=4.332 user=2.948 sys=1.420 ms=4228.50
+tier=cog op=surface tool=strata cfg=separate threads=1 run=2 real=4.423 user=2.909 sys=1.550 ms=4320.00
+tier=cog op=surface tool=strata cfg=separate threads=1 run=3 real=4.361 user=2.952 sys=1.442 ms=4260.02
+tier=cog op=surface tool=strata cfg=separate threads=1 run=4 real=4.342 user=2.930 sys=1.449 ms=4239.94
+tier=cog op=surface tool=strata cfg=separate threads=1 run=5 real=4.389 user=2.988 sys=1.431 ms=4284.32
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=12 run=1 real=23.264 user=14.876 sys=19.457 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=12 run=2 real=23.445 user=14.864 sys=19.776 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=12 run=3 real=23.368 user=14.771 sys=19.771 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=12 run=4 real=23.109 user=14.583 sys=19.486 ms=-
+tier=cog op=surface tool=gdal cfg=to-gtiff threads=12 run=5 real=23.438 user=14.630 sys=20.011 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=12 run=1 real=24.730 user=15.493 sys=20.667 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=12 run=2 real=24.727 user=15.189 sys=21.042 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=12 run=3 real=24.696 user=15.166 sys=20.834 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=12 run=4 real=24.855 user=14.949 sys=21.357 ms=-
+tier=cog op=surface tool=gdal cfg=to-envi threads=12 run=5 real=24.790 user=15.161 sys=20.955 ms=-
+tier=cog op=surface tool=strata cfg=fused threads=12 run=1 real=0.881 user=2.272 sys=2.773 ms=755.86
+tier=cog op=surface tool=strata cfg=fused threads=12 run=2 real=0.871 user=2.233 sys=2.737 ms=743.54
+tier=cog op=surface tool=strata cfg=fused threads=12 run=3 real=0.879 user=2.295 sys=2.704 ms=751.53
+tier=cog op=surface tool=strata cfg=fused threads=12 run=4 real=0.876 user=2.285 sys=2.730 ms=748.90
+tier=cog op=surface tool=strata cfg=fused threads=12 run=5 real=0.900 user=2.257 sys=2.835 ms=771.65
+tier=cog op=surface tool=strata cfg=separate threads=12 run=1 real=1.449 user=4.098 sys=3.771 ms=1213.38
+tier=cog op=surface tool=strata cfg=separate threads=12 run=2 real=1.451 user=4.235 sys=3.619 ms=1216.03
+tier=cog op=surface tool=strata cfg=separate threads=12 run=3 real=1.448 user=4.280 sys=3.537 ms=1205.92
+tier=cog op=surface tool=strata cfg=separate threads=12 run=4 real=1.457 user=4.448 sys=3.447 ms=1217.00
+tier=cog op=surface tool=strata cfg=separate threads=12 run=5 real=1.418 user=4.098 sys=3.531 ms=1183.25
+# workflow identical: surface slope fused-vs-separate: fused from the raw file on 1 == slope alone from the raw file on 1
+agree op=surface-slope kind=raster compared=123785590 of=126832644 validity_mismatch=0 maxdiff=7.63e-06 meandiff=1.26e-06 range=87.4541 worst=1,1:74.8395004/74.8394928
+# workflow identical: surface aspect fused-vs-separate: fused from the raw file on 1 == aspect alone from the raw file on 1
+agree op=surface-aspect kind=raster compared=99492495 of=126832644 validity_mismatch=24293095 maxdiff=3.05e-05 meandiff=4.62e-06 range=359.971 worst=11,1:352.874969/352.875
+# workflow identical: surface hillshade fused-vs-separate: fused from the raw file on 1 == hillshade alone from the raw file on 1
+agree op=surface-hillshade kind=raster compared=123785590 of=126832644 validity_mismatch=0 maxdiff=1.5 meandiff=0.614 range=254 worst=2328,59:0.502138317/2
+# workflow identical: surface slope cog-vs-raw: fused from the COG on 12 workers == fused from the raw file on 1
+# workflow identical: surface aspect cog-vs-raw: fused from the COG on 12 workers == fused from the raw file on 1
+# workflow identical: surface hillshade cog-vs-raw: fused from the COG on 12 workers == fused from the raw file on 1
