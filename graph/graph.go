@@ -58,9 +58,9 @@ const (
 	// kindNormalize is algebra.Normalize: a global operation, whose
 	// kernel needs the range of its input from an earlier pass.
 	kindNormalize
-	// kindResample is resample.Resample: a grid change, which reads a
-	// footprint of its own shape for each tile and so is a pass of its
-	// own over a stored input (DESIGN.md §55).
+	// kindResample is resample.Resample or resample.Mosaic: a grid
+	// change, which reads a footprint of its own shape for each tile and
+	// so is a pass of its own over stored inputs (DESIGN.md §55).
 	kindResample
 )
 
