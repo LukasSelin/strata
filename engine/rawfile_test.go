@@ -140,3 +140,36 @@ func TestCreateRawFileFault(t *testing.T) {
 	must(t, os.Truncate(path, 4*w*h))
 	must(t, engine.NewRawSink(f, w, h, engine.RawOptions{}).WriteWindow(context.Background(), src, 0, 0))
 }
+
+// TestReuseRawFile checks that ReuseRawFile keeps an existing file's
+// bytes where nothing is written, cuts a longer file to size, grows a
+// shorter one, creates a missing one, and writes like CreateRawFile.
+func TestReuseRawFile(t *testing.T) {
+	dir := t.TempDir()
+	for _, old := range []int{-1, 8, 16, 40} { // -1: no file
+		path := filepath.Join(dir, "reuse")
+		_ = os.Remove(path)
+		if old >= 0 {
+			must(t, os.WriteFile(path, bytes.Repeat([]byte{0xAB}, old), 0o644))
+		}
+		f, err := engine.ReuseRawFile(path, 16, 0o644, 3)
+		must(t, err)
+		if f.Mapped() != mapsFiles {
+			t.Fatalf("old=%d: Mapped() = %v on %s", old, f.Mapped(), runtime.GOOS)
+		}
+		if n, err := f.WriteAt([]byte("wxyz"), 4); n != 4 || err != nil {
+			t.Fatalf("old=%d: write %d, %v", old, n, err)
+		}
+		must(t, f.Close())
+		got, err := os.ReadFile(path)
+		must(t, err)
+		want := make([]byte, 16)
+		for i := range min(old, 16) {
+			want[i] = 0xAB
+		}
+		copy(want[4:], "wxyz")
+		if !bytes.Equal(got, want) {
+			t.Fatalf("old=%d: file is %x, want %x", old, got, want)
+		}
+	}
+}

@@ -93,17 +93,48 @@ func OpenRawFile(name string, flag int, perm os.FileMode, handles int) (*RawFile
 // file; the data stays in the cache and reaches the disk as written data
 // does.
 func CreateRawFile(name string, size int64, perm os.FileMode, handles int) (*RawFile, error) {
+	return createRawFile("CreateRawFile", name, size, perm, handles, os.O_TRUNC)
+}
+
+// ReuseRawFile is CreateRawFile for an output that overwrites a file
+// already there, as a rerun does: it does not truncate the file, only
+// sets its size to size, so the operating system keeps the pages and
+// blocks it has instead of freeing them now and allocating them again
+// as they are written. On tmpfs, freeing and reallocating a 508 MB
+// output cost more than the rest of writing it (benchmarks/rawio).
+//
+// The price is what a failed call leaves: a chunked call that fails or
+// is cancelled writes a prefix of tiles (see the package documentation),
+// and the cells it did not reach keep whatever the file held before,
+// which may look like a plausible result, where CreateRawFile leaves
+// zeros. Use it when a failed run's output is discarded anyway. A file
+// that does not exist is created, as by CreateRawFile.
+func ReuseRawFile(name string, size int64, perm os.FileMode, handles int) (*RawFile, error) {
+	return createRawFile("ReuseRawFile", name, size, perm, handles, 0)
+}
+
+func createRawFile(fn, name string, size int64, perm os.FileMode, handles, trunc int) (*RawFile, error) {
 	if size < 0 {
-		return nil, &os.PathError{Op: "create", Path: name, Err: fmt.Errorf("engine: CreateRawFile: negative size %d", size)}
+		return nil, &os.PathError{Op: "create", Path: name, Err: fmt.Errorf("engine: %s: negative size %d", fn, size)}
 	}
-	f, err := OpenRawFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, perm, handles)
+	f, err := OpenRawFile(name, os.O_RDWR|os.O_CREATE|trunc, perm, handles)
 	if err != nil {
 		return nil, err
 	}
+	if trunc == 0 {
+		// A file being reused may be longer than the output: fallocate
+		// never shrinks one.
+		if err := f.files[0].Truncate(size); err != nil {
+			_ = f.Close() // the size error matters more
+			return nil, &os.PathError{Op: "create", Path: name, Err: err}
+		}
+	}
 	if err := preallocate(f.files[0], size); err != nil {
-		// Give back what a failed fallocate did allocate; the file was
-		// truncated already.
-		_ = f.files[0].Truncate(0)
+		if trunc != 0 {
+			// Give back what a failed fallocate did allocate; the file
+			// was emptied already. A reused file is left as it is.
+			_ = f.files[0].Truncate(0)
+		}
 		_ = f.Close() // the size error matters more
 		return nil, &os.PathError{Op: "create", Path: name, Err: err}
 	}
