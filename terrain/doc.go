@@ -4,7 +4,9 @@
 // fitted to the same 3×3 window, and Ruggedness (the terrain ruggedness
 // index, topographic position index and roughness) from the window's
 // differences, bit-identical to GDAL gdaldem's. WeightedSlope is Slope
-// multiplied cell by cell by a weight raster, in one pass.
+// multiplied cell by cell by a weight raster, in one pass. Surface writes
+// any of Gradient, Slope, Aspect and Hillshade at once from one gradient,
+// each bit for bit what the standalone function writes.
 //
 // # Conventions
 //
@@ -41,7 +43,7 @@
 // # Tiled execution
 //
 // SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled, CurvatureTiled,
-// RuggednessTiled and WeightedSlopeTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
+// RuggednessTiled, WeightedSlopeTiled and SurfaceTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
 // from the DEM, so the result is bit-for-bit the plain function's for
@@ -49,7 +51,8 @@
 // as one tile with one worker, on the calling goroutine.
 //
 // SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked,
-// CurvatureChunked, RuggednessChunked and WeightedSlopeChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// CurvatureChunked, RuggednessChunked, WeightedSlopeChunked and
+// SurfaceChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
 // files, run in Workers × tile buffers (DESIGN.md §27). They give the
 // same bits as the plain functions on the same data, for every tiling and

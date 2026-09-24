@@ -360,6 +360,24 @@ def weight_neighbour(d):
         _weighted(d, lambda a, m: (np.where(m == 1, a / wt * shifted, a), m))
 
 
+def surface_ulp(d):
+    """One Surface aspect cell one ulp off - a from-gradient kernel that
+    rounds once differently from the fused one."""
+    name = "hill-surface_aspect-tiled.f32"
+    a = read(d, name).astype("<f4")
+    a[40, 50] = np.nextafter(a[40, 50], np.float32(np.inf))
+    write(d, name, a)
+
+
+def surface_swapped(d):
+    """Surface's dx and dy written to each other's output."""
+    for form in ("plain", "tiled", "chunked"):
+        dx = read(d, f"noisy-surface_gradient_dx-{form}.f32")
+        dy = read(d, f"noisy-surface_gradient_dy-{form}.f32")
+        write(d, f"noisy-surface_gradient_dx-{form}.f32", dy)
+        write(d, f"noisy-surface_gradient_dy-{form}.f32", dx)
+
+
 def focal_seam(d):
     """One tiled Gaussian cell wrong, as a halo bug at a seam would be:
     row 46 and column 74 are tile edges of the 37x23 tiling."""
@@ -373,6 +391,8 @@ MUTATIONS = [
     ("weight validity eroded 3x3", weight_eroded),
     ("weight NoData ignored", weight_ignored),
     ("weight read one cell over", weight_neighbour),
+    ("Surface aspect one ulp off", surface_ulp),
+    ("Surface dx and dy swapped", surface_swapped),
     ("dx and dy swapped", transpose_kernel),
     ("aspect mirrored", mirror_aspect),
     ("one bad cell on a tile seam", tile_seam),

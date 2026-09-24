@@ -271,7 +271,51 @@ func (d dem) ops() []op {
 		}
 	}
 
+	// surface runs terrain.Surface for all five products at once and
+	// emits one: check 12 requires each to be the standalone product's
+	// file bit for bit, so the multi-output pipeline is judged against
+	// results check 1 and gdaldem judge on their own.
+	so := terrain.SurfaceOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees,
+		Azimuth: ho.Azimuth, Altitude: ho.Altitude}
+	surface := func(name string, which int) op {
+		outs := func(dst, dm raster.Float32Raster) (terrain.SurfaceOutputs, []raster.Float32Raster) {
+			all := make([]raster.Float32Raster, 5)
+			for k := range all {
+				all[k] = raster.NewFloat32Like(dm)
+			}
+			all[which] = dst
+			return terrain.SurfaceOutputs{Dx: all[0], Dy: all[1], Slope: all[2], Aspect: all[3], Hillshade: all[4]}, all
+		}
+		return op{
+			name: "surface_" + name,
+			plain: func(dst, dm raster.Float32Raster) {
+				o, _ := outs(dst, dm)
+				terrain.Surface(o, dm, so)
+			},
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				o, _ := outs(dst, dm)
+				return terrain.SurfaceTiled(ctx, o, dm, so, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				w, h := src.Size()
+				sinks := make([]engine.RasterSink, 5)
+				for k := range sinks {
+					sinks[k] = engine.NewMemorySink(maskedLike(src.Masked(), w, h))
+				}
+				sinks[which] = dst
+				return terrain.SurfaceChunked(ctx, terrain.SurfaceSinks{
+					Dx: sinks[0], Dy: sinks[1], Slope: sinks[2], Aspect: sinks[3], Hillshade: sinks[4],
+				}, src, so, eo)
+			},
+		}
+	}
+
 	return []op{
+		surface("gradient_dx", 0),
+		surface("gradient_dy", 1),
+		surface("slope_deg", 2),
+		surface("aspect", 3),
+		surface("hillshade", 4),
 		slope(terrain.SlopeDegrees),
 		slope(terrain.SlopeRadians),
 		slope(terrain.SlopePercent),

@@ -35,6 +35,10 @@ var (
 	hornHillshadeRow = scalarHornHillshadeRow
 	ztCurvatureRow   = scalarZTCurvatureRow
 	ruggednessRow    = scalarRuggednessRow
+
+	slopeFromGradientRow     = scalarSlopeFromGradientRow
+	aspectFromGradientRow    = scalarAspectFromGradientRow
+	hillshadeFromGradientRow = scalarHillshadeFromGradientRow
 )
 
 // simdGradient, simdSlope, simdAspect, simdHillshade, simdCurvature and
@@ -49,6 +53,16 @@ var (
 	simdHillshade  func(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32)
 	simdCurvature  func(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32, kind CurvatureKind)
 	simdRuggedness func(dst, r0, r1, r2 []float32, kind RuggednessKind)
+)
+
+// simdSlopeGrad, simdAspectGrad and simdHillshadeGrad are the SIMD
+// from-gradient kernels (gradrow.go), or nil. A build may have the set
+// above without these: arm64 runs the scalar ones, which the NEON
+// kernels match bit for bit, so the products agree either way.
+var (
+	simdSlopeGrad     func(dst, gx, gy []float32, scale float32, atan bool)
+	simdAspectGrad    func(dst, gx, gy []float32, flat float32, trig bool)
+	simdHillshadeGrad func(dst, gx, gy []float32, c, bx, by float32)
 )
 
 // Backend names the kernels currently in use: "avx2", "neon" or "scalar".
@@ -66,6 +80,14 @@ var usingScalar bool
 // scalar-vs-SIMD benchmarks, and must not be called while kernels run.
 func UseScalar(scalar bool) {
 	usingScalar = scalar
+	slopeFromGradientRow = scalarSlopeFromGradientRow
+	aspectFromGradientRow = scalarAspectFromGradientRow
+	hillshadeFromGradientRow = scalarHillshadeFromGradientRow
+	if !scalar && simdSlopeGrad != nil {
+		slopeFromGradientRow = simdSlopeGrad
+		aspectFromGradientRow = simdAspectGrad
+		hillshadeFromGradientRow = simdHillshadeGrad
+	}
 	if scalar || simdSlope == nil {
 		hornGradientRow, hornSlopeRow = scalarHornGradientRow, scalarHornSlopeRow
 		hornAspectRow, hornHillshadeRow = scalarHornAspectRow, scalarHornHillshadeRow
@@ -189,8 +211,14 @@ func scalarHornMagnitudeRow(dst, r0, r1, r2 []float32, kx, ky, scale float32) {
 		z7, z8, z9 := v7[i], v8[i], v9[i]
 		gx := float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		gy := float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
-		dst[i] = float32(float32(math.Sqrt(float64(float32(gx*gx)+float32(gy*gy)))) * scale)
+		dst[i] = float32(magnitude(gx, gy) * scale)
 	}
+}
+
+// magnitude is the length of the gradient (gx, gy), in the order and
+// with the roundings every slope kernel shares.
+func magnitude(gx, gy float32) float32 {
+	return float32(math.Sqrt(float64(float32(gx*gx) + float32(gy*gy))))
 }
 
 // Atan32 constants: the Cephes atanf polynomial (S. L. Moshier), with the

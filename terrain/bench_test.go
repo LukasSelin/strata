@@ -1,11 +1,13 @@
 package terrain
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"testing"
 
+	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/internal/stencil"
 	"github.com/LukasSelin/strata/raster"
 )
@@ -122,6 +124,38 @@ func benchShade(b *testing.B, op func(dst, dem raster.Float32Raster)) {
 					b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
 				})
 			}
+		}
+	}
+}
+
+// BenchmarkSurface compares Surface writing slope, aspect and hillshade
+// with the three standalone calls it replaces, on one worker and on
+// every core, masked. ns/cell is per DEM cell, for all three products.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Surface ./terrain
+func BenchmarkSurface(b *testing.B) {
+	for _, n := range []int{1024, 4096} {
+		dem := benchDEM(n, true)
+		slope, aspect, shade := raster.NewFloat32Like(dem), raster.NewFloat32Like(dem), raster.NewFloat32Like(dem)
+		so := SurfaceOptions{CellSize: 10}
+		for _, workers := range []int{1, 0} {
+			eo := engine.Options{Workers: workers}
+			ctx := context.Background()
+			b.Run(fmt.Sprintf("%d/workers=%d/separate", n, workers), func(b *testing.B) {
+				for b.Loop() {
+					_ = SlopeTiled(ctx, slope, dem, SlopeOptions{CellSize: 10}, eo)
+					_ = AspectTiled(ctx, aspect, dem, AspectOptions{CellSize: 10}, eo)
+					_ = HillshadeTiled(ctx, shade, dem, HillshadeOptions{CellSize: 10}, eo)
+				}
+				b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+			})
+			b.Run(fmt.Sprintf("%d/workers=%d/surface", n, workers), func(b *testing.B) {
+				out := SurfaceOutputs{Slope: slope, Aspect: aspect, Hillshade: shade}
+				for b.Loop() {
+					_ = SurfaceTiled(ctx, out, dem, so, eo)
+				}
+				b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+			})
 		}
 	}
 }

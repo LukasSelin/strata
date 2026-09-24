@@ -3404,6 +3404,85 @@ The acceptance checks are external:
   two-output stage with a dead stage after it. Mutating either `Reach`
   or the window offset fails the tests.
 
+Status: several outputs are done, as specified above. `NewPipeline`
+takes `outs []int`, `Reach(out, in)` is per output, and each output's
+edge ring is its own largest reach. The engine does the rings for any
+`ReachKernel`, not for `*Pipeline` alone:
+
+- **Rings and padding.** The job keeps a width per output (nil when
+  every ring is the radius, which is every kernel but such a
+  `ReachKernel`). It runs the kernel over the cells outside the
+  narrowest ring and gives each output the edge policy over its own.
+  A span whose window leaves the rasters gets a per-worker pad buffer
+  per input: NaN Data and cleared bits, with the part inside the
+  rasters copied in. Only bands on the true edge pay for the copy, and
+  only for such kernels.
+- **The restrictions are as specified.** An output's stage must run
+  over the span itself, so neither the output nor another output of
+  its stage may feed a later stage with a radius (this is the
+  sibling case the spec did not name). Every output's edge value must
+  agree. A non-NaN edge is allowed only on a stage whose values are
+  all outputs no later stage reads, at their ring's radius. An input
+  that no output reads still panics. It is no longer needed for
+  correctness, since an unread input's reach is -1 and its mask is not
+  ANDed, but it catches wiring mistakes.
+- **Register-level fusion stays single-output.**
+
+`terrain.Surface{,Tiled,Chunked}` writes any of dx, dy, slope, aspect
+and hillshade from one gradient. dx and dy go past the spec's three,
+because they are already values in the pipeline. The spec's refactor
+turned out to be an extraction, not a rewrite: every fused row kernel
+already computed `gx = float32(hornDX·kx)` exactly as
+`HornGradientRow` does, and everything after that was a function of
+(gx, gy) with explicit float32 roundings. So the per-cell tails became
+shared helpers (`magnitude`, `aspectArgs`, `shade`, and `magnitude8`
+and `shade8` lanewise). `SlopeFromGradientRow`,
+`AspectFromGradientRow` and `HillshadeFromGradientRow` call the same
+helpers, and no standalone result changed. There are two exceptions:
+
+- **The fused AVX2 aspect loop keeps its tail written out.**
+  `aspect8` does not inline (it calls `atan2_8`), and calling it cost
+  that loop 8% at 254 cells a row. With the body restored, a pinned
+  interleaved A/B of `BenchmarkRowWidth` shows every fused kernel at
+  parity or better, on both builds.
+- **arm64 runs the scalar from-gradient kernels.** They match NEON bit
+  for bit, as the scalar kernels always do, and CI only runs NEON on
+  release tags. So an untested NEON copy would be the riskier choice.
+
+`TestFromGradientMatchesFused` holds a gradient row followed by each
+from-gradient kernel to the fused kernel's bits, on scalar and AVX2,
+with hazards and flat runs. `TestSurfaceIsTheStandaloneProducts` holds
+Surface to each standalone function across every subset of products,
+both backends, every entry point and tiling, masked and windowed. At
+the engine level, `TestReachKernelOutputsMatchAlone` runs a
+`ReachKernel` whose outputs are boxes of different radii over different
+inputs, and each output must equal a box run alone. Six multi-output
+pipeline shapes run against their unfused stages the same way.
+Disabling the per-output rings, or shifting the pad copy by a cell,
+fails both.
+
+The external checks:
+
+- `acceptance/check.py` check 12 requires every Surface product, from
+  one call writing all five, to be the standalone file bit for bit:
+  863/863 pass. `sabotage.py` catches an aspect cell one ulp off and
+  swapped dx and dy (30/30).
+- `acceptance/gdal/main.go` runs `SurfaceChunked` on the 4096² real
+  raster and fails unless slope, aspect and hillshade are bit for bit
+  the standalone results that `gdalcompare.py` compares with gdaldem;
+  15/15 pass.
+
+On one 12-core Zen 2, AVX2, masked, the median of six pinned runs of
+`BenchmarkSurface` (slope, aspect and hillshade) gave:
+
+| 4096², ns/cell | three calls | Surface |
+|---|---:|---:|
+| 1 worker | 4.50 | 3.84 |
+| 12 workers | 1.29 | 1.00 |
+
+The spreads were 2–20%, so the table shows direction, not a published
+result.
+
 ## 53. Focal Operations
 
 §28 predicted that convolution would behave like the terrain kernels:
