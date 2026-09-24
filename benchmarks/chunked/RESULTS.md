@@ -69,6 +69,37 @@ references. The desktop had other applications open; the median suite
 case varies 2% between runs, the worst 30–79% (Clamp's worst, see its
 table).
 
+## Validity from a fill value (2026-09-24)
+
+The masked rows below use a DEM file whose invalid cells, 10% of them,
+scattered, hold the fill value -9999. So every tile reads validity from
+the fill (`RawSource`) and writes the fill back under invalid cells
+(`RawSink`), and no tile is all valid. They were taken before the fill
+test became a vector kernel (DESIGN.md §31, "Rules 4 and 5 at the file
+boundary"). This is master (8ad43da) against that change, for the one
+case that isolates it: 4096², one worker, strips of 256 rows. Both are
+GOEXPERIMENT=simd test binaries, pinned to one core at High priority
+with GOMAXPROCS=1, run interleaved 6 times, median shown. `scalar` is
+the suite's scalar kernels, which include `vec.ValidBits`'s scalar form.
+
+| op, mask on | kernels | master, M cells/s | this change | speedup | spread (master / change) |
+|---|---|---:|---:|---:|---|
+| Slope | SIMD | 145 | 242 | 1.67× | 15% / 9% |
+| Slope | scalar | 68 | 82 | 1.21× | 10% / 5% |
+| Hillshade | SIMD | 158 | 298 | 1.89× | 7% / 8% |
+| Hillshade | scalar | 68 | 79 | 1.15× | 4% / 4% |
+| Clamp | SIMD | 190 | 395 | 2.08× | 14% / 28% |
+| Clamp | scalar | 163 | 239 | 1.46× | 10% / 11% |
+
+Unmasked cases were not rerun quietly. The change does not touch
+their path (`RawSource` without a fill value, and no masks for the
+engine to check), and the one run that included them, too noisy to
+publish (45–90% spreads, with the desktop in use), showed no
+difference beyond its noise. Raw
+output: [`testdata/validity-ab.txt`](testdata/validity-ab.txt). The
+suite tables below are from before the change and have not been
+regenerated.
+
 ## Shapes
 
 The suite's tile shapes, over the benchmarks/engine DEM (a smooth surface
