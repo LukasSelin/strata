@@ -226,3 +226,30 @@ func BenchmarkFeatures(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkFit reports what the quadratic fit costs by radius, for slope
+// (two derivatives) and mean curvature (all five), one worker, masked,
+// ns per cell, against Horn's slope and ZT's curvature at FitRadius 0.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Fit ./terrain
+func BenchmarkFit(b *testing.B) {
+	const n = 1024
+	dem := benchDEM(n, true)
+	dst := raster.NewFloat32Like(dem)
+	for _, r := range []int{0, 1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("slope/r=%d", r), func(b *testing.B) {
+			o := SlopeOptions{CellSize: 10, FitRadius: r}
+			for b.Loop() {
+				Slope(dst, dem, o)
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+		b.Run(fmt.Sprintf("curvature/r=%d", r), func(b *testing.B) {
+			o := CurvatureOptions{CellSize: 10, Type: CurvatureMean, FitRadius: r}
+			for b.Loop() {
+				Curvature(dst, dem, o)
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+	}
+}

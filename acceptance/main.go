@@ -72,6 +72,7 @@ type rasterCase struct {
 	// taps exactly as passed (float32 values, which JSON carries
 	// exactly).
 	Radius  int       `json:"radius,omitempty"`
+	Fit     int       `json:"fit,omitempty"` // a fitted derivative's FitRadius
 	Weights []float32 `json:"weights,omitempty"`
 	Row     []float32 `json:"row,omitempty"`
 	Col     []float32 `json:"col,omitempty"`
@@ -184,6 +185,7 @@ type op struct {
 	azimuth  float64
 	altitude float64
 	radius   int
+	fit      int
 	weights  []float32
 	row, col []float32
 	plain    func(dst, dem raster.Float32Raster)
@@ -338,6 +340,8 @@ func (d dem) ops() []op {
 		{"ruggedness_tpi_r8", 8, terrain.RuggednessOptions{Type: terrain.RuggednessTPI, Radius: 8}},
 		{"ruggedness_tri_r3", 3, terrain.RuggednessOptions{Type: terrain.RuggednessTRI, Radius: 3}},
 		{"ruggedness_roughness_r8", 8, terrain.RuggednessOptions{Type: terrain.RuggednessRoughness, Radius: 8}},
+		{"slope_deg_fit4", 4, terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees, FitRadius: 4}},
+		{"curvature_mean_fit1", 1, terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: terrain.CurvatureMean, FitRadius: 1}},
 	}
 	features := func(which int) op {
 		outs := func(dst, dm raster.Float32Raster) []terrain.Feature {
@@ -426,8 +430,75 @@ func (d dem) ops() []op {
 			ruggedness(terrain.RuggednessRoughness, "roughness", r),
 		)
 	}
+	for _, r := range []int{1, 4} {
+		ops = append(ops, d.fitted(r, ao, ho)...)
+	}
 	for k := range stack {
 		ops = append(ops, features(k))
+	}
+	return ops
+}
+
+// fitted is slope, aspect, hillshade and the three curvatures from
+// Wood's quadratic fitted over the (2r+1)² window, as the standalone
+// functions compute them with FitRadius r. check.py judges them against
+// its own least-squares solution.
+func (d dem) fitted(r int, ao terrain.AspectOptions, ho terrain.HillshadeOptions) []op {
+	sfx := fmt.Sprintf("_fit%d", r)
+	so := terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees, FitRadius: r}
+	ao.FitRadius, ho.FitRadius = r, r
+	ops := []op{
+		{
+			name:  "slope_deg" + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Slope(dst, dm, so) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.SlopeTiled(ctx, dst, dm, so, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.SlopeChunked(ctx, dst, src, so, eo)
+			},
+		},
+		{
+			name:  "aspect" + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Aspect(dst, dm, ao) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.AspectTiled(ctx, dst, dm, ao, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.AspectChunked(ctx, dst, src, ao, eo)
+			},
+		},
+		{
+			name:     "hillshade" + sfx,
+			azimuth:  ho.Azimuth,
+			altitude: ho.Altitude,
+			plain:    func(dst, dm raster.Float32Raster) { terrain.Hillshade(dst, dm, ho) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.HillshadeTiled(ctx, dst, dm, ho, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
+			},
+		},
+	}
+	for _, c := range []struct {
+		t    terrain.CurvatureType
+		name string
+	}{{terrain.CurvatureProfile, "profile"}, {terrain.CurvaturePlan, "plan"}, {terrain.CurvatureMean, "mean"}} {
+		co := terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: c.t, FitRadius: r}
+		ops = append(ops, op{
+			name:  "curvature_" + c.name + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Curvature(dst, dm, co) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.CurvatureTiled(ctx, dst, dm, co, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.CurvatureChunked(ctx, dst, src, co, eo)
+			},
+		})
+	}
+	for i := range ops {
+		ops[i].radius, ops[i].fit = r, r
 	}
 	return ops
 }
@@ -595,6 +666,7 @@ func (d dem) emit(m *manifest, o op, form string, r raster.Float32Raster) error 
 		Azimuth:   o.azimuth,
 		Altitude:  o.altitude,
 		Radius:    o.radius,
+		Fit:       o.fit,
 		Weights:   o.weights,
 		Row:       o.row,
 		Col:       o.col,

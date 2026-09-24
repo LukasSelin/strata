@@ -51,12 +51,13 @@ DEM times a weight raster with NoData of its own, and `Surface` writes all
 five of its products at once on each DEM. Each ruggedness measure also
 runs at radius 3 and 8, and `Features` writes a stack of slope, plan
 curvature, TPI at radius 1, 3 and 8, TRI at 3 and roughness at 8 in one
-call, each output emitted as its own case. 1370 checks come out of that
-(1364 without scipy):
+call, each output emitted as its own case. Slope, aspect, hillshade and
+the three curvatures also run with the quadratic fit (`FitRadius` 1 and
+4). 1778 checks come out of that (1772 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; fitted results against Wood's quadratic, solved by least squares with numpy's pseudo-inverse of the full design matrix; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
 | 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
 | 3 | The plane against its analytic slope, aspect, zero curvature and closed-form ruggedness | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
@@ -98,7 +99,11 @@ numpy, and the check is equality, not a tolerance. The larger windows
 are strata's own generalisation (the eight neighbours become the window's
 other n cells, "/ 8" becomes "/ n"), so gdaldem has nothing to say about
 them: check 1 transcribes that documented arithmetic the same way, and
-check 14 judges it against the float64 definition by a separate route. The plane's closed
+check 14 judges it against the float64 definition by a separate route.
+The quadratic fit's reference does not use strata's closed forms for the
+coefficients either: it solves the least-squares problem for every
+window with the pseudo-inverse of the six-column design matrix, and
+bounds the error by the documented separable float32 sums. The plane's closed
 forms (check 3) and `gdalcheck.sh` judge the same results against the
 definitions and against gdaldem itself.
 
@@ -140,14 +145,14 @@ plausible defect at a time, and confirms `check.py` goes red:
 ```
 injected defect                   caught   failing checks
 --------------------------------------------------------------
-slope 0.05% too large             yes      15
+slope 0.05% too large             yes      33
 weight validity eroded 3x3        yes      3
 weight NoData ignored             yes      4
 weight read one cell over         yes      3
 Surface aspect one ulp off        yes      2
 Surface dx and dy swapped         yes      6
 dx and dy swapped                 yes      36
-aspect mirrored                   yes      12
+aspect mirrored                   yes      36
 one bad cell on a tile seam       yes      3
 chunked result off by one row     yes      5
 one NoData cell leaking in        yes      5
@@ -155,9 +160,9 @@ count one too many                yes      1
 max slightly wrong                yes      1
 normalize by a reciprocal         yes      9
 normalize range from NoData       yes      3
-curvature sign flipped            yes      18
+curvature sign flipped            yes      54
 profile and plan swapped          yes      27
-mean curvature 0.05% too large    yes      3
+mean curvature 0.05% too large    yes      9
 correlate with convolve's flip    yes      9
 separable passes swapped          yes      9
 focal radius one short            yes      15
@@ -174,6 +179,9 @@ r=3 TPI counts its centre         yes      24
 r=8 roughness one ring short      yes      30
 Features erodes by the largest r  yes      6
 Features output one ulp off       yes      2
+r=1 fit slope is Horn's           yes      6
+r=4 fit curvature over 3x3        yes      12
+r=4 fit slope 0.01% too large     yes      15
 ```
 
 One plausible focal defect is out of reach: a Mean that multiplies by a

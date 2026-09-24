@@ -202,3 +202,33 @@ func TestRuggednessWindowRowPanics(t *testing.T) {
 		mustPanic(t, fmt.Sprint(c.name), func() { RuggednessWindowRow(make([]float32, 4), c.rows, c.kind) })
 	}
 }
+
+// TestCurvatureFromDerivsMatchesZT holds ZT's derivatives followed by
+// CurvatureFromDerivsRow to ZTCurvatureRow bit for bit, for every kind,
+// over hazards, flat runs and elevations near the float32 limit.
+func TestCurvatureFromDerivsMatchesZT(t *testing.T) {
+	rng := rand.New(rand.NewPCG(64, 11))
+	kp, kq, kr, kt, ks := ZTScales(12.5, 9, 1.5)
+	for _, n := range []int{0, 1, 7, 64, 131} {
+		for _, special := range []float64{0, 0.1} {
+			for mode := range 4 {
+				rows := windowRows(rng, n, 1, mode, special)
+				v1, v2, v3, v4, v5, v6, v7, v8, v9 := ztViews(n, rows[0], rows[1], rows[2])
+				p, q, r, s, tt := make([]float32, n), make([]float32, n), make([]float32, n), make([]float32, n), make([]float32, n)
+				for i := range n {
+					p[i], q[i], r[i], s[i], tt[i] = ztDerivs(v1[i], v2[i], v3[i], v4[i], v5[i], v6[i], v7[i], v8[i], v9[i], kp, kq, kr, kt, ks)
+				}
+				for kind := CurvProfile; kind <= CurvMean; kind++ {
+					want, got := make([]float32, n), make([]float32, n)
+					scalarZTCurvatureRow(want, rows[0], rows[1], rows[2], kp, kq, kr, kt, ks, kind)
+					CurvatureFromDerivsRow(got, p, q, r, s, tt, kind)
+					for i := range want {
+						if !sameRugBits(got[i], want[i]) {
+							t.Fatalf("kind=%d n=%d mode=%d cell %d: got %g, want %g", kind, n, mode, i, got[i], want[i])
+						}
+					}
+				}
+			}
+		}
+	}
+}

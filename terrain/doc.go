@@ -5,7 +5,9 @@
 // index, topographic position index and roughness) from the window's
 // differences, bit-identical to GDAL gdaldem's on the 3×3 window and
 // defined the same way over larger ones (RuggednessOptions.Radius), for
-// the same measure at several scales. WeightedSlope is Slope multiplied
+// the same measure at several scales. The derivatives take a scale too:
+// with FitRadius set they come from Wood's quadratic fitted to a larger
+// window (see Multi-scale derivatives). WeightedSlope is Slope multiplied
 // cell by cell by a weight raster, in one pass. Surface writes any of
 // Gradient, Slope, Aspect and Hillshade at once from one gradient, and
 // Features any mix of Slope, Aspect, Hillshade, Curvature and
@@ -33,6 +35,43 @@
 // distances: project it first (DESIGN.md §36). A ZFactor multiplies
 // elevations before differencing, for elevations in different units from
 // the cell size; gdaldem's -s scale corresponds to ZFactor 1/scale.
+//
+// # Multi-scale derivatives
+//
+// FitRadius, in GradientOptions, SlopeOptions, AspectOptions,
+// HillshadeOptions, CurvatureOptions and SurfaceOptions, replaces the 3×3
+// estimate with Wood's (1996) least-squares quadratic
+//
+//	z = a·x² + b·y² + c·x·y + d·x + e·y + f
+//
+// fitted to the (2r+1)×(2r+1) window around each cell, r = FitRadius, with
+// x = i·CellSize and y = j·CellSizeY for column and row offsets i and j
+// from −r to r. It is the method of GRASS r.param.scale and LandSerf
+// (unweighted), and smooths over the window, so a larger r measures
+// the surface at a coarser scale. The derivatives are p = d and q = e (dx
+// and dy in Gradient's conventions), r = 2a, t = 2b and s = c, and the
+// products are the same functions of them as of Horn's gradient and ZT's
+// derivatives. At FitRadius 1 the fit is Evans's 3×3 method, not Horn's
+// or ZT's, so it does not equal FitRadius 0.
+//
+// On a square window the least-squares equations separate, and with
+// K = 2r+1, S = Σ i² = r(r+1)(2r+1)/3, t2(i) = 3i² − r(r+1) and
+// Q = Σ t2(i)², each derivative is one weighted sum of the window:
+//
+//	p = Σ i·z · Z/(K·S·CellSize)
+//	q = Σ j·z · Z/(K·S·CellSizeY)
+//	r = Σ t2(i)·z · 6Z/(K·Q·CellSize²)
+//	t = Σ t2(j)·z · 6Z/(K·Q·CellSizeY²)
+//	s = Σ i·j·z · Z/(S²·CellSize·CellSizeY)
+//
+// with the sums over the window and Z the ZFactor. Each sum is computed
+// in float32 as focal.CorrelateSeparable computes one: the 2r+1 rows under
+// a cell folded into column sums, top to bottom, then 2r+1 of those
+// folded left to right, every tap applied, zeros included. Then it is
+// multiplied by its factor, computed in float64 and rounded to float32
+// once. The border is r cells wide, and a cell is valid iff its whole
+// window is. Every tap is an integer, so the column and row passes run
+// focal's SIMD kernels.
 //
 // # Edges
 //

@@ -17,10 +17,10 @@ type FeatureOp interface {
 	featureKernel() exec.Kernel
 }
 
-func (o SlopeOptions) featureKernel() exec.Kernel      { return newSlopeKernel(o) }
-func (o AspectOptions) featureKernel() exec.Kernel     { return newAspectKernel(o) }
-func (o HillshadeOptions) featureKernel() exec.Kernel  { return newHillshadeKernel(o) }
-func (o CurvatureOptions) featureKernel() exec.Kernel  { return newCurvatureKernel(o) }
+func (o SlopeOptions) featureKernel() exec.Kernel      { return slopeOp(o) }
+func (o AspectOptions) featureKernel() exec.Kernel     { return aspectOp(o) }
+func (o HillshadeOptions) featureKernel() exec.Kernel  { return hillshadeOp(o) }
+func (o CurvatureOptions) featureKernel() exec.Kernel  { return curvatureOp(o) }
 func (o RuggednessOptions) featureKernel() exec.Kernel { return newRuggednessKernel(o) }
 
 // Feature is one raster Features writes: an operation, and the raster
@@ -39,7 +39,8 @@ type FeatureSink struct {
 // Features computes several terrain features of one DEM in one pass over
 // it: any mix of Slope, Aspect, Hillshade, Curvature and Ruggedness,
 // each with its own options, so the same measure can be taken at several
-// window sizes (RuggednessOptions.Radius) next to the 3×3 derivatives.
+// window sizes: RuggednessOptions.Radius for the ruggedness measures, and
+// FitRadius for the derivatives.
 // This is the shape of a feature stack for a model or a geomorphometric
 // survey, where every product reads the same neighbourhoods.
 //

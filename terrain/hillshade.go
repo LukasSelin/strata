@@ -20,6 +20,12 @@ type HillshadeOptions struct {
 	CellSizeY float64
 	// ZFactor multiplies elevations. 0 means 1.
 	ZFactor float64
+	// FitRadius selects how the derivatives are estimated: 0 is Horn's
+	// 3×3 kernel, as gdaldem uses; 1 to MaxRadius fits Wood's quadratic
+	// by least squares to the (2·FitRadius+1)² window around each cell,
+	// for the same measure at a coarser scale (see the package
+	// documentation). At 1 the fit is not Horn's kernel.
+	FitRadius int
 	// Azimuth is the compass direction the light comes from, in degrees
 	// clockwise from north. 0 means 315 (northwest), as in gdaldem; use
 	// 360 for light from the north. It must be finite.
@@ -56,7 +62,7 @@ type HillshadeOptions struct {
 // gdaldem's byte. gdaldem also evaluates the square root with an
 // approximation, so its values can differ slightly beyond encoding.
 func Hillshade(dst, dem raster.Float32Raster, opts HillshadeOptions) {
-	run(newHillshadeKernel(opts), dem, dst)
+	run(hillshadeOp(opts), dem, dst)
 }
 
 // HillshadeTiled is Hillshade run by the engine: it takes the same operands, applies
@@ -64,7 +70,7 @@ func Hillshade(dst, dem raster.Float32Raster, opts HillshadeOptions) {
 // returns ctx.Err() if ctx is done before every cell is written. See
 // package engine for tiling and cancellation.
 func HillshadeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts HillshadeOptions, eopts engine.Options) error {
-	return runTiled(ctx, eopts, newHillshadeKernel(opts), dem, dst)
+	return runTiled(ctx, eopts, hillshadeOp(opts), dem, dst)
 }
 
 // HillshadeChunked is Hillshade run by the engine over a source and sinks with
@@ -73,13 +79,20 @@ func HillshadeTiled(ctx context.Context, dst, dem raster.Float32Raster, opts Hil
 // Hillshade would write into in-memory rasters, for every engine.Options.
 // See package engine for sources, sinks, memory, cancellation and errors.
 func HillshadeChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts HillshadeOptions, eopts engine.Options) error {
-	return runChunked(ctx, eopts, newHillshadeKernel(opts), dem, dst)
+	return runChunked(ctx, eopts, hillshadeOp(opts), dem, dst)
 }
 
 // newHillshadeKernel resolves and checks opts for Hillshade's kernel.
 func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
-	az, alt := opts.Azimuth, opts.Altitude
+	c, bx, by := hillshadeLight(opts.Azimuth, opts.Altitude)
+	return hillshadeKernel{horn{kx: kx, ky: ky}, c, bx, by}
+}
+
+// hillshadeLight resolves and checks the light's direction, and returns
+// the kernels' constants for it.
+func hillshadeLight(azimuth, altitude float64) (c, bx, by float32) {
+	az, alt := azimuth, altitude
 	if math.IsNaN(az) || math.IsInf(az, 0) {
 		panic(fmt.Sprintf("terrain: Azimuth must be finite, got %v", az))
 	}
@@ -90,17 +103,17 @@ func newHillshadeKernel(opts HillshadeOptions) hillshadeKernel {
 		alt = 45
 	}
 	if !(alt > 0 && alt <= 90) {
-		panic(fmt.Sprintf("terrain: Altitude must be in (0, 90] (or 0 for 45), got %v", opts.Altitude))
+		panic(fmt.Sprintf("terrain: Altitude must be in (0, 90] (or 0 for 45), got %v", altitude))
 	}
 	// Reduce the azimuth first: math.Mod is exact, and a huge azimuth in
 	// radians would overflow to Inf, making every cell NaN.
 	az = math.Mod(az, 360)
 	az, alt = az*math.Pi/180, alt*math.Pi/180
 	// The kernel computes (c + bx·dx + by·dy) / sqrt(1 + dx² + dy²).
-	c := float32(255 * math.Sin(alt))
-	bx := float32(-255 * math.Cos(alt) * math.Sin(az))
-	by := float32(255 * math.Cos(alt) * math.Cos(az))
-	return hillshadeKernel{horn{kx: kx, ky: ky}, c, bx, by}
+	c = float32(255 * math.Sin(alt))
+	bx = float32(-255 * math.Cos(alt) * math.Sin(az))
+	by = float32(255 * math.Cos(alt) * math.Cos(az))
+	return c, bx, by
 }
 
 type hillshadeKernel struct {

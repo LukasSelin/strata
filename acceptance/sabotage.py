@@ -373,6 +373,34 @@ def features_ulp(d):
     write(d, name, a)
 
 
+# The quadratic fit. check.py solves the least-squares problem itself,
+# so a fit that is secretly another method, or another window, or a
+# little off, must fail it.
+
+
+def fit_is_horn(d):
+    """The r = 1 fit's slope replaced by Horn's 3x3 slope: the same window,
+    another method."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-slope_deg_fit1-{form}.f32", read(d, f"{stem}-slope_deg-{form}.f32"))
+
+
+def fit_wrong_radius(d):
+    """The r = 4 fit's mean curvature taken over the 3x3 window."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-curvature_mean_fit4-{form}.f32", read(d, f"{stem}-curvature_mean_fit1-{form}.f32"))
+
+
+def fit_slope_drift(d):
+    """Every r = 4 fitted slope 0.01% too large."""
+    for stem in STEMS:
+        for form in FORMS:
+            name = f"{stem}-slope_deg_fit4-{form}.f32"
+            write(d, name, read(d, name) * np.float32(1.0001))
+
+
 def _weighted(d, f):
     """Apply f(values, mask) -> (values, mask) to every weighted slope."""
     for c in MAN["rasters"]:
@@ -473,6 +501,9 @@ MUTATIONS = [
     ("r=8 roughness one ring short", roughness_ring_short),
     ("Features erodes by the largest r", features_largest_erosion),
     ("Features output one ulp off", features_ulp),
+    ("r=1 fit slope is Horn's", fit_is_horn),
+    ("r=4 fit curvature over 3x3", fit_wrong_radius),
+    ("r=4 fit slope 0.01% too large", fit_slope_drift),
 ]
 
 

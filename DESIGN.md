@@ -41,7 +41,7 @@ the detailed record; this table only points at it.
 | arm64 NEON backend (`GOEXPERIMENT=simd`, STRATA-11) | §14, §17 | done: `vec`, `stencil`, `accum` |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
 | `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
-| `terrain`: multi-scale Ruggedness (radius 1–8) and `Features` | §20 | done; SIMD sums for r > 1 and multi-scale slope, aspect and curvature open |
+| `terrain`: multi-scale Ruggedness (radius 1–8), Wood's fit (`FitRadius` 1–8) and `Features` | §20 | done; SIMD ruggedness sums for r > 1 open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -648,6 +648,7 @@ terrain/
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
 ├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness, radius 1–8
+├── fit.go         FitRadius: Wood's least-squares quadratic over (2r+1)², for the derivatives
 ├── features.go    Features(out []Feature, dem)   any mix of the above, at any radii, one pass
 └── stencil.go     shared row driver, edge and validity policy
 ```
@@ -768,6 +769,86 @@ appear at several radii, and the same operation twice.
   cost (98.5 against 98.0 ns a cell on one worker, 13.0 against 12.5 on
   all of them, loaded machine).
 
+**`FitRadius`, Wood's quadratic fit.** Horn's 3×3 kernel has no single
+larger form, so the derivatives take a scale by a change of method.
+Gradient, Slope, Aspect, Hillshade, Curvature and Surface take
+`FitRadius`: 0 keeps Horn's gradient (ZT's for curvature), and 1 to 8
+fits Wood's (1996) quadratic z = ax² + by² + cxy + dx + ey + f by
+unweighted least squares to the (2r+1)² window. This is the method of
+GRASS `r.param.scale` and LandSerf. The alternatives were Horn's kernel on
+a Gaussian-smoothed DEM, which is a filter choice rather than a
+standard, and Horn's kernel on a DEM coarsened with `resample`, which
+changes the output's resolution and already works as two calls. A
+separate field, rather than a radius on the Horn methods, because at
+r = 1 the fit is Evans's 3×3 method and not Horn's: `FitRadius: 1` and
+`FitRadius: 0` differ, and the name says so.
+
+- **Five separable sums with integer taps.** On a square window the
+  normal equations separate, and each coefficient is one weighted sum:
+  p = Σ i·z, q = Σ j·z, r = Σ (3i² − r(r+1))·z, t the same in j, and
+  s = Σ i·j·z, each times a factor. The factors are Z/(K·S·cx),
+  6Z/(K·Q·cx²) and Z/(S²·cx·cy), with K = 2r+1, S = Σi² and Q the sum of
+  the squared quadratic taps. They are computed in float64 and rounded
+  once, like `HornScales`. Every tap is an integer, exact in float32, so
+  the sums run on focal's `ColumnSum`, `ColumnCorrelate` and
+  `RowCorrelate` (AVX2 and NEON). They are O(r) a cell, in the fold order
+  `CorrelateSeparable` documents.
+- **The products are the ones that already exist.** p and q go through
+  `SlopeFromGradientRow`, `AspectFromGradientRow` and
+  `HillshadeFromGradientRow`, the kernels `Surface` finishes Horn's
+  gradient with. The curvatures go through a new
+  `stencil.CurvatureFromDerivsRow`, which is ZT's curvature tail as its
+  own function. `TestCurvatureFromDerivsMatchesZT` holds ZT's
+  derivatives followed by it to `ZTCurvatureRow` bit for bit. So a
+  fitted slope is Horn's slope formula applied to the fit's gradient,
+  and `Surface` with a `FitRadius` is its standalone products bit for
+  bit, as with Horn.
+- **Stack buffers, not scratch.** The column and derivative rows are
+  blocks of 256 cells on the stack, as for roughness, so a fitted
+  product can be a `Features` or `Surface` stage.
+- **Small refactors, no changed bits.** Each product's options are now
+  resolved by one helper (`slopeScale`, `aspectFlat`, `hillshadeLight`,
+  `curvatureKind`) that the Horn kernels, the fit and `Surface` share.
+  The Horn and ZT results are unchanged: every existing test and
+  acceptance check passes as before.
+
+On the loaded Zen 2 desktop (1024², masked, one worker, AVX2), fitted
+slope costs 3.7, 4.3, 5.9 and 9.0 ns a cell at r = 1, 2, 4 and 8
+(Horn's slope: 1.6). Fitted mean curvature costs 7.8, 9.5, 12.5 and
+18.0 (ZT's: 0.84). The curvature tail is scalar, about 5 ns of that.
+
+The fit's tests:
+
+- **Integer planes:** the gradient is the plane's, and every curvature
+  is exactly +0 at every radius (the quadratic taps sum to zero against
+  any plane).
+- **Quadratic surfaces:** on rectangular cells with a ZFactor, least
+  squares reproduces a quadratic exactly, so every cell's gradient and
+  curvatures must be the surface's own.
+- **Fused against standalone:** `Surface` and `Features` with a
+  `FitRadius` equal their standalone products in every form and tiling.
+- **Backends and validity:** scalar and SIMD agree, and validity is the
+  whole window's.
+- **Mutations:** a halved r factor, p scaled by the wrong cell size,
+  wrong column taps, s from the wrong column sums and a radius one
+  short each fail them.
+
+In `acceptance/`, `check.py` solves the least-squares problem itself. It
+applies the pseudo-inverse of the full six-column design matrix to every
+window, without strata's closed forms. It judges slope, aspect,
+hillshade and the three curvatures at r = 1 and 4, on the three DEMs, in
+every form, within bounds derived from the documented separable float32
+sums. Errors are 0.01–0.14× those bounds. The plane's analytic answers
+hold at both radii. `sabotage.py` adds three defects, all caught:
+
+- the r = 1 fit replaced by Horn's slope, which uses the same window and
+  a different method;
+- the r = 4 curvature taken over 3×3;
+- the r = 4 slope 0.01% too large.
+
+GRASS `r.param.scale` is the natural outside tool to compare with. It is
+not in the GDAL image the suite uses, so it is not wired in yet.
+
 **Testing.** `stencil`: the any-radius kernel at r = 1 against
 `RuggednessRow` bit for bit (hazards, signed zeros, overflowing
 differences), every kind at r ∈ {1, 2, 3, 5, 8} against a per-cell
@@ -798,7 +879,7 @@ slope, plan curvature, TPI at r = 1, 3 and 8, TRI at 3 and roughness at
 - **Check 13:** every `Features` output equals its standalone file bit
   for bit, Data and validity.
 
-`sabotage.py` adds four defects, and all 34 are caught: TPI dividing by
+`sabotage.py` adds four defects, all caught (37 of 37 with the fit's three): TPI dividing by
 49 with the centre counted, roughness one ring short, `Features`
 eroding its 3×3 TPI by the largest radius, and one `Features` cell one
 ulp off. gdaldem has no larger windows, so for r > 1 the numpy
@@ -807,18 +888,11 @@ this was run, so no scipy cross-check was added.
 
 Open:
 
-- **SIMD kernels for the three sums at r > 1.**
-- **Multi-scale slope, aspect and curvature.** They need a choice of
-  method, because Horn's 3×3 has no unique larger form. The candidates
-  are:
-  - Wood's (1996) least-squares quadratic over the (2r+1)² window, as
-    GRASS `r.param.scale`, LandSerf and WhiteboxTools use. Its five
-    coefficients are each a separable weighted sum, and at r = 1 it is
-    not Horn.
-  - Horn on a Gaussian-smoothed DEM.
-  - Horn on a coarsened DEM through `resample`, with outputs at the
-    coarser resolution. That already works as two calls.
-- **Annulus and distance-weighted TPI.**
+- **SIMD kernels for the three ruggedness sums at r > 1**, and a SIMD
+  curvature tail for the fit.
+- **Comparing the fit against GRASS `r.param.scale`.**
+- **Distance-weighted fits** (r.param.scale's exponent), and annulus and
+  distance-weighted TPI.
 - **Timing a `Features` stack against GDAL in `benchmarks/gdalsuite`.**
 
 Terrain is useful because it exercises:

@@ -180,7 +180,18 @@ func featureCases() []featureCase {
 			cases = append(cases, featureCase{o, func(d, m raster.Float32Raster) { Ruggedness(d, m, o) }})
 		}
 	}
-	return cases
+	// The quadratic fit at several radii, after the others so that the
+	// sets below keep their indices.
+	fslope, fcurv := slope, curv
+	fslope.FitRadius, fcurv.FitRadius = 2, 3
+	faspect, fshade := aspect, shade
+	faspect.FitRadius, fshade.FitRadius = 1, 4
+	return append(cases,
+		featureCase{fslope, func(d, m raster.Float32Raster) { Slope(d, m, fslope) }},
+		featureCase{fcurv, func(d, m raster.Float32Raster) { Curvature(d, m, fcurv) }},
+		featureCase{faspect, func(d, m raster.Float32Raster) { Aspect(d, m, faspect) }},
+		featureCase{fshade, func(d, m raster.Float32Raster) { Hillshade(d, m, fshade) }},
+	)
 }
 
 // TestFeaturesAreTheStandaloneProducts checks Features' promise: each
@@ -200,6 +211,7 @@ func TestFeaturesAreTheStandaloneProducts(t *testing.T) {
 		{4, 5, 6},             // TRI at three radii
 		{12, 0, 13, 8, 15, 2}, // mixed radii, out of order
 		{5, 5},                // one operation twice
+		{16, 0, 17, 13},       // fitted slope and curvature next to Horn's and ruggedness
 		func() []int { // everything
 			all := make([]int, len(cases))
 			for i := range all {
