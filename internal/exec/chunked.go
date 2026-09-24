@@ -202,6 +202,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 	valid := outValidities(k, r, masked, dstMasked,
 		make([]outValidity, len(dst)), make([]int, validityInts(len(masked), len(dst))))
 	c.valid = valid
+	edgeW := edgeWidths(k, r, len(src), len(dst))
 	c.workers = make([]chunkWorker, workerCount(opts.Workers, c.tiles))
 	for i := range c.workers {
 		wk := &c.workers[i]
@@ -257,9 +258,10 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		}
 		t := &wk.t
 		t.src, t.dst = views[nin+2*nout:2*nin+2*nout:2*nin+2*nout], views[2*nin+2*nout:]
-		t.setup(k, r, c.w, c.h, masked, dstMasked, valid)
+		t.setup(k, r, c.w, c.h, masked, dstMasked, valid, edgeW)
 		t.allocWorkers(1, c.tileW)
 		t.allocScratch(c.spanSize())
+		t.allocPad(c.spanSize())
 	}
 	return c
 }

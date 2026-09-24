@@ -127,6 +127,28 @@ func (e *job) allocScratch(w, h int) {
 	}
 }
 
+// allocPad gives every worker a pad buffer per input for spans of at
+// most w×h, when the outputs' edge rings differ and a span's window can
+// leave the rasters (see padWindows). It is allocated per call, not
+// pooled: only such kernels use it, and only on the raster's edge.
+func (e *job) allocPad(w, h int) {
+	if e.edgeW == nil || w <= 0 || h <= 0 {
+		return
+	}
+	n := (w + 2*e.r) * (h + 2*e.r)
+	masked := len(e.masked) > 0
+	for i := range e.workers {
+		wk := &e.workers[i]
+		wk.pad = make([]raster.Float32Raster, len(e.src))
+		for j := range wk.pad {
+			wk.pad[j].Data = make([]float32, n)
+			if masked {
+				wk.pad[j].Valid = make([]uint64, raster.MaskWords(n))
+			}
+		}
+	}
+}
+
 // releaseScratch returns every worker's scratch to the pools. Views and
 // runs are cleared first: a Pipeline leaves views of, and slices into,
 // the caller's rasters in them, and a pooled block must not keep those

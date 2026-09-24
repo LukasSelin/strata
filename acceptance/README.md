@@ -47,8 +47,9 @@ through raw float32 files on 4 workers). The focal cases are Correlate
 and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
 with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
 2, and Min and Max at radii 1 and 3. `WeightedSlope` runs on the noisy
-DEM times a weight raster with NoData of its own. 734 checks come out of
-that (728 without scipy):
+DEM times a weight raster with NoData of its own, and `Surface` writes all
+five of its products at once on each DEM. 869 checks come out of that
+(863 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
@@ -62,6 +63,7 @@ that (728 without scipy):
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
 | 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
 | 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
+| 12 | Every `Surface` product (dx, dy, slope, aspect, hillshade, all written in one call) is the standalone function's file bit for bit, Data and validity, in every form | A from-gradient kernel that rounds once differently from the fused one, products wired to the wrong output. The standalone files are judged by checks 1–5, so their verdicts carry over |
 | 11 | `WeightedSlope` against the float64 Horn slope times the weight, and its validity against the DEM's mask eroded 3×3 AND the weight's mask not eroded; and that the case tells the two readings apart | A weight's NoData wiping out its neighbours (one erosion over every input, the engine's rule before per-input reach, DESIGN.md §52), a weight's NoData ignored, a weight read from the wrong cell |
 
 Resampling is judged separately, by `check_resample.py`: a float64
@@ -133,6 +135,8 @@ slope 0.05% too large             yes      15
 weight validity eroded 3x3        yes      3
 weight NoData ignored             yes      4
 weight read one cell over         yes      3
+Surface aspect one ulp off        yes      2
+Surface dx and dy swapped         yes      6
 dx and dy swapped                 yes      18
 aspect mirrored                   yes      12
 one bad cell on a tile seam       yes      2
@@ -213,6 +217,7 @@ weighted slope: same cells          0 cells differ; 11,644,877 carry data
 weighted slope: data iff both       0 cells differ; 1,204,997 lose their weight and nothing else
 weighted slope: gdal_calc is x      gdaldem slope × weight, rounded once, over 11,644,877 cells
 weighted slope: float32 rounding    worst 0.11× the bound, 78.10% bit-identical
+surface (gdal/main.go)              slope, aspect, hillshade in one call, each identical to its own run
 no seam every 256 rows              1.222e-06 on chunk boundaries vs 1.203e-06 elsewhere
 ```
 

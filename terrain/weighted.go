@@ -48,7 +48,7 @@ func newWeightedSlope(opts SlopeOptions) *exec.Pipeline {
 	return exec.NewPipeline(2, []exec.Stage{
 		{Kernel: newSlopeKernel(opts), In: []int{0}},
 		{Kernel: mulKernel{}, In: []int{2, 1}},
-	}, 3)
+	}, []int{3})
 }
 
 // mulKernel is algebra.Mul's arithmetic as a pipeline stage: the same

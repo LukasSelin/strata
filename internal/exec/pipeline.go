@@ -19,15 +19,15 @@ import (
 // appends its kernel's outputs in order. A stage may only name values
 // already defined, so a Pipeline is a directed acyclic graph by
 // construction and there is no cycle to look for. Stages run in
-// declaration order, except that a stage none of whose outputs the
-// output depends on does not run at all: a kernel computes nothing but
-// its outputs, so skipping it changes nothing, and running it could
-// need a window wider than the pipeline's own.
+// declaration order, except that a stage no output depends on does not
+// run at all: a kernel computes nothing but its outputs, so skipping it
+// changes nothing, and running it could need a window wider than the
+// pipeline's own.
 //
 // Everything between the stages lives in the scratch the engine lends
-// (see ScratchKernel), except the pipeline's own output, which the
-// stage that produces it writes straight into the Span. So a chain of n
-// stages allocates nothing per band and writes its result once.
+// (see ScratchKernel), except the pipeline's own outputs, which the
+// stages that produce them write straight into the Span. So a chain of n
+// stages allocates nothing per band and writes each result once.
 //
 // # Radius
 //
@@ -57,19 +57,36 @@ import (
 // last stage's — runs staged, which is the reference the fused form is
 // tested against.
 //
-// # This is the one-output cut
+// # Several outputs
 //
-// The pipeline has exactly one output, and no stage may ask for scratch
-// of its own. NewPipeline panics on anything outside this cut, so
-// nothing silently takes a path that has not been written.
+// A pipeline writes any number of its values, each into its own view of
+// the Span, and each output keeps what it would have computed alone:
+// its own reach from each input, so its own validity, and its own edge
+// ring, as wide as the largest of its reaches rather than the
+// pipeline's radius. An output of radius 1 beside one of radius 3 gets
+// real values in the two cells the wider ring would have taken. The
+// engine does that for any ReachKernel (DESIGN.md §52): it runs the
+// pipeline over the cells outside the narrowest ring, with windows
+// padded with NaN where they leave the rasters. By the definition of
+// reach no kept cell reads the padding.
+//
+// # What is not in the cut
+//
+// An output's stage must run over the span itself, so a value that is
+// an output may not also be read beyond the span by a later stage, and
+// neither may another output of the same stage: either would have to be
+// computed grown into scratch and copied out. No stage may ask for
+// scratch of its own. Register-level fusion takes one output only.
+// NewPipeline panics on anything outside this cut, so nothing silently
+// takes a path that has not been written.
 //
 // # Validity
 //
 // A Pipeline computes none. Its stages write Data only, as every kernel
-// does, and the engine derives the output's validity from the
+// does, and the engine derives each output's validity from the
 // pipeline's inputs: the AND, over the masked ones, of each input's
-// validity eroded by its reach — the largest distance at which the
-// output depends on it (see ReachKernel). For a pointwise pipeline every
+// validity eroded by its reach — the largest distance at which that
+// output depends on it, or not at all if it does not (see ReachKernel). For a pointwise pipeline every
 // reach is 0, and that is the AND of the masked inputs.
 //
 // That is what the stages compute when run as separate calls, and it is
@@ -79,36 +96,39 @@ import (
 // invalidate cells the unfused chain keeps. Erosion by r contains
 // erosion by any r' ≥ r, so the AND over every path from an input is
 // its erosion by the longest, and one number per input is all validity
-// needs. It is also why NewPipeline requires every input to be
-// reachable from the output: an input the output does not depend on
-// would still narrow its validity. So the fused chain does one mask pass
-// where the unfused one did n.
+// needs. NewPipeline still requires every input to be read by some
+// output, since a pipeline input nothing reads is a wiring mistake. So
+// the fused chain does one mask pass per output where the unfused one
+// did one per stage.
 //
 // # Edges
 //
-// The engine gives the cells within the pipeline's radius of the
-// raster's edge the pipeline's edge value, as it does for any kernel,
-// and that value is NaN. Run as separate calls, each stage leaves a ring
+// The engine gives the cells in each output's edge ring the pipeline's
+// edge value, as it does for any kernel, and that value is NaN. Run as separate calls, each stage leaves a ring
 // of its own edge value, NaN, which the stages after it carry through
 // their arithmetic; the two agree whenever those stages carry NaN
 // through, as every arithmetic kernel in the tree does, and the validity
 // of the ring agrees always. A stage that declares an edge value other
 // than NaN would leave a number there that later stages turn into
-// another, so NewPipeline accepts one only on the stage that writes the
-// output, and only when that stage's radius is the pipeline's, so that
-// its ring is the whole of the pipeline's (DESIGN.md §52).
+// another, so NewPipeline accepts one only on a stage whose values are
+// all outputs that no later stage reads, and only when its radius is
+// each of those outputs' ring, so that its ring is the whole of theirs.
+// The pipeline has one edge value, so every output's must agree
+// (DESIGN.md §52).
 type Pipeline struct {
 	// stages are the operations, in the order they run, with their
 	// inputs named by value id.
 	stages []Stage
 	// inputs is how many values are the pipeline's own.
 	inputs int
-	// out is the value id the pipeline writes.
-	out int
-	// r is the pipeline's radius, and reach[in] how far beyond the span
-	// the output reads input in.
+	// outs are the value ids the pipeline writes, in the order of the
+	// Span's views, and outOf[id] is value id's index in outs, or -1.
+	outs  []int
+	outOf []int
+	// r is the pipeline's radius, and reach[o][in] how far beyond the
+	// span output o reads input in, or -1.
 	r     int
-	reach []int
+	reach [][]int
 	// edge is the value the engine writes in the pipeline's edge ring.
 	edge float32
 
@@ -119,11 +139,11 @@ type Pipeline struct {
 	live []bool
 	grow []int
 	// held[id] is how far beyond the span value id is held: the
-	// pipeline's radius for an input, 0 for the output, and its stage's
+	// pipeline's radius for an input, 0 for an output, and its stage's
 	// grow for any other value.
 	held []int
 	// slot[id] is the scratch slot holding value id, or -1 for a value
-	// that is an input or the output and so lives in a view the engine
+	// that is an input or an output and so lives in a view the engine
 	// supplied, or that no running stage writes. Indexed by value id.
 	slot []int
 	// sum1[id] and sum2[id] are the sums of held and held² over the
@@ -152,26 +172,30 @@ type Stage struct {
 }
 
 // NewPipeline returns a Pipeline of inputs inputs that runs stages in
-// order and writes value out.
+// order and writes the values outs, in that order.
 //
 // It panics on programming errors, as the rest of the engine does: no
-// stages, a nil kernel, a kernel that asks for scratch, a stage whose In
-// does not match its kernel's arity, a value id that is not defined
-// before it is used, an output that is not produced by a stage, an
-// input the output cannot reach, or an edge value other than NaN that
-// the pipeline cannot keep (see Pipeline for why the last two are
-// correctness rules and not tidiness ones).
+// stages or no outputs, a nil kernel, a kernel that asks for scratch, a
+// stage whose In does not match its kernel's arity, a value id that is
+// not defined before it is used, an output that is not produced by a
+// stage or is named twice, an output whose stage would have to run
+// beyond the span, an input no output reads, or an edge value other than
+// NaN that the pipeline cannot keep (see Pipeline).
 //
-// stages and their In slices are copied, so a caller may reuse them.
-func NewPipeline(inputs int, stages []Stage, out int) *Pipeline {
+// stages, their In slices and outs are copied, so a caller may reuse
+// them.
+func NewPipeline(inputs int, stages []Stage, outs []int) *Pipeline {
 	if inputs < 1 {
 		panic(fmt.Sprintf("engine: pipeline has %d inputs; it needs at least one", inputs))
 	}
 	if len(stages) == 0 {
 		panic("engine: pipeline has no stages")
 	}
+	if len(outs) == 0 {
+		panic("engine: pipeline has no outputs")
+	}
 
-	p := &Pipeline{inputs: inputs, out: out, edge: float32(math.NaN())}
+	p := &Pipeline{inputs: inputs, outs: append([]int(nil), outs...), edge: float32(math.NaN())}
 	p.stages = make([]Stage, len(stages))
 	p.first = make([]int, len(stages))
 
@@ -203,14 +227,24 @@ func NewPipeline(inputs int, stages []Stage, out int) *Pipeline {
 		next += nout
 	}
 
-	if out < inputs || out >= next {
-		panic(fmt.Sprintf("engine: pipeline writes value %d, which is not produced by a stage "+
-			"(stages produce values %d to %d)", out, inputs, next-1))
+	p.outOf = make([]int, next)
+	for id := range p.outOf {
+		p.outOf[id] = -1
+	}
+	for o, id := range p.outs {
+		if id < inputs || id >= next {
+			panic(fmt.Sprintf("engine: pipeline output %d is value %d, which is not produced by a stage "+
+				"(stages produce values %d to %d)", o, id, inputs, next-1))
+		}
+		if p.outOf[id] >= 0 {
+			panic(fmt.Sprintf("engine: pipeline outputs %d and %d are both value %d", p.outOf[id], o, id))
+		}
+		p.outOf[id] = o
 	}
 	p.plan(next)
 	p.checkEdges()
 	p.allocSlots(next)
-	if fusePipelines && p.r == 0 {
+	if fusePipelines && p.r == 0 && len(p.outs) == 1 {
 		p.chain = p.lower()
 	}
 	return p
@@ -221,50 +255,108 @@ func NewPipeline(inputs int, stages []Stage, out int) *Pipeline {
 // both ways and compare them; nothing else turns it off.
 var fusePipelines = true
 
-// plan works backwards from the output: which stages it depends on, how
-// far beyond the span each must run, and how far beyond it the output
-// reads each input. It panics unless every input is read. See Pipeline.
+// plan works backwards from the outputs: which stages they depend on,
+// how far beyond the span each must run, and how far beyond it each
+// output reads each input. It panics unless every input is read and
+// every output's stage runs over the span itself. See Pipeline.
 func (p *Pipeline) plan(values int) {
 	// need[id] is how far beyond the span value id is read, or -1 when
-	// the output does not depend on it. Stages are in dependency order,
-	// so one backwards sweep is enough: a stage's inputs are always lower
-	// ids than its outputs.
-	need := make([]int, values)
-	for id := range need {
-		need[id] = -1
+	// no output depends on it. Stages are in dependency order, so one
+	// backwards sweep is enough: a stage's inputs are always lower ids
+	// than its outputs.
+	sweep := func(outs []int) (need []int, live []bool, grow []int) {
+		need = make([]int, values)
+		for id := range need {
+			need[id] = -1
+		}
+		for _, id := range outs {
+			need[id] = 0
+		}
+		live = make([]bool, len(p.stages))
+		grow = make([]int, len(p.stages))
+		for i := len(p.stages) - 1; i >= 0; i-- {
+			st := &p.stages[i]
+			_, nout := st.Kernel.Arity()
+			g := -1
+			for id := p.first[i]; id < p.first[i]+nout; id++ {
+				g = max(g, need[id])
+			}
+			if g < 0 {
+				continue
+			}
+			live[i], grow[i] = true, g
+			for _, id := range st.In {
+				need[id] = max(need[id], g+st.Kernel.Radius())
+			}
+		}
+		return need, live, grow
 	}
-	need[p.out] = 0
-	p.live = make([]bool, len(p.stages))
-	p.grow = make([]int, len(p.stages))
-	for i := len(p.stages) - 1; i >= 0; i-- {
-		st := &p.stages[i]
-		_, nout := st.Kernel.Arity()
-		g := -1
-		for id := p.first[i]; id < p.first[i]+nout; id++ {
-			g = max(g, need[id])
+
+	need, live, grow := sweep(p.outs)
+	p.live, p.grow = live, grow
+	for id := range p.inputs {
+		if need[id] < 0 {
+			panic(fmt.Sprintf("engine: pipeline input %d is read by no output; "+
+				"a pipeline input nothing reads is a wiring mistake (DESIGN.md §52)", id))
 		}
-		if g < 0 {
-			continue
-		}
-		p.live[i], p.grow[i] = true, g
-		for _, id := range st.In {
-			need[id] = max(need[id], g+st.Kernel.Radius())
+		p.r = max(p.r, need[id])
+	}
+	for o, id := range p.outs {
+		if i := p.stageOf(id); p.grow[i] > 0 {
+			panic(fmt.Sprintf("engine: pipeline output %d (value %d) is written by stage %d, which a later "+
+				"stage reads %d beyond the span; an output's stage must run over the span itself, "+
+				"so neither it nor another output of its stage may feed a later stage with a radius "+
+				"(DESIGN.md §52)", o, id, i, p.grow[i]))
 		}
 	}
-	p.reach = need[:p.inputs:p.inputs]
-	for id, n := range p.reach {
-		if n < 0 {
-			panic(fmt.Sprintf("engine: pipeline input %d cannot be reached from its output; "+
-				"an unread input would still narrow the result's validity, so the fused chain "+
-				"would not equal the unfused one (DESIGN.md §52)", id))
-		}
-		p.r = max(p.r, n)
+
+	p.reach = make([][]int, len(p.outs))
+	if len(p.outs) == 1 {
+		p.reach[0] = need[:p.inputs:p.inputs]
+		return
+	}
+	for o, id := range p.outs {
+		n, _, _ := sweep([]int{id})
+		p.reach[o] = n[:p.inputs:p.inputs]
 	}
 }
 
+// stageOf returns the index of the stage that produces value id, which
+// must not be an input.
+func (p *Pipeline) stageOf(id int) int {
+	i := len(p.first) - 1
+	for p.first[i] > id {
+		i--
+	}
+	return i
+}
+
+// ring is the width of output o's edge ring: its largest reach.
+func (p *Pipeline) ring(o int) int {
+	b := 0
+	for _, n := range p.reach[o] {
+		b = max(b, n)
+	}
+	return b
+}
+
 // checkEdges panics on a stage whose declared edge value the pipeline
-// cannot reproduce, and sets the pipeline's own. See Pipeline.
+// cannot reproduce, or on outputs whose edge values differ, and sets the
+// pipeline's own. See Pipeline.
 func (p *Pipeline) checkEdges() {
+	// read[id] is whether a running stage reads value id.
+	read := make([]bool, len(p.outOf))
+	for i := range p.stages {
+		if p.live[i] {
+			for _, id := range p.stages[i].In {
+				read[id] = true
+			}
+		}
+	}
+	edges := make([]float32, len(p.outs))
+	for o := range edges {
+		edges[o] = float32(math.NaN())
+	}
 	for i := range p.stages {
 		k := p.stages[i].Kernel
 		ek, ok := k.(EdgeKernel)
@@ -276,14 +368,23 @@ func (p *Pipeline) checkEdges() {
 			continue
 		}
 		_, nout := k.Arity()
-		writesOut := p.out >= p.first[i] && p.out < p.first[i]+nout
-		if !writesOut || k.Radius() != p.r {
-			panic(fmt.Sprintf("engine: pipeline stage %d declares edge value %v, but its edge ring "+
-				"is not the pipeline's, and the stages after it would compute with that value; "+
-				"only the stage that writes the output, with the pipeline's radius %d, may declare "+
-				"an edge value other than NaN (DESIGN.md §52)", i, e, p.r))
+		for id := p.first[i]; id < p.first[i]+nout; id++ {
+			o := p.outOf[id]
+			if o < 0 || read[id] || k.Radius() != p.ring(o) {
+				panic(fmt.Sprintf("engine: pipeline stage %d declares edge value %v, but its edge ring "+
+					"is not its outputs' own, and the stages after it would compute with that value; "+
+					"only a stage whose values are all outputs no later stage reads, with a radius equal "+
+					"to their rings, may declare an edge value other than NaN (DESIGN.md §52)", i, e))
+			}
+			edges[o] = e
 		}
-		p.edge = e
+	}
+	p.edge = edges[0]
+	for o, e := range edges {
+		if math.Float32bits(e) != math.Float32bits(p.edge) && !(math.IsNaN(float64(e)) && math.IsNaN(float64(p.edge))) {
+			panic(fmt.Sprintf("engine: pipeline outputs 0 and %d have edge values %v and %v; "+
+				"a pipeline has one edge value (DESIGN.md §52)", o, p.edge, e))
+		}
 	}
 }
 
@@ -308,11 +409,8 @@ func (p *Pipeline) allocSlots(values int) {
 		p.maxIn = max(p.maxIn, nin)
 		p.maxOut = max(p.maxOut, nout)
 		for id := p.first[i]; id < p.first[i]+nout; id++ {
-			if id == p.out {
-				// The output's stage runs over the span itself: a later
-				// stage that read a value of it wider than the span
-				// would have to write the output.
-				continue
+			if p.outOf[id] >= 0 {
+				continue // an output lives in the Span's view (see plan)
 			}
 			g := p.grow[i]
 			p.held[id] = g
@@ -386,7 +484,7 @@ func (p *Pipeline) lower() *vec.Chain {
 		}
 		steps[i] = step
 	}
-	if p.first[len(p.stages)-1] != p.out {
+	if p.first[len(p.stages)-1] != p.outs[0] {
 		return nil // the output is not the last stage's
 	}
 	return vec.NewChain(p.inputs, first, steps)
@@ -396,15 +494,17 @@ func (p *Pipeline) lower() *vec.Chain {
 // a chain, the sum of its stages' radii. See Pipeline.
 func (p *Pipeline) Radius() int { return p.r }
 
-// Arity is the pipeline's inputs and its one output.
-func (p *Pipeline) Arity() (inputs, outputs int) { return p.inputs, 1 }
+// Arity is the pipeline's inputs and its outputs.
+func (p *Pipeline) Arity() (inputs, outputs int) { return p.inputs, len(p.outs) }
 
-// Reach is how far beyond the span the output reads input in, which is
-// what the engine erodes that input's validity by. See Pipeline.
-func (p *Pipeline) Reach(out, in int) int { return p.reach[in] }
+// Reach is how far beyond the span output out reads input in, or -1 if
+// it does not: what the engine erodes that input's validity by for that
+// output, and the largest of them is the output's edge ring. See
+// Pipeline.
+func (p *Pipeline) Reach(out, in int) int { return p.reach[out][in] }
 
-// Edge is the value the engine writes in the pipeline's edge ring: NaN,
-// unless the stage that writes the output declares another. See
+// Edge is the value the engine writes in the outputs' edge rings: NaN,
+// unless the stages that write the outputs declare another. See
 // Pipeline.
 func (p *Pipeline) Edge() float32 { return p.edge }
 
@@ -442,7 +542,6 @@ func (p *Pipeline) Process(dst Span, src Window) {
 		return
 	}
 	w, h := dst.Width, dst.Height
-	out := dst.Dst[0]
 	cells := dst.Scratch.Cells
 	in := dst.Scratch.Views[:p.maxIn]
 	outs := dst.Scratch.Views[p.maxIn : p.maxIn+p.maxOut]
@@ -456,7 +555,7 @@ func (p *Pipeline) Process(dst Span, src Window) {
 		for j, id := range st.In {
 			// The value is held at least g+r beyond the span; the stage's
 			// window is the middle of it.
-			v := p.view(id, w, h, src, out, cells)
+			v := p.view(id, w, h, src, dst.Dst, cells)
 			if off := p.held[id] - g - r; off > 0 {
 				v = v.Window(off, off, w+2*(g+r), h+2*(g+r))
 			}
@@ -464,7 +563,7 @@ func (p *Pipeline) Process(dst Span, src Window) {
 		}
 		_, nout := st.Kernel.Arity()
 		for j := range nout {
-			outs[j] = p.view(p.first[i]+j, w, h, src, out, cells)
+			outs[j] = p.view(p.first[i]+j, w, h, src, dst.Dst, cells)
 		}
 		st.Kernel.Process(
 			Span{X: dst.X - g, Y: dst.Y - g, Width: w + 2*g, Height: h + 2*g,
@@ -504,15 +603,16 @@ func (p *Pipeline) processFused(dst Span, src Window) {
 }
 
 // view returns the raster holding value id for a w×h span, which is the
-// span grown by held[id]: one of the pipeline's own input views, its
-// output view, or a compact scratch buffer. Scratch views carry no mask,
-// because a kernel writes no validity and reads none (DESIGN.md §31).
-func (p *Pipeline) view(id, w, h int, src Window, out raster.Float32Raster, cells []float32) raster.Float32Raster {
+// span grown by held[id]: one of the pipeline's own input views, one of
+// its output views, or a compact scratch buffer. Scratch views carry no
+// mask, because a kernel writes no validity and reads none (DESIGN.md
+// §31).
+func (p *Pipeline) view(id, w, h int, src Window, dst []raster.Float32Raster, cells []float32) raster.Float32Raster {
 	switch {
 	case id < p.inputs:
 		return src.Src[id]
-	case id == p.out:
-		return out
+	case p.outOf[id] >= 0:
+		return dst[p.outOf[id]]
 	default:
 		g := p.held[id]
 		vw, vh := w+2*g, h+2*g

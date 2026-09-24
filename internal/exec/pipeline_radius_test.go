@@ -81,7 +81,7 @@ func radiusShapes() []radiusShape {
 // works out, which the engine trusts for the halo and for validity.
 func TestPipelineRadiusShape(t *testing.T) {
 	for _, s := range radiusShapes() {
-		p := exec.NewPipeline(s.inputs, s.stages, s.out)
+		p := exec.NewPipeline(s.inputs, s.stages, []int{s.out})
 		if got := p.Radius(); got != s.radius {
 			t.Errorf("%s: Radius() = %d, want %d", s.name, got, s.radius)
 		}
@@ -115,7 +115,7 @@ func TestPipelineRadiusMatchesUnfused(t *testing.T) {
 				for _, run := range engineRuns {
 					id := fmt.Sprintf("%s masked=%v windowed=%v %v", s.name, masked, windowed, run)
 					dst := raster.NewFloat32Like(src[0])
-					process(t, run, []raster.Float32Raster{dst}, src, exec.NewPipeline(s.inputs, s.stages, s.out))
+					process(t, run, []raster.Float32Raster{dst}, src, exec.NewPipeline(s.inputs, s.stages, []int{s.out}))
 					sameRaster(t, id, dst, want)
 				}
 			}
@@ -146,7 +146,7 @@ func TestPipelineRadiusChunkedMatchesUnfused(t *testing.T) {
 					}
 					err := exec.ProcessChunked(context.Background(),
 						[]engine.RasterSink{engine.NewMemorySink(dst)}, sources,
-						exec.NewPipeline(s.inputs, s.stages, s.out),
+						exec.NewPipeline(s.inputs, s.stages, []int{s.out}),
 						engine.Options{TileWidth: tile[0], TileHeight: tile[1], Workers: workers})
 					if err != nil {
 						t.Fatalf("%s: %v", id, err)
@@ -182,8 +182,8 @@ func TestPipelineRadiusPermuted(t *testing.T) {
 	}
 	for _, run := range engineRuns {
 		a, b := raster.NewFloat32Like(src[0]), raster.NewFloat32Like(src[0])
-		process(t, run, []raster.Float32Raster{a}, src, exec.NewPipeline(2, original.stages, original.out))
-		process(t, run, []raster.Float32Raster{b}, src, exec.NewPipeline(2, permuted, 5))
+		process(t, run, []raster.Float32Raster{a}, src, exec.NewPipeline(2, original.stages, []int{original.out}))
+		process(t, run, []raster.Float32Raster{b}, src, exec.NewPipeline(2, permuted, []int{5}))
 		sameRaster(t, fmt.Sprint(run), b, a)
 	}
 }
@@ -205,7 +205,7 @@ func TestPipelineRadiusSingleStage(t *testing.T) {
 		}
 		for _, run := range engineRuns {
 			dst := raster.NewFloat32Like(src[0])
-			p := exec.NewPipeline(2, []exec.Stage{{Kernel: k, In: []int{0, 1}}}, 2)
+			p := exec.NewPipeline(2, []exec.Stage{{Kernel: k, In: []int{0, 1}}}, []int{2})
 			process(t, run, []raster.Float32Raster{dst}, src, p)
 			sameRaster(t, fmt.Sprintf("r=%d %v", r, run), dst, want)
 		}
@@ -225,7 +225,7 @@ func TestPipelineRadiusEdgeValue(t *testing.T) {
 	want := unfused(t, src, stages, 2)
 	for _, run := range engineRuns {
 		dst := raster.NewFloat32Like(src[0])
-		process(t, run, []raster.Float32Raster{dst}, src, exec.NewPipeline(1, stages, 2))
+		process(t, run, []raster.Float32Raster{dst}, src, exec.NewPipeline(1, stages, []int{2}))
 		sameRaster(t, fmt.Sprint(run), dst, want)
 	}
 }

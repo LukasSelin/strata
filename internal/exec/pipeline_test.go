@@ -133,7 +133,7 @@ func TestPipelineMatchesUnfused(t *testing.T) {
 					id := fmt.Sprintf("masked=%v windowed=%v workers=%d tile=%v",
 						masked, windowed, workers, tile)
 					dst := raster.NewFloat32Like(src[0])
-					p := exec.NewPipeline(inputs, stages, out)
+					p := exec.NewPipeline(inputs, stages, []int{out})
 					requireFused(t, id, p)
 					err := exec.ProcessN(context.Background(),
 						[]raster.Float32Raster{dst}, src, p,
@@ -172,7 +172,7 @@ func TestPipelineChunkedMatchesUnfused(t *testing.T) {
 				for i := range sources {
 					sources[i] = engine.NewMemorySource(src[i])
 				}
-				p := exec.NewPipeline(inputs, stages, out)
+				p := exec.NewPipeline(inputs, stages, []int{out})
 				requireFused(t, id, p)
 				err := exec.ProcessChunked(context.Background(),
 					[]engine.RasterSink{engine.NewMemorySink(dst)}, sources, p,
@@ -205,7 +205,7 @@ func TestPipelineSingleStage(t *testing.T) {
 	}
 
 	got := raster.NewFloat32Like(src[0])
-	p := exec.NewPipeline(2, []exec.Stage{{Kernel: k, In: []int{0, 1}}}, 2)
+	p := exec.NewPipeline(2, []exec.Stage{{Kernel: k, In: []int{0, 1}}}, []int{2})
 	requireFused(t, "one stage", p)
 	if err := exec.ProcessN(context.Background(), []raster.Float32Raster{got}, src, p,
 		engine.Options{TileHeight: 4, Workers: 3}); err != nil {
@@ -233,7 +233,7 @@ func TestPipelineReusesAValue(t *testing.T) {
 	want := unfused(t, src, stages, 5)
 
 	dst := raster.NewFloat32Like(src[0])
-	p := exec.NewPipeline(3, stages, 5)
+	p := exec.NewPipeline(3, stages, []int{5})
 	// A value read twice is two live intermediates, which is off §29's
 	// left-deep cut: this pipeline must run staged.
 	if p.Fused() {
@@ -277,7 +277,7 @@ func TestPipelineTraffic(t *testing.T) {
 
 	var fusedStats engine.Stats
 	dst := ramp(w, h)
-	p := exec.NewPipeline(inputs, stages, out)
+	p := exec.NewPipeline(inputs, stages, []int{out})
 	requireFused(t, "traffic", p)
 	if err := exec.ProcessN(context.Background(), []raster.Float32Raster{dst}, src, p,
 		engine.Options{Workers: 4, Stats: &fusedStats}); err != nil {
@@ -298,7 +298,7 @@ func TestPipelineTraffic(t *testing.T) {
 	}
 	err := exec.ProcessChunked(context.Background(),
 		[]engine.RasterSink{engine.NewMemorySink(out2)}, sources,
-		exec.NewPipeline(inputs, stages, out),
+		exec.NewPipeline(inputs, stages, []int{out}),
 		engine.Options{TileHeight: 64, Workers: 4, Stats: &fusedChunk})
 	if err != nil {
 		t.Fatalf("fused chunked: %v", err)
@@ -420,11 +420,11 @@ func TestPipelineChecks(t *testing.T) {
 		want string
 		fn   func()
 	}{
-		{"no stages", "no stages", func() { exec.NewPipeline(1, nil, 1) }},
-		{"no inputs", "at least one", func() { exec.NewPipeline(0, []exec.Stage{stage(ok, 0, 0)}, 1) }},
-		{"nil kernel", "nil kernel", func() { exec.NewPipeline(2, []exec.Stage{stage(nil, 0, 1)}, 2) }},
+		{"no stages", "no stages", func() { exec.NewPipeline(1, nil, []int{1}) }},
+		{"no inputs", "at least one", func() { exec.NewPipeline(0, []exec.Stage{stage(ok, 0, 0)}, []int{1}) }},
+		{"nil kernel", "nil kernel", func() { exec.NewPipeline(2, []exec.Stage{stage(nil, 0, 1)}, []int{2}) }},
 		{"scratch stage", "scratch of its own", func() {
-			exec.NewPipeline(1, []exec.Stage{stage(&spyKernel{}, 0)}, 1)
+			exec.NewPipeline(1, []exec.Stage{stage(&spyKernel{}, 0)}, []int{1})
 		}},
 		{"edge value before the last stage", "edge value 7", func() {
 			// 1 = box(0) with edge 7, 2 = box(1); the second stage would
@@ -432,7 +432,7 @@ func TestPipelineChecks(t *testing.T) {
 			exec.NewPipeline(1, []exec.Stage{
 				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 0),
 				stage(boxKernel{r: 1, inputs: 1}, 1),
-			}, 2)
+			}, []int{2})
 		}},
 		{"edge value narrower than the pipeline", "edge value 7", func() {
 			// 1 = box(0), 2 = box(1) with edge 7: its ring is 1 wide, the
@@ -440,21 +440,47 @@ func TestPipelineChecks(t *testing.T) {
 			exec.NewPipeline(1, []exec.Stage{
 				stage(boxKernel{r: 1, inputs: 1}, 0),
 				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 1),
-			}, 2)
+			}, []int{2})
 		}},
-		{"arity", "names 1 inputs", func() { exec.NewPipeline(2, []exec.Stage{stage(ok, 0)}, 2) }},
+		{"arity", "names 1 inputs", func() { exec.NewPipeline(2, []exec.Stage{stage(ok, 0)}, []int{2}) }},
 		{"forward reference", "not defined before it", func() {
-			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 2)}, 2)
+			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 2)}, []int{2})
 		}},
 		{"output is an input", "not produced by a stage", func() {
-			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, 1)
+			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, []int{1})
 		}},
 		{"output out of range", "not produced by a stage", func() {
-			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, 9)
+			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, []int{9})
 		}},
-		{"unreachable input", "cannot be reached", func() {
+		{"unreachable input", "read by no output", func() {
 			// 3 = 0*1, 4 = 3*3; input 2 is never read.
-			exec.NewPipeline(3, []exec.Stage{stage(ok, 0, 1), stage(ok, 3, 3)}, 4)
+			exec.NewPipeline(3, []exec.Stage{stage(ok, 0, 1), stage(ok, 3, 3)}, []int{4})
+		}},
+		{"no outputs", "no outputs", func() { exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, nil) }},
+		{"output named twice", "both value 2", func() {
+			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1)}, []int{2, 2})
+		}},
+		{"output read beyond the span", "must run over the span itself", func() {
+			// 2 = a·b is an output, and 3 = box1(2) reads it 1 beyond.
+			exec.NewPipeline(2, []exec.Stage{stage(ok, 0, 1), stage(boxKernel{r: 1, inputs: 1}, 2)}, []int{2, 3})
+		}},
+		{"sibling read beyond the span", "must run over the span itself", func() {
+			// 1, 2 = a two-output stage; 1 is an output and 3 = box1(2)
+			// reads its sibling 1 beyond, so the stage would run grown.
+			exec.NewPipeline(1, []exec.Stage{
+				stage(boxKernel{r: 0, inputs: 1, outputs: 2}, 0), stage(boxKernel{r: 1, inputs: 1}, 2),
+			}, []int{1, 3})
+		}},
+		{"outputs' edge values differ", "edge values", func() {
+			exec.NewPipeline(1, []exec.Stage{
+				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 0), stage(boxKernel{r: 1, inputs: 1}, 0),
+			}, []int{1, 2})
+		}},
+		{"edge value on an output another stage reads", "edge value 7", func() {
+			// 1 = box1(a) with edge 7 is an output, and 2 = 1·a reads it.
+			exec.NewPipeline(1, []exec.Stage{
+				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 0), stage(ok, 1, 0),
+			}, []int{1, 2})
 		}},
 	}
 	for _, c := range cases {
@@ -496,7 +522,7 @@ func TestPipelineConcurrentCalls(t *testing.T) {
 		src[i] = newOperand(rng, w, h, false, true).r
 	}
 	want := unfused(t, src, stages, out)
-	p := exec.NewPipeline(inputs, stages, out)
+	p := exec.NewPipeline(inputs, stages, []int{out})
 	defer exec.SetBandCells(128)() // many bands, so workers interleave
 
 	const calls = 8

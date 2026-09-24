@@ -155,7 +155,52 @@ func run() error {
 		fmt.Printf("%-10s plain %7.0f ms, chunked %7.0f ms, identical -> %s\n",
 			j.name, plainMS, chunkedMS, filepath.Base(outPath))
 	}
-	return weightedSlope(ctx, w, h, dem, in, so, inOpts, outOpts)
+	if err := weightedSlope(ctx, w, h, dem, in, so, inOpts, outOpts); err != nil {
+		return err
+	}
+	return surface(ctx, w, h, in, so, ho, inOpts, outOpts)
+}
+
+// surface runs terrain.SurfaceChunked for slope, aspect and hillshade at
+// once from the DEM file, and fails unless each product is bit for bit
+// the standalone result already written (and compared with gdaldem by
+// gdalcompare.py), Data and validity.
+func surface(ctx context.Context, w, h int, in *engine.RawFile, so terrain.SlopeOptions,
+	ho terrain.HillshadeOptions, inOpts, outOpts engine.RawOptions) error {
+	opts := terrain.SurfaceOptions{CellSize: so.CellSize, CellSizeY: so.CellSizeY,
+		Azimuth: ho.Azimuth, Altitude: ho.Altitude}
+	names := []string{"slope", "aspect", "hillshade"}
+	got := make([]raster.Float32Raster, len(names))
+	sinks := make([]engine.RasterSink, len(names))
+	for i := range got {
+		got[i] = masked(w, h)
+		sinks[i] = engine.NewMemorySink(got[i])
+	}
+	t0 := time.Now()
+	err := terrain.SurfaceChunked(ctx, terrain.SurfaceSinks{Slope: sinks[0], Aspect: sinks[1], Hillshade: sinks[2]},
+		engine.NewRawSource(in, w, h, inOpts), opts, engine.Options{TileHeight: *tile})
+	if err != nil {
+		return err
+	}
+	ms := time.Since(t0).Seconds() * 1000
+	for i, name := range names {
+		f, err := engine.OpenRawFile(filepath.Join(*dir, "strata-"+name+".raw"), os.O_RDONLY, 0, 0)
+		if err != nil {
+			return err
+		}
+		alone := masked(w, h)
+		err = engine.NewRawSource(f, w, h, outOpts).ReadWindow(ctx, alone, 0, 0)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		if err := sameBits(alone, got[i]); err != nil {
+			return fmt.Errorf("surface %s differs from %s alone: %w", name, name, err)
+		}
+	}
+	fmt.Printf("%-10s chunked %7.0f ms for slope, aspect and hillshade, each identical to its own run\n",
+		"surface", ms)
+	return nil
 }
 
 // weightedSlope runs terrain.WeightedSlope of the DEM times weight.raw,
