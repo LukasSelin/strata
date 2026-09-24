@@ -1,0 +1,917 @@
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw shape: []int{3, 2, 5, 1}
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-perm: []int{0, 3, 2, 1}
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-pad: 1
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-start: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-pad: 1
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-start: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-pad: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-start: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-pad: 1
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-start: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-masked: true
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-v: 0x0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 1
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw src-bit: 0
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw axes-perm: []int{0, 1, 2, 3}
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw axes-n: 2
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] [rapid] draw keepdims: false
+# 2026/09/24 21:08:10.336893 [TestReductions/uint8] CountOver at [4 0]: 0, want 1
+# 
+v0.4.8#18049717397531484219
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0xccccccccccccd
+0x0
+0x0
+0x1
+0xccccccccccccd
+0x0
+0x6b74f03291620
+0x4
+0xccccccccccccd
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0

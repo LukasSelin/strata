@@ -1,0 +1,101 @@
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw shape: []int{2, 2}
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw sshape-drop: 1
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw sshape-one: 1
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-perm: []int{0}
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-pad: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-start: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-masked: false
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-v: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw src-v: 1
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-perm: []int{1, 0}
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-pad: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-start: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-pad: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-start: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw stale: false
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw stale: false
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw stale: false
+# 2026/09/24 21:08:05.739812 [TestConvert] [rapid] draw stale: false
+# 2026/09/24 21:08:05.739812 [TestConvert] at [0 1]: 0 valid true, want 1 valid true
+# 
+v0.4.8#1772402864304597495
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x1
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

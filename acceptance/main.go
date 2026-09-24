@@ -8,7 +8,9 @@
 // It builds three small DEMs, runs the terrain, focal, algebra and
 // reduce operations on each in all three forms (plain, Tiled, Chunked),
 // resamples windows of two of them (resample.go, judged by
-// check_resample.py and gdalwarp_resample.py), and writes:
+// check_resample.py and gdalwarp_resample.py), puts N-dimensional arrays
+// through broadcasting arithmetic and axis reductions (array.go, judged
+// by check_array.py), and writes:
 //
 //	<dem>.f32              the elevation, raw little-endian float32
 //	<dem>.mask.u8          1 per valid cell, 0 per NoData cell (masked DEMs)
@@ -158,6 +160,9 @@ func run() error {
 		return err
 	}
 	if err := runResample(); err != nil {
+		return err
+	}
+	if err := runArray(); err != nil {
 		return err
 	}
 

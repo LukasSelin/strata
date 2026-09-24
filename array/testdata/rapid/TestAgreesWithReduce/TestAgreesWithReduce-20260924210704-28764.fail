@@ -1,0 +1,99 @@
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw shape: []int{2, 3}
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-perm: []int{0, 1}
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-pad: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-start: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-pad: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-start: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-masked: false
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-special: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 2
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v: -16383.75
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 2
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v: -0.2500000596046448
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 2
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v: -1.8189894035458565e-12
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-special: 0
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-kind: 1
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-m: 1
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] [rapid] draw a-v-e: 30
+# 2026/09/24 21:07:04.678824 [TestAgreesWithReduce] SumOver 1.07372544e+09 count 6, reduce.Sum 1.0737254399999999e+09 count 6
+# 
+v0.4.8#4884208005625148759
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x10000000000000
+0x0
+0x9867f1f40f739
+0xd
+0x1fff
+0x2
+0x6000000000
+0x0
+0x38e38e38e38e4
+0x2
+0x10000000000000
+0x10000000000000
+0x0
+0x1
+0x0
+0x16
+0x40000000
+0x0
+0x38e38e38e38e4
+0x2
+0x10000000000000
+0x10000000000000
+0xde5ec9beb6be4
+0x26
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x1
+0x0
+0xc05c654ab866b
+0x1e

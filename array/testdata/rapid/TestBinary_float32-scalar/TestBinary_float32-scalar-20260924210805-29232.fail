@@ -1,0 +1,162 @@
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw op: 4
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw shape: []int{2, 2}
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw ashape-drop: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw ashape-one: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw ashape-one: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-perm: []int{0, 1}
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-masked: false
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw a-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw bshape-drop: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw bshape-one: 3
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw bshape-one: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-perm: []int{0, 1}
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-masked: false
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw b-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-perm: []int{1, 0}
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-pad: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-start: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-kind: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-v-special: 0
+# 2026/09/24 21:08:05.086602 [TestBinary/float32-scalar] [rapid] draw dst-masked: false
+# 
+v0.4.8#10071488770696646123
+0x0
+0x6b74f03291620
+0x4
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x1
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1f2b5a0e61c3a6
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

@@ -1,0 +1,309 @@
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw shape: []int{2, 3, 5}
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-perm: []int{0, 1, 2}
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-pad: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-start: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-pad: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-start: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-pad: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-start: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-masked: false
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 1
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-m: -1
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-e: 54
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 2
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v: 1
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-kind: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw src-v-special: 0
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw axes-perm: []int{2, 1, 0}
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw axes-n: 1
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] [rapid] draw keepdims: false
+# 2026/09/24 21:07:46.183718 [TestReductions/float32] MeanOver at [1 1]: -3.602879701896397e+15, want -3.6028797018963965e+15 (values [0 0 0 -1.8014399e+16 1])
+# 
+v0.4.8#6888624778743908725
+0x0
+0x0
+0x0
+0x1
+0xccccccccccccd
+0x0
+0x38e38e38e38e4
+0x2
+0xccccccccccccd
+0x0
+0x6b74f03291620
+0x4
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x10000000000000
+0x0
+0x0
+0x0
+0xe3e05a098777c
+0x36
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
