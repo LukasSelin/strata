@@ -10,6 +10,7 @@ import (
 	"github.com/LukasSelin/strata/internal/exec"
 	"github.com/LukasSelin/strata/internal/opkernel"
 	"github.com/LukasSelin/strata/internal/vec"
+	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/terrain"
 )
 
@@ -32,6 +33,10 @@ type Graph struct {
 	cse   map[string]int
 	roots []root
 	names map[string]bool
+	// grids are the grids values lie on, by id. Id 0 is the undeclared
+	// grid of the inputs built with Input, whose size the rasters bound
+	// to them give when the plan runs; its entry is unused.
+	grids []raster.Grid
 }
 
 // Node is one value of a Graph: an input, or one output of an operation.
@@ -53,6 +58,10 @@ const (
 	// kindNormalize is algebra.Normalize: a global operation, whose
 	// kernel needs the range of its input from an earlier pass.
 	kindNormalize
+	// kindResample is resample.Resample: a grid change, which reads a
+	// footprint of its own shape for each tile and so is a pass of its
+	// own over a stored input (DESIGN.md §55).
+	kindResample
 )
 
 type node struct {
@@ -68,6 +77,10 @@ type node struct {
 	// a gradient. The planner uses it when nothing else reads that
 	// gradient, so a lone Slope runs the kernel SlopeTiled runs.
 	alone exec.Kernel
+	// grid is the id of the grid the node's values lie on (Graph.grids).
+	grid int
+	// rs is the resampling, for kindResample.
+	rs *resampling
 }
 
 // root is a value the caller asked for: an output raster, or statistics.
@@ -79,11 +92,17 @@ type root struct {
 
 // New returns an empty Graph.
 func New() *Graph {
-	return &Graph{inputs: map[string]int{}, cse: map[string]int{}, names: map[string]bool{}}
+	return &Graph{inputs: map[string]int{}, cse: map[string]int{}, names: map[string]bool{}, grids: []raster.Grid{{}}}
 }
 
 // Input returns the input named name, declaring it on first use. Every
 // input a plan reads must be bound, by this name, when it runs.
+//
+// An input declared by Input lies on the undeclared grid, which every
+// such input shares: the rasters bound to them must all have one size,
+// and they can be combined only with each other. InputOn declares an
+// input's grid instead. Input of a name InputOn declared returns that
+// input.
 func (g *Graph) Input(name string) Node {
 	if name == "" {
 		panic("graph: an input needs a name")
@@ -91,7 +110,11 @@ func (g *Graph) Input(name string) Node {
 	if v, ok := g.inputs[name]; ok {
 		return Node{g, v}
 	}
-	g.nodes = append(g.nodes, node{kind: kindInput, label: fmt.Sprintf("input %q", name), first: len(g.values), nout: 1})
+	return g.newInput(name, 0)
+}
+
+func (g *Graph) newInput(name string, grid int) Node {
+	g.nodes = append(g.nodes, node{kind: kindInput, label: fmt.Sprintf("input %q", name), first: len(g.values), nout: 1, grid: grid})
 	g.values = append(g.values, len(g.nodes)-1)
 	g.inputs[name] = len(g.values) - 1
 	return Node{g, len(g.values) - 1}
@@ -145,6 +168,13 @@ func add(op string, k kind, key string, kernel, alone exec.Kernel, nout int, ins
 	for i, n := range ins {
 		in[i] = n.v
 	}
+	grid := g.gridOfValue(in[0])
+	for _, v := range in[1:] {
+		if o := g.gridOfValue(v); o != grid {
+			panic(fmt.Sprintf("graph: %s of values on different grids: %s and %s; resample one onto the other's grid",
+				op, g.describeGrid(grid), g.describeGrid(o)))
+		}
+	}
 	full := fmt.Sprintf("%s|%s|%v", op, key, in)
 	if i, ok := g.cse[full]; ok {
 		return Node{g, g.nodes[i].first}
@@ -153,7 +183,7 @@ func add(op string, k kind, key string, kernel, alone exec.Kernel, nout int, ins
 	if key != "" {
 		label += "(" + key + ")"
 	}
-	g.nodes = append(g.nodes, node{kind: k, label: label, in: in, first: len(g.values), nout: nout, kernel: kernel, alone: alone})
+	g.nodes = append(g.nodes, node{kind: k, label: label, in: in, first: len(g.values), nout: nout, kernel: kernel, alone: alone, grid: grid})
 	for range nout {
 		g.values = append(g.values, len(g.nodes)-1)
 	}

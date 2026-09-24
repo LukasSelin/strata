@@ -2730,7 +2730,7 @@ workspace reuse
 pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
                             radius > 0 and several outputs remain
 deciding whether to publish Kernel (§22, §52)
-workflow graph and planner  done: package graph, over strata's own operations (§55)
+workflow graph and planner  done: package graph, over strata's own operations, grids and Resample as a grid change (§55)
 ```
 
 **Later milestones**
@@ -4682,8 +4682,8 @@ asked for.
   output. The exact accumulator (§49) makes that free of any ordering
   question: tiles fold in whatever order the workers write them, and the
   summary is the one `reduce.Stats` gives over the whole raster.
-- **Grid changes** (resample, reproject) end one fused stage and start
-  the next. Not built yet: see the roadmap.
+- **Grid changes** (resample; later mosaics and reprojection) end one
+  fused stage and start the next: see "Grids" below. Resample is built.
 - **Global steps** (Normalize today; later hydrology, distance
   transforms, viewsheds) force a pass boundary. Their input is either
   computed again in the next pass or stored by its own pass and read
@@ -4833,6 +4833,100 @@ pass 3 (fused, phase 1)
   write %5 → output "relative"
 ```
 
+### Grids
+
+Almost every chain starts with a grid change: resample or reproject
+onto a common grid. So values carry grids, and a grid change is planned
+like any other boundary.
+
+```go
+before := g.InputOn("before", first)                      // a declared grid
+after := graph.Resample(g.InputOn("after", second), first, // a grid change
+	resample.Options{Method: resample.Bilinear})
+diff := graph.Sub(after, before)                           // one grid: first's
+```
+
+- **Every value lies on a grid.** `InputOn` declares an input's grid. An
+  operation's values lie on its inputs' grid, and a grid change's on
+  the grid it produces. `Input` without a grid still works: its inputs
+  share the *undeclared grid*, sized by the rasters bound when the plan
+  runs, so every graph written before grids plans and prints as it did.
+- **Combining values on two grids panics when the node is built**, naming
+  both grids and suggesting a Resample. Two grids are one grid when
+  size, origin and resolution are equal, compared exactly, and their
+  CRSs match (§36). Grids a rounding apart are different, and combining
+  them needs an explicit Resample: the planner never resamples silently.
+  A declared grid and the undeclared one never combine.
+- **A grid change is a pass of its own.** A tile of a resampled value
+  reads a window of its source of its own shape, which a pipeline stage
+  cannot (§54, "Execution"). So `Resample` runs like a scratch kernel:
+  it reads its source stored, an input or a kept value, and stores its
+  result for the passes after it, calling `ResampleTiled` in memory and
+  `ResampleChunked` over sources and sinks. A resampled value asked for
+  as an output or as statistics is written and folded by that pass,
+  like any other.
+- **A fused pass runs over one grid.** A phase gets one fused pass per
+  grid that has a value with a destination in it. Planning within a
+  grid is unchanged, since only a grid change moves a value off one.
+- **Sizes are checked where they are bound.** Run and RunChunked panic
+  unless each input has its declared grid's size, the undeclared inputs
+  one size between them, and each output the size of its value's grid.
+- **Validity from a grid change.** A resampled grid that reaches past
+  its source has invalid cells even from a source without a mask, so a
+  plan with such a resampling gives its intermediate values masks, and
+  its outputs downstream must have them, as `resample` requires.
+
+`Plan.String` lists the grids once, and names each pass's grid:
+
+```text
+plan: 3 pass(es), boundary auto
+  input "before" is read 1 time(s)
+  input "after" is read 1 time(s)
+  grid 1: 4000×3000 from (500000, 6400000) by (10, -10) in "EPSG:25833"
+  grid 2: 6000×4500 from (499993, 6400003) by (7, -7) in "EPSG:25833"
+pass 1 (alone, phase 0, grid 1)
+  read  %1 = input "after"
+  run   %2 = resample.Resample(Method=Bilinear) ← %1
+  write %2 → stored
+pass 2 (fused, phase 0, grid 1)
+  read  %0 = input "before"
+  read  %2, stored
+  run   %3 = algebra.Sub ← %2, %0
+  write %3 → stats "diff", range for Normalize, stored
+pass 3 (fused, phase 1, grid 1)
+  read  %3, stored
+  run   %4 = algebra.Normalize ← %3
+  write %4 → output "change"
+```
+
+`graph/grid_test.go` holds these to the separate calls, `resample.Resample`
+among them, through Run and RunChunked in every tiling and worker count:
+
+- a DEM resampled to a coarser grid with a terrain stack and a summary
+  on it;
+- the change-detection chain under every boundary choice and three
+  methods, with the second date masked and unmasked, on a grid reaching
+  past it;
+- a phase with values on two declared grids and the undeclared one;
+- the panics, including sizes bound wrong.
+
+Four deliberate breakages each fail the suite:
+
+- the grid check skipped;
+- a resampling that ignores its method;
+- one fused pass for every grid;
+- a resampling that forgets it leaves cells uncovered, in memory or
+  chunked.
+
+The last was not caught until an unmasked second date was added: with
+a masked one, the mask came from the source anyway.
+
+**Open:** a resampled value is stored even when its only reader is one
+per-cell stage that could read the resampling's tiles directly. Fusing
+the grid change into the first pass on its grid is the next step for
+mosaics (a mosaic as a source that composites in `ReadWindow`), and
+would remove that write and read.
+
 ### Testing
 
 The reference is the one every fused form in the engine has: the
@@ -4887,8 +4981,8 @@ gdalsuite workflow benchmark against GDAL from a COG, as #59 did for
   - focal: every operation;
   - statistics: `reduce.Stats`.
 
-  Division, `where` and morphology are roadmap items. So are grid
-  changes: every input and output of a plan has one size.
+  Division, `where` and morphology are roadmap items. Of the grid
+  changes, Resample is built; mosaics and reprojection are not.
 - **Scratch kernels are passes of their own,** and store their input.
   Lending a stage its own scratch (§52) would let them fuse, and is the
   change a focal-heavy workflow benchmark would ask for.
@@ -4923,6 +5017,9 @@ where, division, a compact expression form; multi-band    open
 morphology, local maxima, multi-scale focal (TPI at       open (neighbourhood
   several radii)                                            stages)
 lending pipeline stages scratch, so focal fuses           open
+grids on values, Resample as a grid change between       done
+  fused passes
+mosaics as a grid change (resample.Mosaic)                open
 reprojection, as a grid change between fused stages       open
 hydrology, distance, per-cell reductions across files     open (new pass kinds)
 batch orchestration: one plan over many files, keeping    open
