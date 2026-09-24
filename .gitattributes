@@ -1,0 +1,14 @@
+# Normalize all text files to LF in the index and in the working tree, on every
+# platform. Overrides a developer's global core.autocrlf.
+* text=auto eol=lf
+
+# Binary assets - never touch.
+*.png    binary
+*.svg    text eol=lf
+*.shp    binary
+*.shx    binary
+*.dbf    binary
+*.qix    binary
+*.pdf    binary
+*.woff   binary
+*.woff2  binary
