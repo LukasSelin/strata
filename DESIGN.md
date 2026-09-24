@@ -52,8 +52,8 @@ the detailed record; this table only points at it.
 | `transfer`: Reclass, Lookup, Rescale, RescaleRange | §50 | done; vector table kernels and `benchmarks/transfer` open |
 | `focal`: Correlate, Convolve, CorrelateSeparable, Mean, Min, Max | §53 | done; median, skip-invalid statistics and r = 3's residual 64 KiB-stride loss open |
 | `Pipeline`, radius 0, internal | §52 | done |
-| `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | not started |
-| Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
+| `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | radius > 0 and several outputs done; public `Kernel` decided against for now |
+| Register-level operation fusion | §29 | done for left-deep chains, all three backends; Zen 2 run and generator open |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
@@ -2333,6 +2333,13 @@ strata/
 │   ├── ruggedness.go
 │   └── stencil.go
 │
+├── graph/                     implemented (§55): the lazy workflow graph and its planner
+│   ├── doc.go
+│   ├── graph.go               Graph, Node, Input, Output, Stats, the operations
+│   ├── plan.go                Plan, PlanOptions, Boundary, the passes, String
+│   ├── run.go                 Run, RunChunked, lowering onto Pipeline
+│   └── sinks.go               tee sinks, folded statistics, stored values
+│
 ├── engine/                    public engine configuration
 │   ├── engine.go              Options (STRATA-8)
 │   ├── source.go              RasterSource / RasterSink, memory source and sink
@@ -2616,6 +2623,7 @@ workspace reuse
 pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
                             radius > 0 and several outputs remain
 deciding whether to publish Kernel (§22, §52)
+workflow graph and planner  done: package graph, over strata's own operations (§55)
 ```
 
 **Later milestones**
@@ -4429,3 +4437,290 @@ M4. Figures below are AVX2 at 4096² unless marked.
   puts an invalid cell in every footprint, costs 5–9×: three horizontal
   passes, the counts and a per-cell finish. Clustered NoData costs only
   the chunks whose footprints it touches.
+
+## 55. Workflows and the Planner
+
+Most raster work is a chain of steps, and the chains come in a small
+number of well-known shapes. PR #59 (`benchmarks/gdalsuite/WORKFLOW.md`)
+measured the case for fusing one of them, three terrain products of one
+COG. The finding was that the gain is from reading the input once. Fusing
+the arithmetic gained 1.0–1.3×, while not decoding the DEM three times
+took the job from 2.5× GDAL to 4.4–5.6× on one thread. Once the read is
+shared, the writes are the cost. So the unit strata should offer is the
+workflow, not the operation: a lazy graph of operations, and a planner
+that reads each input as few times as possible and writes only what is
+asked for.
+
+### What gets stacked in practice
+
+| Workflow | Typical chain | Kind of compute |
+|---|---|---|
+| Terrain features (forestry, geomorphology, inputs to ML models) | DEM → slope, aspect, hillshade, curvature, TPI/TRI/roughness, often at several window sizes | neighbourhood steps sharing one input, many outputs |
+| Suitability / risk overlay | several layers → reclassify each → normalise → weight → sum → mask | per-cell steps across many inputs |
+| Spectral indices (NDVI, NDWI, NBR) | bands → (a−b)/(a+b) → threshold or classify → per-area statistics | per-cell steps, then a reduction |
+| LiDAR / canopy height | DSM − DTM → smooth → local maxima → height classes → cover % per stand | per-cell, neighbourhood, per-cell, zonal |
+| Change detection | two dates → align → difference → threshold → morphological clean-up → changed area | grid alignment, per-cell, neighbourhood, reduction |
+| Hydrology | fill sinks → flow direction → flow accumulation → streams, TWI = ln(a/tan β) | global: not tile-local |
+| Time-series composites | many scenes → cloud mask → per-cell median or percentile | a reduction across files |
+| Almost every chain | step 0: resample or reproject onto a common grid; last step: statistics per zone | a grid change; a reduction as the output |
+
+### How the planner treats each kind of step
+
+- **Per-cell steps** (algebra, transfer, per-cell inference) fuse at no
+  cost: they are pipeline stages of radius 0, and register-level fusion
+  (§29) removes the intermediates entirely where the chain allows.
+- **Neighbourhood steps** (terrain, focal, morphology) fuse at the cost
+  of a wider halo, since radii add along a chain (§52). Products of one
+  input share their common part: Slope, Aspect and Hillshade share one
+  Horn gradient, as `terrain.Surface` does.
+- **Reductions** (statistics; later histograms, percentiles, zonal
+  statistics) fold into the pass that computes their value, as a side
+  output. The exact accumulator (§49) makes that free of any ordering
+  question: tiles fold in whatever order the workers write them, and the
+  summary is the one `reduce.Stats` gives over the whole raster.
+- **Grid changes** (resample, reproject) end one fused stage and start
+  the next. Not built yet: see the roadmap.
+- **Global steps** (Normalize today; later hydrology, distance
+  transforms, viewsheds) force a pass boundary. Their input is either
+  computed again in the next pass or stored by its own pass and read
+  back. That choice is the planner's, by the rule below.
+
+The valuable workflows are therefore the ones that **read once and write
+little**: several products from one DEM ("one read, every product"), a
+weighted overlay that produces one raster ("overlay to one output"), and
+a chain that ends in statistics and writes no raster at all ("straight
+to the answer"). Batch orchestration, one plan over a country of COGs, is
+the same plan run many times.
+
+### API
+
+Package `graph`. It publishes names of operations, not the kernel
+contract, which is the cheaper option §52 named ("a public pipeline
+builder over strata's own operations") and leaves the decision about
+publishing `Kernel` where it was.
+
+```go
+g := graph.New()
+dem := g.Input("dem")
+slope := graph.Slope(dem, terrain.SlopeOptions{CellSize: 10})
+g.Output("slope", slope)
+g.Output("hillshade", graph.Hillshade(dem, terrain.HillshadeOptions{CellSize: 10}))
+g.Stats("slope", slope)
+
+plan := g.Plan(graph.PlanOptions{})
+fmt.Print(plan)                  // the passes, and why
+res, err := plan.RunChunked(ctx, sources, sinks, graph.ChunkedOptions{})
+res.Stats["slope"]               // a reduce.Summary
+```
+
+- **Nodes are values.** A `Node` is one value of the graph, and an
+  operation with two outputs (`Gradient`) returns two. Values are
+  numbered as a `Pipeline` numbers its own, so lowering is a renumbering.
+- **Each operation is the one of the same name** in its own package,
+  with the same options, checks and panics. A panic is raised when the
+  node is built, where the mistake is, not when the plan runs.
+- **Building the same operation on the same values twice returns the
+  same node** (common subexpressions, by operation, options and inputs).
+  That is what makes a gradient shared without the caller asking.
+- **A Plan is immutable**, so one runs any number of times, concurrently,
+  over different data. `Run` takes rasters in memory, and `RunChunked`
+  takes sources and sinks.
+- **Kernels stay internal.** Each operation package registers its
+  constructors with `internal/opkernel` in an `init`, and `graph` looks
+  them up by name. An exported constructor returning an internal type
+  would have put `Kernel` in the public API by the back door.
+
+### Planning
+
+A plan is a list of passes. Each pass is one engine call over the whole
+raster.
+
+1. **Live values.** Only what an output or a summary depends on is
+   planned.
+2. **The gradient rewrite.** A terrain product that is its gradient's
+   only reader gets its standalone kernel, reading the DEM directly, and
+   the gradient disappears. When products share a gradient, they stay
+   pointwise stages over it. Both forms write the same bits (§52).
+3. **Phases.** A value's phase is the fused pass that computes it: for a
+   stage, the latest phase of its inputs. A Normalize runs one phase
+   after its input, whose range that input's pass folds, or in the same
+   phase when the input comes from a pass of its own, whose range is
+   known before the fused pass of that phase.
+4. **Passes of their own.** A kernel that asks for scratch (focal Mean,
+   Min, Max, CorrelateSeparable) cannot be a pipeline stage yet (§52). It
+   runs as a pass of its own over a stored input, before the fused pass
+   of its phase, and its output is stored if anything reads it.
+5. **Fused passes.** Phase k's pass collects every value with a
+   destination in that phase (an output, a summary, a range, a value kept
+   for later) and walks back to what the pass can read stored: inputs,
+   outputs of passes of their own, and values kept by earlier passes.
+   Anything else on the way is computed in this pass, including a value
+   an earlier pass computed and did not keep. That is the recompute side
+   of a boundary.
+
+**The boundary rule** (`BoundaryAuto`) stores a Normalize's input when
+computing it again would read more than one stored raster or run a
+neighbourhood operation, and recomputes it otherwise. The costs behind it
+are #59's, on one thread:
+
+- decoding the COG: 0.79 s;
+- writing one 508 MB product: about 0.26 s;
+- the terrain compute: 0.54 s.
+
+Recomputing a one-input per-cell chain costs one extra read. That is
+comparable to storing it, which costs one write plus one read of raw
+float32, and it needs no disk. Two inputs, or a stencil, cost more to redo
+than to store. `BoundaryRecompute` and `BoundaryCache` override the rule.
+The plan cannot see what a source costs to read (a raw file is far
+cheaper than a Deflate COG), and that is the first thing to feed it when
+a benchmark asks.
+
+**Lowering.** Each fused pass becomes one `exec.Pipeline`, built when
+the pass runs, so that a Normalize stage gets its kernel from the range
+an earlier pass found. A value the pipeline cannot write directly goes
+through a copy stage. There are two such cases: a value the pass reads
+rather than computes (an input asked for as an output), and a value that
+a stage of radius > 0 in the same pass also reads, since that stage needs
+it over a grown span (§52's restriction). In memory, a value needed only
+for its statistics that the pass reads anyway is folded from its raster,
+with no copy.
+
+**Destinations.** In a chunked run each value the pass writes goes to one
+pipeline output. That output's sink tees the tile to the following:
+
+- every sink bound to one of its names;
+- the temporary file, when the value is kept;
+- a summary, when statistics or a range are wanted.
+
+A value asked for only as statistics is therefore folded from the tile
+buffer and never written. In memory the destination is the first output
+raster of that name, or a temporary raster. Further names get a copy, and
+summaries fold from that raster after the pass.
+
+**Stored values** in a chunked run are raw native-order float32 files in
+a temporary directory, which the run removes. Validity is a file of one
+byte per cell, not bits, so that tiles written concurrently never share a
+byte. It is also not a fill value, which a valid cell could hold: a
+stored value reads back bit for bit, Data and validity.
+
+`Plan.String` prints the passes, what each reads, runs and writes, how
+often each input is read, and the decision behind every boundary and
+shared gradient. The canopy chain, for example (from
+`graph/example_test.go`):
+
+```text
+plan: 3 pass(es), boundary auto
+  input "dsm" is read 1 time(s)
+  input "dtm" is read 1 time(s)
+pass 1 (fused, phase 0)
+  read  %0 = input "dsm"
+  read  %1 = input "dtm"
+  run   %2 = algebra.Sub ← %0, %1
+  write %2 → stored
+pass 2 (alone, phase 1)
+  read  %2, stored
+  run   %3 = focal.Mean(Radius=1) ← %2, radius 1
+  write %3 → range for Normalize, stored
+pass 3 (fused, phase 1)
+  read  %3, stored
+  run   %4 = transfer.Reclass([2 10 20] → [0 1 2 3]) ← %3
+  run   %5 = algebra.Normalize ← %3
+  write %4 → stats "classes"
+  write %5 → output "relative"
+```
+
+### Testing
+
+The reference is the one every fused form in the engine has: the
+separate public calls. Every output must be their bits, Data and
+validity. Every summary must be `reduce.Stats` of their result. This
+must hold through `Run` and `RunChunked`, four tilings and worker counts,
+masked and unmasked.
+
+`graph/graph_test.go` covers these shapes:
+
+- the terrain stack (five products and a summary, one pass, the DEM
+  read once, one shared gradient);
+- a lone product (the standalone kernel, no gradient stage);
+- an overlay over three inputs with every transfer and algebra operation
+  and a mask;
+- statistics alone, of a stencil and of an input;
+- Normalize under each boundary choice, with three input shapes (one
+  raster, two rasters, a stencil), each with the plan's store-or-recompute
+  decision asserted;
+- passes of their own feeding a fused pass;
+- the copy cases.
+
+A chunked run must also leave its temporary directory empty.
+
+Four deliberate breakages each fail the suite:
+
+- a stored value that forgets its validity;
+- a copy stage one row off;
+- a wrong Normalize range;
+- a fold that drops partials.
+
+Passing is also evidence about the thing tested, since the separate
+calls have oracles of their own outside strata.
+
+### Measured
+
+`BenchmarkTerrainStack` (`graph/bench_test.go`) produces slope, aspect,
+hillshade, TRI and a slope summary from a 2048² DEM in memory, chunked
+with 256-row tiles, on all workers. The graph ran 50 ms; the separate
+chunked calls ran 63 ms (median of three runs, 1.26×). That is only
+indicative: the desktop was in use, and a memory source makes the read
+the graph saves cheap. The workflow claim needs the external form, the
+gdalsuite workflow benchmark against GDAL from a COG, as #59 did for
+`Surface`. That is the first item below.
+
+### Restrictions of this cut
+
+- **The vocabulary is what strata already has:**
+  - algebra: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize;
+  - transfer: every operation;
+  - terrain: every operation;
+  - focal: every operation;
+  - statistics: `reduce.Stats`.
+
+  Division, `where` and morphology are roadmap items. So are grid
+  changes: every input and output of a plan has one size.
+- **Scratch kernels are passes of their own,** and store their input.
+  Lending a stage its own scratch (§52) would let them fuse, and is the
+  change a focal-heavy workflow benchmark would ask for.
+- **Only Normalize is global.** It exercises the whole boundary
+  mechanism: a range folded in one pass, a kernel built from it in the
+  next, and a recompute-or-store decision. Hydrology and distance
+  transforms need a pass of a different kind (not tile-local), which
+  this cut does not have.
+- **A stored value lives for the whole run.** Freeing it after its last
+  reader is a small change once runs are long enough for disk space to
+  matter.
+- **A Plan has no cost model for its sources,** as above.
+
+### Roadmap
+
+Each step ships with a workflow benchmark against the GDAL equivalent in
+`benchmarks/gdalsuite`, as #59 did for the terrain stack. That is
+external evidence for the workflow, not just the operation.
+
+```text
+lazy graph, planner, Run and RunChunked                   done (this section)
+statistics folded into the pass                           done
+global steps as planned pass boundaries (Normalize)       done
+gdalsuite workflow benchmarks: terrain stack through the  open
+  graph, and a chain ending in statistics only
+GeoTIFF / COG writing: compressed, parallel               open (writes are the
+                                                            cost after #59)
+zonal statistics by a label raster; histograms and        open (a reduction
+  percentiles                                               folded like Stats)
+where, division, a compact expression form; multi-band    open
+  reads for indices
+morphology, local maxima, multi-scale focal (TPI at       open (neighbourhood
+  several radii)                                            stages)
+lending pipeline stages scratch, so focal fuses           open
+reprojection, as a grid change between fused stages       open
+hydrology, distance, per-cell reductions across files     open (new pass kinds)
+batch orchestration: one plan over many files, keeping    open
+  the decoders saturated
+```
