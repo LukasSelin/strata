@@ -17,6 +17,10 @@ type SurfaceOptions struct {
 	CellSize  float64
 	CellSizeY float64
 	ZFactor   float64
+	// FitRadius is as in GradientOptions: 0 for Horn's gradient, 1 to
+	// MaxRadius for the quadratic fit's, which every product is then
+	// computed from.
+	FitRadius int
 	// Units is Slope's unit. The zero value is SlopeDegrees.
 	Units SlopeUnits
 	// ZeroForFlat and Trigonometric are Aspect's.
@@ -113,7 +117,8 @@ const (
 // stage over them. Each product's parameters come from its own
 // constructor, so they are the ones the standalone function uses.
 func newSurface(want [surfaceProducts]bool, opts SurfaceOptions) (*exec.Pipeline, []int) {
-	g := newGradientKernel(GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor})
+	g := gradientOp(GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
+		FitRadius: opts.FitRadius})
 	stages := []exec.Stage{{Kernel: g, In: []int{0}}}
 	var outs, order []int
 	for k, w := range want[:surfaceSlope] {
@@ -128,20 +133,12 @@ func newSurface(want [surfaceProducts]bool, opts SurfaceOptions) (*exec.Pipeline
 		stages = append(stages, exec.Stage{Kernel: kernel, In: []int{1, 2}})
 		outs, order = append(outs, 2+len(stages)-1), append(order, k)
 	}
-	add(surfaceSlope, func() exec.Kernel {
-		s := newSlopeKernel(SlopeOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor, Units: opts.Units})
-		return slopeFromGradient{s.scale, s.atan}
-	}())
-	add(surfaceAspect, func() exec.Kernel {
-		a := newAspectKernel(AspectOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
-			ZeroForFlat: opts.ZeroForFlat, Trigonometric: opts.Trigonometric})
-		return aspectFromGradient{a.flat, a.trig}
-	}())
-	add(surfaceHillshade, func() exec.Kernel {
-		h := newHillshadeKernel(HillshadeOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
-			Azimuth: opts.Azimuth, Altitude: opts.Altitude})
-		return hillshadeFromGradient{h.c, h.bx, h.by}
-	}())
+	// Every product's options are checked, wanted or not.
+	scale, atan := slopeScale(opts.Units)
+	c, bx, by := hillshadeLight(opts.Azimuth, opts.Altitude)
+	add(surfaceSlope, slopeFromGradient{scale, atan})
+	add(surfaceAspect, aspectFromGradient{aspectFlat(opts.ZeroForFlat), opts.Trigonometric})
+	add(surfaceHillshade, hillshadeFromGradient{c, bx, by})
 	if len(outs) == 0 {
 		panic("terrain: Surface has no outputs; set at least one of Dx, Dy, Slope, Aspect and Hillshade")
 	}

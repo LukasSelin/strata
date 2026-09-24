@@ -38,6 +38,12 @@ type CurvatureOptions struct {
 	CellSizeY float64
 	// ZFactor multiplies elevations. 0 means 1.
 	ZFactor float64
+	// FitRadius selects how the derivatives are estimated: 0 is the
+	// Zevenbergen–Thorne quadratic through the 3×3 window; 1 to MaxRadius
+	// fits Wood's quadratic by least squares to the (2·FitRadius+1)²
+	// window around each cell, for the same measure at a coarser scale
+	// (see the package documentation). At 1 the fit is not ZT's.
+	FitRadius int
 	// Type of curvature. The zero value is CurvatureProfile.
 	Type CurvatureType
 }
@@ -83,7 +89,7 @@ type CurvatureOptions struct {
 // term so that steep ground does not overflow, and the scalar and SIMD
 // kernels agree bit-for-bit.
 func Curvature(dst, dem raster.Float32Raster, opts CurvatureOptions) {
-	run(newCurvatureKernel(opts), dem, dst)
+	run(curvatureOp(opts), dem, dst)
 }
 
 // CurvatureTiled is Curvature run by the engine: it takes the same operands, applies
@@ -91,7 +97,7 @@ func Curvature(dst, dem raster.Float32Raster, opts CurvatureOptions) {
 // returns ctx.Err() if ctx is done before every cell is written. See
 // package engine for tiling and cancellation.
 func CurvatureTiled(ctx context.Context, dst, dem raster.Float32Raster, opts CurvatureOptions, eopts engine.Options) error {
-	return runTiled(ctx, eopts, newCurvatureKernel(opts), dem, dst)
+	return runTiled(ctx, eopts, curvatureOp(opts), dem, dst)
 }
 
 // CurvatureChunked is Curvature run by the engine over a source and sinks with
@@ -100,23 +106,13 @@ func CurvatureTiled(ctx context.Context, dst, dem raster.Float32Raster, opts Cur
 // Curvature would write into in-memory rasters, for every engine.Options.
 // See package engine for sources, sinks, memory, cancellation and errors.
 func CurvatureChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts CurvatureOptions, eopts engine.Options) error {
-	return runChunked(ctx, eopts, newCurvatureKernel(opts), dem, dst)
+	return runChunked(ctx, eopts, curvatureOp(opts), dem, dst)
 }
 
 // newCurvatureKernel resolves and checks opts for Curvature's kernel.
 func newCurvatureKernel(opts CurvatureOptions) curvatureKernel {
 	cx, cy, z := resolveCells(opts.CellSize, opts.CellSizeY, opts.ZFactor)
-	var kind stencil.CurvatureKind
-	switch opts.Type {
-	case CurvatureProfile:
-		kind = stencil.CurvProfile
-	case CurvaturePlan:
-		kind = stencil.CurvPlan
-	case CurvatureMean:
-		kind = stencil.CurvMean
-	default:
-		panic(fmt.Sprintf("terrain: unknown CurvatureType %d", opts.Type))
-	}
+	kind := curvatureKind(opts.Type)
 	// As for the Horn factors: one that overflows turns a flat window
 	// (0·Inf) into NaN, and one that underflows flattens every cell.
 	kp, kq, kr, kt, ks := stencil.ZTScales(cx, cy, z)
@@ -128,6 +124,19 @@ func newCurvatureKernel(opts CurvatureOptions) curvatureKernel {
 		}
 	}
 	return curvatureKernel{kp: kp, kq: kq, kr: kr, kt: kt, ks: ks, kind: kind}
+}
+
+// curvatureKind checks t and returns the kernels' name for it.
+func curvatureKind(t CurvatureType) stencil.CurvatureKind {
+	switch t {
+	case CurvatureProfile:
+		return stencil.CurvProfile
+	case CurvaturePlan:
+		return stencil.CurvPlan
+	case CurvatureMean:
+		return stencil.CurvMean
+	}
+	panic(fmt.Sprintf("terrain: unknown CurvatureType %d", t))
 }
 
 type curvatureKernel struct {

@@ -29,6 +29,14 @@ float64 numpy:
         mean    = -((1 + q^2) r - 2pqs + (1 + p^2) t) / (2 (1 + g)^1.5)
     Profile and plan are undefined on flat cells (p = q = 0); strata
     documents 0 there.
+  * the quadratic fit (FitRadius r, cases named *_fit<r>): Wood's (1996)
+        z = a x^2 + b y^2 + c xy + d x + e y + f
+    fitted by least squares to the (2r+1)x(2r+1) window around a cell,
+    x and y the offsets times the cell sizes, solved here with the
+    pseudo-inverse of the full six-column design matrix (not strata's
+    decoupled closed forms). p = d, q = e, r = 2a, t = 2b, s = c then go
+    through the same slope, aspect, hillshade and curvature formulas as
+    above.
   * ruggedness, over the eight neighbours of the centre e:
         TRI (Riley)    = sqrt(sum (n - e)^2)
         TRI (Wilson)   = sum |n - e| / 8
@@ -42,6 +50,13 @@ float64 numpy:
     "* 0.125f", and Riley's squares, sum and root in float64 before one
     rounding to float32. The plane also checks all four against their
     closed forms in float64 (check 3).
+  * ruggedness over a larger window, radius r (strata's own definition;
+    gdaldem has only the 3x3): the eight neighbours become the
+    n = (2r+1)^2 - 1 cells of the window other than the centre, in
+    row-major order, and "/ 8" becomes "/ n". Checked twice: for exact
+    equality with that float32 arithmetic, as for the 3x3; and against
+    the definition in float64, computed as a sliding window rather than
+    by shifted sums, within a derived bound (check 14).
 
 The focal operations are checked against their definitions as shifted
 sums of the float32 input, in float64:
@@ -71,6 +86,7 @@ Usage:  python check.py [dir]        (default: out)
 
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -185,16 +201,116 @@ def zt(z, cx, cy):
 
 CURVATURES = ("curvature_profile", "curvature_plan", "curvature_mean")
 
+
+def base_op(op):
+    """The operation a case runs, without its "_fit<r>" suffix."""
+    return re.sub(r"_fit\d+$", "", op)
+
+
+def wood(z, cx, cy, r):
+    """Wood's quadratic fitted by least squares to every (2r+1)^2 window of
+    z: p, q, r, s, t (NaN on the border), and bounds on strata's errors.
+
+    The reference is the pseudo-inverse of the design matrix with columns
+    x^2, y^2, xy, x, y, 1 over the window's offsets, applied to each
+    window in float64. The bounds follow from what strata documents it
+    computes: each derivative is a sum of the window weighted by the
+    outer product of integer column and row taps (a column pass of 2r+1
+    terms, then a row pass of 2r+1), in float32, times a factor rounded
+    to float32. As for the focal sums (TOLERANCES), that is off by at
+    most gamma_{2k} sum |w| |z| <= 2k u zmax sum |w| over the factor,
+    k = 2r + 1, plus 2u of the result for the factor and the product:
+        p, q   sum |w| = k r(r+1)          (taps 1 and i)
+        r, t   sum |w| = k sum |3i^2 - r(r+1)|
+        s      sum |w| = (r(r+1))^2        (taps j and i)
+    with the factors 1/(k S c), 6/(k Q c^2) and 1/(S^2 cx cy), S = sum i^2,
+    Q = sum (3i^2 - r(r+1))^2, as strata's documentation gives them.
+    """
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    k = 2 * r + 1
+    jj, ii = np.mgrid[-r : r + 1, -r : r + 1]
+    x, y = (ii * cx).ravel().astype(float), (jj * cy).ravel().astype(float)
+    X = np.stack([x * x, y * y, x * y, x, y, np.ones_like(x)], axis=1)
+    P = np.linalg.pinv(X)
+    win = sliding_window_view(z, (k, k)).reshape(z.shape[0] - 2 * r, z.shape[1] - 2 * r, k * k)
+    coef = win @ P.T
+    out = [np.full(z.shape, np.nan) for _ in range(5)]
+    inner = (slice(r, z.shape[0] - r), slice(r, z.shape[1] - r))
+    a, b, c, d, e = (coef[..., m] for m in range(5))
+    for o, v in zip(out, (d, e, 2 * a, c, 2 * b)):
+        o[inner] = v
+    p, q, rr, s, t = out
+    zmax = np.nanmax(np.abs(z))
+    ivals = np.arange(-r, r + 1)
+    S = float((ivals * ivals).sum())
+    t2 = 3 * ivals * ivals - r * (r + 1)
+    Q = float((t2 * t2).sum())
+    lin = 2 * k * EPS * zmax * k * r * (r + 1)
+    quad = 2 * k * EPS * zmax * k * np.abs(t2).sum()
+    cross = 2 * k * EPS * zmax * (r * (r + 1)) ** 2
+    ep = lin / (k * S * cx) + 2 * EPS * np.abs(p)
+    eq = lin / (k * S * cy) + 2 * EPS * np.abs(q)
+    er = 6 * quad / (k * Q * cx * cx) + 2 * EPS * np.abs(rr)
+    et = 6 * quad / (k * Q * cy * cy) + 2 * EPS * np.abs(t)
+    es = cross / (S * S * cx * cy) + 2 * EPS * np.abs(s)
+    return p, q, rr, s, t, ep, eq, er, es, et
+
+
+def gradient_ref(z, case):
+    """The reference gradient of a case and its error bounds: Horn's, or
+    the fit's for a *_fit<r> case."""
+    cx = case["cell_size"]
+    cy = case["cell_size_y"] or cx
+    if case.get("fit"):
+        p, q, _, _, _, ep, eq, _, _, _ = wood(z, cx, cy, case["fit"])
+        return p, q, ep, eq
+    dx, dy = horn(z, cx, cy)
+    zmax = np.nanmax(np.abs(z))
+    return dx, dy, 3 * EPS * zmax / cx, 3 * EPS * zmax / cy
+
+
+def curvature_ref(op, z, case):
+    """curvature() for a case: Zevenbergen-Thorne's, or the fit's."""
+    cx = case["cell_size"]
+    cy = case["cell_size_y"] or cx
+    if case.get("fit"):
+        return curvature_from(op, *wood(z, cx, cy, case["fit"]))
+    return curvature(op, z, cx, cy)
+
+
+def ref_name(case):
+    if case.get("fit"):
+        return f"least-squares fit reference, r={case['fit']}"
+    return "Zevenbergen-Thorne reference" if base_op(case["op"]) in CURVATURES else "Horn reference"
+
 RUGGEDNESS = ("ruggedness_tri", "ruggedness_triwilson", "ruggedness_tpi", "ruggedness_roughness")
 
 
-def ruggedness(op, z):
-    """A ruggedness measure of z, with gdaldem's float32 arithmetic, as
+def rug_kind(op):
+    """The measure of a ruggedness case, whatever its radius
+    ("ruggedness_tpi_r3" is "ruggedness_tpi"), or None."""
+    head, _, tail = op.rpartition("_r")
+    base = head if tail.isdigit() else op
+    return base if base in RUGGEDNESS else None
+
+
+def ruggedness(op, z, r=1):
+    """A ruggedness measure of z over the (2r+1)x(2r+1) window, with
+    gdaldem's float32 arithmetic generalised as described above, as
     float64 holding float32 values, NaN on the border."""
     z = z.astype(np.float32)
     out = np.full(z.shape, np.nan)
-    win = [z[j : j + z.shape[0] - 2, i : i + z.shape[1] - 2] for j in range(3) for i in range(3)]
-    e, nb = win[4], win[:4] + win[5:]
+    k = 2 * r + 1
+    win = [z[j : j + z.shape[0] - 2 * r, i : i + z.shape[1] - 2 * r] for j in range(k) for i in range(k)]
+    c = r * k + r
+    e, nb = win[c], win[:c] + win[c + 1 :]
+
+    def mean(s):
+        # gdaldem's "* 0.125f" for the 3x3; a division by n, which rounds
+        # to the same bits there, otherwise.
+        return s * np.float32(0.125) if r == 1 else s / np.float32(len(nb))
+
     if op == "ruggedness_tri":
         s = np.zeros(e.shape)
         for n in nb:
@@ -205,16 +321,16 @@ def ruggedness(op, z):
         s = np.abs(nb[0] - e)
         for n in nb[1:]:
             s = s + np.abs(n - e)
-        v = s * np.float32(0.125)
+        v = mean(s)
     elif op == "ruggedness_tpi":
         s = nb[0]
         for n in nb[1:]:
             s = s + n
-        v = e - s * np.float32(0.125)
+        v = e - mean(s)
     else:
         v = np.max(win, axis=0) - np.min(win, axis=0)
     assert v.dtype == np.float32, v.dtype
-    out[1:-1, 1:-1] = v
+    out[r:-r, r:-r] = v
     return out
 
 
@@ -228,6 +344,13 @@ def curvature(op, z, cx, cy):
     er = 6 * EPS * zmax / (cx * cx) + 2 * EPS * np.abs(r)
     et = 6 * EPS * zmax / (cy * cy) + 2 * EPS * np.abs(t)
     es = 12 * EPS * zmax / (4 * cx * cy) + 2 * EPS * np.abs(s)
+    return curvature_from(op, p, q, r, s, t, ep, eq, er, es, et)
+
+
+def curvature_from(op, p, q, r, s, t, ep, eq, er, es, et):
+    """A curvature from the derivatives p, q, r, s, t and bounds on their
+    errors, its tolerance, and which cells are flat and which too flat to
+    judge."""
     g = p * p + q * q
     w = 1 + g
     flat = g == 0
@@ -340,12 +463,7 @@ def expected(op, z, case):
     """The reference result and its tolerance, or (None, None)."""
     if op.startswith("focal_"):
         return focal_expected(z, case)
-    cx = case["cell_size"]
-    cy = case["cell_size_y"] or cx
-    dx, dy = horn(z, cx, cy)
-    zmax = np.nanmax(np.abs(z))
-    tolx = 3 * EPS * zmax / cx
-    toly = 3 * EPS * zmax / cy
+    dx, dy, tolx, toly = gradient_ref(z, case)
     gtol = np.hypot(tolx, toly)
 
     if op == "gradient_dx":
@@ -371,7 +489,7 @@ def expected(op, z, case):
         with np.errstate(divide="ignore", invalid="ignore"):
             return asp, DEG * gtol / m + EPS * 360.0
     if op in CURVATURES:
-        ref, tol, _, _ = curvature(op, z, cx, cy)
+        ref, tol, _, _ = curvature_ref(op, z, case)
         return ref, tol
     if op == "hillshade":
         az = np.radians(case["azimuth"])
@@ -405,7 +523,7 @@ def angular_diff(a, b):
 # --------------------------------------------------------------------
 
 for case in MAN["rasters"]:
-    op = case["op"]
+    op = base_op(case["op"])
     if op.startswith("algebra_"):
         continue
     z, _ = load(case["dem"])
@@ -414,11 +532,13 @@ for case in MAN["rasters"]:
         z = np.where(dem_mask, z, np.nan)  # NoData must not enter the maths
     got, _ = load(case["out"])
     out_mask = load_mask(case.get("out_mask"))
-    if op in RUGGEDNESS:
-        ref = ruggedness(op, z)
-        keep = defined(out_mask) & np.isfinite(ref)
+    if rug_kind(op):
+        r = radius(case)
+        ref = ruggedness(rug_kind(op), z, r)
+        keep = defined(out_mask, r) & np.isfinite(ref)
         bad = int((got[keep] != ref[keep]).sum())
-        record(f"{case['name']} == gdaldem's arithmetic", bad == 0,
+        what = "gdaldem's arithmetic" if r == 1 else f"the documented float32 arithmetic, r={r}"
+        record(f"{case['name']} == {what}", bad == 0,
                f"{bad} differing cells over {int(keep.sum())}")
         continue
     ref, tol = expected(op, z, case)
@@ -428,7 +548,7 @@ for case in MAN["rasters"]:
     keep = defined(out_mask, radius(case)) & np.isfinite(ref)
 
     if op == "aspect":
-        dx, dy = horn(z, case["cell_size"], case["cell_size_y"] or case["cell_size"])
+        dx, dy, _, _ = gradient_ref(z, case)
         flat = (dx == 0) & (dy == 0)
         # Where the tolerance has grown past a few degrees the cell is too
         # flat for its direction to mean anything: report, do not judge.
@@ -438,7 +558,7 @@ for case in MAN["rasters"]:
         worst = margin.max() if judge.any() else 0.0
         flat_ok = bool(np.all(got[keep & flat] == -1.0)) if (keep & flat).any() else True
         record(
-            f"{case['name']} vs Horn reference",
+            f"{case['name']} vs {ref_name(case)}",
             worst <= 1.0 and flat_ok,
             f"{worst:.2f}x tolerance over {int(judge.sum())} cells, "
             f"{int(vague.sum())} too flat to judge"
@@ -447,14 +567,13 @@ for case in MAN["rasters"]:
         continue
 
     if op in CURVATURES:
-        cx = case["cell_size"]
-        _, _, flat, vague = curvature(op, z, cx, case["cell_size_y"] or cx)
+        _, _, flat, vague = curvature_ref(op, z, case)
         judge = keep & ~flat & ~vague
         err = np.abs(got - ref)
         worst = (err[judge] / tol[judge]).max() if judge.any() else 0.0
         flat_ok = bool(np.all(got[keep & flat] == 0.0))
         record(
-            f"{case['name']} vs Zevenbergen-Thorne reference",
+            f"{case['name']} vs {ref_name(case)}",
             worst <= 1.0 and flat_ok,
             f"{worst:.2f}x tolerance over {int(judge.sum())} cells, "
             f"{int((keep & vague).sum())} too flat to judge, {int((keep & flat).sum())} flat"
@@ -473,7 +592,7 @@ for case in MAN["rasters"]:
         ratio = np.where(err == 0, 0.0, err / tol)
     worst = ratio[keep].max() if keep.any() else 0.0
     record(
-        f"{case['name']} vs {'definition' if op.startswith('focal_') else 'Horn reference'}",
+        f"{case['name']} vs {'definition' if op.startswith('focal_') else ref_name(case)}",
         worst <= 1.0,
         f"max error {err[keep].max():.3e}, tolerance {tol[keep].max():.3e} "
         f"({worst:.2f}x) over {int(keep.sum())} cells",
@@ -512,42 +631,46 @@ for case in MAN["rasters"]:
 PLANE_A, PLANE_B = 0.3, -0.7  # rise per column, rise per row (see main.go)
 
 for case in MAN["rasters"]:
-    if case["surface"] != "plane" or case["op"] not in ("slope_deg", "aspect") + CURVATURES + RUGGEDNESS:
+    if case["surface"] != "plane" or not (base_op(case["op"]) in ("slope_deg", "aspect") + CURVATURES or rug_kind(case["op"])):
         continue
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
     tdx, tdy = PLANE_A / cx, PLANE_B / cy
     got, _ = load(case["out"])
-    keep = defined(None)
-    if case["op"] in RUGGEDNESS:
-        # Neighbour (i, j) differs from the centre by a*i + b*j, so the
-        # squares sum to 6a^2 + 6b^2, the absolute differences are |a|,
-        # |b|, |a + b| and |a - b| twice each, the neighbours average to
-        # the centre, and the window spans 2|a| + 2|b|. Each float32
-        # difference is off by at most an ulp of the elevations, and the
-        # sums add seven roundings each.
-        a, b = PLANE_A, PLANE_B
+    keep = defined(None, radius(case))
+    if rug_kind(case["op"]):
+        # Neighbour (i, j) differs from the centre by a*i + b*j, so over
+        # the window's n = (2r+1)^2 - 1 other cells the squares sum to
+        # (a^2 + b^2) (2r+1) sum(i^2) (the cross terms cancel), the
+        # neighbours average to the centre, and the window spans
+        # 2r(|a| + |b|); Wilson's sum is taken term by term. At r = 1
+        # that is 6a^2 + 6b^2, and |a|, |b|, |a + b|, |a - b| twice each.
+        # Each float32 difference is off by at most an ulp of the
+        # elevations, and the sums add n - 1 roundings each: 2n ulps.
+        a, b, r = PLANE_A, PLANE_B, radius(case)
+        k, n = 2 * r + 1, (2 * r + 1) ** 2 - 1
+        sq = sum(i * i for i in range(-r, r + 1))
         want = {
-            "ruggedness_tri": np.sqrt(6 * a * a + 6 * b * b),
-            "ruggedness_triwilson": 2 * (abs(a) + abs(b) + abs(a + b) + abs(a - b)) / 8,
+            "ruggedness_tri": np.sqrt((a * a + b * b) * k * sq),
+            "ruggedness_triwilson": sum(abs(a * i + b * j) for j in range(-r, r + 1) for i in range(-r, r + 1)) / n,
             "ruggedness_tpi": 0.0,
-            "ruggedness_roughness": 2 * abs(a) + 2 * abs(b),
-        }[case["op"]]
+            "ruggedness_roughness": 2 * r * (abs(a) + abs(b)),
+        }[rug_kind(case["op"])]
         z, _ = load(case["dem"])
-        tol = 16 * EPS * np.nanmax(np.abs(z))
+        tol = 2 * n * EPS * np.nanmax(np.abs(z))
         err = np.abs(got[keep] - want).max()
         record(f"{case['name']} = analytic {want:.4f}", err <= tol, f"max error {err:.2e}, tolerance {tol:.2e}")
         continue
-    if case["op"] in CURVATURES:
+    if base_op(case["op"]) in CURVATURES:
         # A plane has no curvature: whatever strata reports is the
         # rounding of the float32 elevations, which the derived tolerance
         # of the reference covers when the reference itself is taken as 0.
         z, _ = load(case["dem"])
-        _, tol, _, _ = curvature(case["op"], z, cx, cy)
+        _, tol, _, _ = curvature_ref(base_op(case["op"]), z, case)
         worst = (np.abs(got[keep]) / tol[keep]).max()
         record(f"{case['name']} = analytic 0", worst <= 1.0, f"max {np.abs(got[keep]).max():.2e} ({worst:.2f}x)")
         continue
-    if case["op"] == "slope_deg":
+    if base_op(case["op"]) == "slope_deg":
         want = DEG * np.arctan(np.hypot(tdx, tdy))
         err = np.abs(got[keep] - want).max()
         record(f"{case['name']} = analytic {want:.4f} deg", err < 0.05, f"max {err:.2e} deg")
@@ -822,6 +945,99 @@ for case in MAN["rasters"]:
 
 
 # --------------------------------------------------------------------
+# 13. Features: every output of one call that computes 3x3 derivatives
+#     and ruggedness at radii 1, 3 and 8 together is the standalone
+#     operation's file bit for bit, Data and validity, in every form.
+#     The 3x3 outputs sit next to a radius-8 one, so a pass that gave
+#     every output the largest window's border or erosion fails here,
+#     and so does one that wired an output to the wrong operation. The
+#     standalone files are judged by checks 1-5 and 14.
+# --------------------------------------------------------------------
+
+for case in MAN["rasters"]:
+    if not case["op"].startswith("features_"):
+        continue
+    alone = f"{case['dem'][:-4]}-{case['op'][len('features_'):]}-{case['form']}"
+    got, gbits = load(case["out"])
+    want, wbits = load(alone + ".f32")
+    differ = int(((gbits != wbits) & ~(np.isnan(got) & np.isnan(want))).sum())
+    mask_same = True
+    if case.get("out_mask"):
+        mask_same = np.array_equal(load_mask(case["out_mask"]), load_mask(alone + ".mask.u8"))
+    record(f"{case['name']} == {alone} bit for bit", differ == 0 and mask_same,
+           f"{differ} differing cells" + ("" if mask_same else ", masks differ"))
+
+
+# --------------------------------------------------------------------
+# 14. Ruggedness over a larger window, against its definition in
+#     float64: a second reference that shares no code with check 1's.
+#     It takes each cell's window with numpy's sliding_window_view, not
+#     by shifting the raster, and sums in float64 in numpy's order, so a
+#     misreading of the window that check 1's transcription shares (a
+#     shift, the centre counted, a wrong n) would show here. The bounds
+#     follow from float32 rounding of the library's sums of n terms, as
+#     for the focal sums (TOLERANCES), with u = 2^-24:
+#       TPI      (n + 2) u max|z| over the window: n - 1 roundings of a
+#                sum of magnitude at most n max|z|, over n, plus the
+#                division and the subtraction;
+#       Wilson   (n + 1) u W: each |d| rounds once (u |d|), the sum n - 1
+#                times more, and the division once;
+#       Riley    3 u TRI: each d rounds once, which the square doubles and
+#                the root halves, the float64 sum is exact to 2^-53, and
+#                the result rounds once;
+#       range    exact: max and min do no arithmetic, and the difference
+#                of two float32 values rounds once, as numpy's float32
+#                subtraction rounds it.
+# --------------------------------------------------------------------
+
+from numpy.lib.stride_tricks import sliding_window_view
+
+for case in MAN["rasters"]:
+    kind = rug_kind(case["op"])
+    if not kind or radius(case) == 1:
+        continue
+    r = radius(case)
+    k, n = 2 * r + 1, (2 * r + 1) ** 2 - 1
+    z, _ = load(case["dem"])
+    dem_mask = load_mask(case.get("dem_mask"))
+    if dem_mask is not None:
+        z = np.where(dem_mask, z, np.nan)
+    win = sliding_window_view(z, (k, k))  # win[y, x] is the window of cell (y + r, x + r)
+    e = win[:, :, r, r]
+    others = np.delete(win.reshape(win.shape[0], win.shape[1], k * k), r * k + r, axis=2)
+    ref = np.full((H, W), np.nan)
+    tol = np.zeros((H, W))
+    inner = (slice(r, H - r), slice(r, W - r))
+    d = others - e[:, :, None]
+    with np.errstate(invalid="ignore"):
+        if kind == "ruggedness_tpi":
+            ref[inner] = e - others.sum(axis=2) / n
+            tol[inner] = (n + 2) * EPS * np.abs(win).max(axis=(2, 3))
+        elif kind == "ruggedness_triwilson":
+            ref[inner] = np.abs(d).sum(axis=2) / n
+            tol[inner] = (n + 1) * EPS * ref[inner]
+        elif kind == "ruggedness_tri":
+            ref[inner] = np.sqrt((d * d).sum(axis=2))
+            tol[inner] = 3 * EPS * ref[inner]
+        else:
+            w32 = win.astype(np.float32)
+            ref[inner] = (w32.max(axis=(2, 3)) - w32.min(axis=(2, 3))).astype(np.float64)
+    got, _ = load(case["out"])
+    keep = defined(load_mask(case.get("out_mask")), r) & np.isfinite(ref)
+    err = np.abs(got - ref)
+    if kind == "ruggedness_roughness":
+        bad = int((err[keep] != 0).sum())
+        record(f"{case['name']} == max - min of the window, sliding", bad == 0,
+               f"{bad} differing cells over {int(keep.sum())}")
+        continue
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(err == 0, 0.0, err / tol)
+    worst = ratio[keep].max() if keep.any() else 0.0
+    record(f"{case['name']} vs float64 definition, sliding window", worst <= 1.0,
+           f"max error {err[keep].max():.3e} ({worst:.2f}x tolerance) over {int(keep.sum())} cells")
+
+
+# --------------------------------------------------------------------
 # Pictures, for the eyeball check.
 # --------------------------------------------------------------------
 
@@ -850,6 +1066,8 @@ if WANT_PNG:
         ("noisy-ruggedness_tri-plain.f32", "viridis", None, None),
         ("noisy-ruggedness_tpi-plain.f32", "RdBu", None, None),
         ("noisy-ruggedness_roughness-plain.f32", "viridis", None, None),
+        ("noisy-ruggedness_tpi_r3-plain.f32", "RdBu", None, None),
+        ("noisy-ruggedness_tpi_r8-plain.f32", "RdBu", None, None),
     ]:
         a, _ = load(name)
         a = np.where(a == FILL, np.nan, a)

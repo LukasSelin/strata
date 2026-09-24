@@ -127,3 +127,57 @@ func scalarZTCurvatureRow(dst, r0, r1, r2 []float32, kp, kq, kr, kt, ks float32,
 		}
 	}
 }
+
+// CurvatureFromDerivsRow writes a curvature from derivatives already
+// computed: p, q, r, s and t for each cell, as ZTCurvatureRow computes
+// them from the 3×3 window, or as another fit estimates them. It is
+// ZTCurvatureRow's second half, the same float32 operations in the same
+// order, so ZT derivatives followed by this are ZTCurvatureRow bit for
+// bit. All six slices must have the same length. It is scalar on every
+// build.
+func CurvatureFromDerivsRow(dst, p, q, r, s, t []float32, kind CurvatureKind) {
+	n := len(dst)
+	if len(p) != n || len(q) != n || len(r) != n || len(s) != n || len(t) != n {
+		panic("stencil: p, q, r, s, t and dst must have equal length")
+	}
+	if kind < CurvProfile || kind > CurvMean {
+		panic(fmt.Sprintf("stencil: unknown CurvatureKind %d", kind))
+	}
+	p, q, r, s, t = p[:n], q[:n], r[:n], s[:n], t[:n]
+	switch kind {
+	case CurvProfile:
+		for i := range dst {
+			p2, q2 := float32(p[i]*p[i]), float32(q[i]*q[i])
+			pq := float32(p[i] * q[i])
+			g := p2 + q2
+			w := 1 + g
+			num := (float32(p2*r[i]) + float32((pq+pq)*s[i])) + float32(q2*t[i])
+			v := 0 - num/g/float32(w*sqrt32(w))
+			if g == 0 {
+				v = num + 0
+			}
+			dst[i] = v
+		}
+	case CurvPlan:
+		for i := range dst {
+			p2, q2 := float32(p[i]*p[i]), float32(q[i]*q[i])
+			pq := float32(p[i] * q[i])
+			g := p2 + q2
+			num := (float32(q2*r[i]) - float32((pq+pq)*s[i])) + float32(p2*t[i])
+			v := 0 - num/g/sqrt32(g)
+			if g == 0 {
+				v = num + 0
+			}
+			dst[i] = v
+		}
+	default:
+		for i := range dst {
+			p2, q2 := float32(p[i]*p[i]), float32(q[i]*q[i])
+			pq := float32(p[i] * q[i])
+			w := 1 + (p2 + q2)
+			num := (float32((1+q2)*r[i]) - float32((pq+pq)*s[i])) + float32((1+p2)*t[i])
+			d := float32(w * sqrt32(w))
+			dst[i] = 0 - num/(d+d)
+		}
+	}
+}

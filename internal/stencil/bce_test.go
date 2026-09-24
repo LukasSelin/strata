@@ -14,7 +14,7 @@ import (
 // for r0[i+1] and r0[i+2], which it cannot prove in bounds from a range
 // over a slice two cells shorter (DESIGN.md §39).
 //
-// Two exceptions, both measured rather than assumed:
+// Three exceptions, each measured rather than assumed:
 //
 //   - scalarHornHillshadeRow keeps its two checks per cell because the
 //     views cost it more in spilled registers than the checks cost in
@@ -24,8 +24,13 @@ import (
 //     what one costs in a cell loop, and its word indices come from bit
 //     offsets a caller chose, which the compiler cannot prove in bounds
 //     without restructuring the bit shuffling around them.
+//   - scalarRuggednessWindowRow's loop over the terms of its window
+//     reslices a row once per term per block of 256 cells, and hands the
+//     cells to helpers whose loops are clean, so its checks cost a 256th
+//     of what one in a cell loop costs.
 func TestNoBoundsChecksInLoops(t *testing.T) {
-	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/stencil", "mask.go", "scalarHornHillshadeRow")
+	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/stencil", "mask.go", "scalarHornHillshadeRow",
+		"scalarRuggednessWindowRow")
 	if err != nil {
 		t.Fatal(err)
 	}
