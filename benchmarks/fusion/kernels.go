@@ -48,7 +48,7 @@ func NewPipeline() *exec.Pipeline {
 		stages = append(stages, exec.Stage{Kernel: mulStage{}, In: []int{acc, i}})
 		acc = Inputs + len(stages) - 1
 	}
-	return exec.NewPipeline(Inputs, stages, acc)
+	return exec.NewPipeline(Inputs, stages, []int{acc})
 }
 
 // fusableMulStage is mulStage that names itself as a chain step, so a
@@ -72,7 +72,7 @@ func NewLowered() *exec.Pipeline {
 		stages = append(stages, exec.Stage{Kernel: fusableMulStage{}, In: []int{acc, i}})
 		acc = Inputs + len(stages) - 1
 	}
-	p := exec.NewPipeline(Inputs, stages, acc)
+	p := exec.NewPipeline(Inputs, stages, []int{acc})
 	if !p.Fused() {
 		panic("fusion: the lowered pipeline did not lower")
 	}

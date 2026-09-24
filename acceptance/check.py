@@ -800,6 +800,28 @@ for case in MAN["rasters"]:
 
 
 # --------------------------------------------------------------------
+# 12. Surface: every product it writes, several at once from one
+#     gradient, is the standalone operation's file bit for bit, Data
+#     and validity, in every form. The standalone files are judged
+#     against their references above (and against gdaldem by
+#     gdalcompare.py), so this carries those verdicts over to Surface.
+# --------------------------------------------------------------------
+
+for case in MAN["rasters"]:
+    if not case["op"].startswith("surface_"):
+        continue
+    alone = f"{case['dem'][:-4]}-{case['op'][len('surface_'):]}-{case['form']}"
+    got, gbits = load(case["out"])
+    want, wbits = load(alone + ".f32")
+    differ = int(((gbits != wbits) & ~(np.isnan(got) & np.isnan(want))).sum())
+    mask_same = True
+    if case.get("out_mask"):
+        mask_same = np.array_equal(load_mask(case["out_mask"]), load_mask(alone + ".mask.u8"))
+    record(f"{case['name']} == {alone} bit for bit", differ == 0 and mask_same,
+           f"{differ} differing cells" + ("" if mask_same else ", masks differ"))
+
+
+# --------------------------------------------------------------------
 # Pictures, for the eyeball check.
 # --------------------------------------------------------------------
 

@@ -101,8 +101,12 @@ type EdgeKernel interface {
 // the full Radius, such as a Pipeline that multiplies a stencil's result
 // by a pointwise input (DESIGN.md §52). The engine derives each output's
 // validity from the reaches: the AND, over every masked input the
-// output reads, of that input's validity eroded by its own reach. A
-// kernel that does not implement it reads every input over Radius.
+// output reads, of that input's validity eroded by its own reach. And
+// each output's edge ring is its largest reach rather than Radius, so an
+// output that reads less far keeps real values nearer the edge: the
+// engine calls Process for those cells with windows padded with NaN
+// beyond the rasters, which such an output never reads. A kernel that
+// does not implement it reads every input over Radius.
 type ReachKernel interface {
 	Kernel
 	// Reach is the largest distance at which output out reads input in:
@@ -144,6 +148,8 @@ type Window struct {
 	// is under span cell (x, y), so for radius 1 output row y reads view
 	// rows y, y+1 and y+2 and output column x reads view columns x to x+2.
 	// Every view cell exists: the engine never calls a kernel for an
-	// output cell whose neighbourhood leaves the input.
+	// output cell whose neighbourhood leaves the input, except a
+	// ReachKernel whose outputs' edge rings differ, which gets cells
+	// beyond the rasters as NaN (and invalid) in a padded view.
 	Src []raster.Float32Raster
 }

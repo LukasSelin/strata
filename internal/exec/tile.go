@@ -60,6 +60,13 @@ type job struct {
 	// so that the common case allocates nothing for it.
 	valid  []outValidity
 	valid1 [1]outValidity
+	// edgeW[i] is the width of dst[i]'s edge ring, when the outputs'
+	// rings differ (see edgeWidths); nil when every ring is r wide. rmin
+	// is the narrowest ring: the kernel runs over every cell at least
+	// rmin from the edge, with its window padded where it leaves the
+	// rasters.
+	edgeW []int
+	rmin  int
 
 	// workers holds each worker's views and scratch; workers[0] runs on
 	// the calling goroutine.
@@ -101,7 +108,7 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 		valid = make([]outValidity, len(dst))
 	}
 	e.setup(k, r, dst[0].Width, dst[0].Height, masked, dstMasked,
-		outValidities(k, r, masked, dstMasked, valid, rules))
+		outValidities(k, r, masked, dstMasked, valid, rules), edgeWidths(k, r, len(src), len(dst)))
 	e.plan = newPlan(e.w, e.h, opts.TileWidth, opts.TileHeight)
 	for i, d := range dst {
 		if e.sameBits == nil {
@@ -116,16 +123,22 @@ func newJob(dst, src []raster.Float32Raster, k Kernel, r int, opts engine.Option
 	}
 	e.allocWorkers(workerCount(opts.Workers, e.plan.bands), e.plan.tileW)
 	e.allocScratch(e.plan.spanSize())
+	e.allocPad(e.plan.spanSize())
 	return e
 }
 
 // setup sets what a job takes from its kernel and the masks of its
 // operands: the kernel, its radius and edge value, the raster size, the
 // masked inputs, whether any output has a mask and, from outValidities,
-// how each output's validity is derived. valid is only read, so a
-// chunked call's tiles share one.
-func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool, valid []outValidity) {
+// how each output's validity is derived, and from edgeWidths the width
+// of each output's edge ring. valid and edgeW are only read, so a
+// chunked call's tiles share them.
+func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool, valid []outValidity, edgeW []int) {
 	e.k, e.r, e.w, e.h = k, r, w, h
+	e.edgeW, e.rmin = edgeW, r
+	for _, b := range edgeW {
+		e.rmin = min(e.rmin, b)
+	}
 	e.edge = float32(math.NaN())
 	if ek, ok := k.(EdgeKernel); ok {
 		e.edge = ek.Edge()
@@ -137,6 +150,40 @@ func (e *job) setup(k Kernel, r, w, h int, masked []int, dstMasked bool, valid [
 			e.sameBits[i] = -1
 		}
 	}
+}
+
+// edgeWidths returns the width of each output's edge ring, or nil when
+// every ring is r wide, which is the case for every kernel but a
+// ReachKernel whose outputs read less far than its radius. An output's
+// ring is the largest distance at which it reads any input: its cells
+// beyond that read only cells inside the rasters, so they get real
+// values, as they would from a kernel computing that output alone
+// (DESIGN.md §52). An output that reads no input has a ring of r.
+func edgeWidths(k Kernel, r, nin, nout int) []int {
+	rk, ok := k.(ReachKernel)
+	if !ok || r == 0 {
+		return nil
+	}
+	width := func(o int) int {
+		b := -1
+		for in := range nin {
+			b = max(b, rk.Reach(o, in))
+		}
+		if b < 0 {
+			return r
+		}
+		return min(b, r)
+	}
+	for o := range nout {
+		if width(o) != r {
+			w := make([]int, nout)
+			for o := range w {
+				w[o] = width(o)
+			}
+			return w
+		}
+	}
+	return nil
 }
 
 // outValidity is how one output's validity is derived: the AND of the

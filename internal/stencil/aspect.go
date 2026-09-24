@@ -92,12 +92,18 @@ func scalarHornAspectArgs(ys, xs, r0, r1, r2 []float32, kx, ky float32, trig boo
 		z7, z8, z9 := v7[i], v8[i], v9[i]
 		gx := float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		gy := float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
-		if trig {
-			ys[i], xs[i] = gy, 0-gx
-		} else {
-			ys[i], xs[i] = 0-gx, gy
-		}
+		ys[i], xs[i] = aspectArgs(gx, gy, trig)
 	}
+}
+
+// aspectArgs is the (y, x) aspectDegrees takes for the gradient (gx, gy):
+// (-gx, gy) for a compass bearing, (gy, -gx) for trig. The negation is
+// 0 - gx, so it never makes -0.
+func aspectArgs(gx, gy float32, trig bool) (y, x float32) {
+	if trig {
+		return gy, 0 - gx
+	}
+	return 0 - gx, gy
 }
 
 func aspectDegrees(y, x, flat float32) float32 {
@@ -147,15 +153,21 @@ func scalarHornHillshadeRow(dst, r0, r1, r2 []float32, kx, ky, c, bx, by float32
 		z7, z8, z9 := r2[i], r2[i+1], r2[i+2]
 		gx := float32(hornDX(z1, z3, z4, z6, z7, z9) * kx)
 		gy := float32(hornDY(z1, z2, z3, z7, z8, z9) * ky)
-		num := c + (float32(bx*gx) + float32(by*gy))
-		den := float32(math.Sqrt(float64(1 + (float32(gx*gx) + float32(gy*gy)))))
-		v := num / den
-		if v < 0 {
-			v = 0
-		}
-		if v > 255 {
-			v = 255
-		}
-		dst[i] = v
+		dst[i] = shade(gx, gy, c, bx, by)
 	}
+}
+
+// shade is the hillshade of the gradient (gx, gy) for the light vector
+// (c, bx, by): see HornHillshadeRow.
+func shade(gx, gy, c, bx, by float32) float32 {
+	num := c + (float32(bx*gx) + float32(by*gy))
+	den := float32(math.Sqrt(float64(1 + (float32(gx*gx) + float32(gy*gy)))))
+	v := num / den
+	if v < 0 {
+		v = 0
+	}
+	if v > 255 {
+		v = 255
+	}
+	return v
 }
