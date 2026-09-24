@@ -29,8 +29,8 @@
 //
 // The scalar kernels loop over the terms on the outside and the cells on
 // the inside, accumulating in dst, which is the same per-cell order as a
-// register accumulator and keeps every cell loop indexed by its loop
-// variable alone (DESIGN.md §39).
+// register accumulator and keeps the cell loops free of bounds checks
+// (DESIGN.md §39).
 //
 // Like internal/vec, exported functions panic on mismatched lengths, with
 // a "focalrow: " prefix.
@@ -221,13 +221,9 @@ func scalarCorrelateRow(dst, src []float32, stride int, w []float32, k int) {
 		for c := range k {
 			wt, v := w[j*k+c], row[c:c+n]
 			if j == 0 && c == 0 {
-				for i := range dst {
-					dst[i] = float32(wt * v[i])
-				}
-				continue
-			}
-			for i := range dst {
-				dst[i] = float32(dst[i] + float32(wt*v[i]))
+				mulRow(dst, v, wt)
+			} else {
+				mulAddRow(dst, v, wt)
 			}
 		}
 	}
@@ -238,13 +234,9 @@ func scalarColumnCorrelate(dst, src []float32, stride int, taps []float32) {
 	for j, wt := range taps {
 		v := src[j*stride:][:n]
 		if j == 0 {
-			for i := range dst {
-				dst[i] = float32(wt * v[i])
-			}
-			continue
-		}
-		for i := range dst {
-			dst[i] = float32(dst[i] + float32(wt*v[i]))
+			mulRow(dst, v, wt)
+		} else {
+			mulAddRow(dst, v, wt)
 		}
 	}
 }
@@ -253,10 +245,7 @@ func scalarColumnSum(dst, src []float32, stride, k int) {
 	n := len(dst)
 	copy(dst, src[:n])
 	for j := 1; j < k; j++ {
-		v := src[j*stride:][:n]
-		for i := range dst {
-			dst[i] += v[i]
-		}
+		addRow(dst, src[j*stride:][:n])
 	}
 }
 
@@ -287,13 +276,9 @@ func scalarRowCorrelate(dst, src, taps []float32) {
 	for c, wt := range taps {
 		v := src[c : c+n]
 		if c == 0 {
-			for i := range dst {
-				dst[i] = float32(wt * v[i])
-			}
-			continue
-		}
-		for i := range dst {
-			dst[i] = float32(dst[i] + float32(wt*v[i]))
+			mulRow(dst, v, wt)
+		} else {
+			mulAddRow(dst, v, wt)
 		}
 	}
 }
@@ -302,14 +287,9 @@ func scalarRowMean(dst, src []float32, k int, n float32) {
 	m := len(dst)
 	copy(dst, src[:m])
 	for c := 1; c < k; c++ {
-		v := src[c : c+m]
-		for i := range dst {
-			dst[i] += v[i]
-		}
+		addRow(dst, src[c:c+m])
 	}
-	for i := range dst {
-		dst[i] /= n
-	}
+	divRow(dst, n)
 }
 
 func scalarRowMin(dst, src []float32, k int) {
@@ -331,5 +311,111 @@ func scalarRowMax(dst, src []float32, k int) {
 		for i := range dst {
 			dst[i] = max(dst[i], v[i])
 		}
+	}
+}
+
+// The cell loops of the weighted sums, sums and means. Each takes eight
+// cells a step while more than eight remain, then the rest one at a time;
+// a cell's operations are the same either way.
+//
+// Eight a step is for code placement more than for speed. On Zen 2 a
+// one-cell loop (about 25 bytes) runs at two cycles a cell instead of one
+// when it spans two 64-byte lines of code, and Go aligns functions only
+// to 32 bytes, so which it did depended on unrelated code elsewhere in
+// the binary (benchmarks/focal/RESULTS.md, "Loop placement"). A step of
+// eight stores takes eight cycles, more than fetching the three or four
+// lines the loop spans, so it runs at the same speed wherever it lands;
+// a step of four still lost up to 39% on the plain sum when it started in
+// the last 11 bytes of a line. Stepping by reslicing while more than
+// eight remain, rather than by index, is what leaves the loop free of
+// bounds checks and of the pointer masking an empty reslice needs. The
+// helpers are kept out of line so that TestNoBoundsChecksInLoops checks
+// their loops on their own rather than inside the kernels it exempts; a
+// call per term per row costs nothing measurable.
+
+// mulRow sets dst[i] = wt·v[i]. v must have len(dst) cells.
+//
+//go:noinline
+func mulRow(dst, v []float32, wt float32) {
+	v = v[:len(dst)]
+	for len(dst) > 8 && len(v) > 8 {
+		dst[0] = float32(wt * v[0])
+		dst[1] = float32(wt * v[1])
+		dst[2] = float32(wt * v[2])
+		dst[3] = float32(wt * v[3])
+		dst[4] = float32(wt * v[4])
+		dst[5] = float32(wt * v[5])
+		dst[6] = float32(wt * v[6])
+		dst[7] = float32(wt * v[7])
+		dst, v = dst[8:], v[8:]
+	}
+	v = v[:len(dst)]
+	for i := range dst {
+		dst[i] = float32(wt * v[i])
+	}
+}
+
+// mulAddRow sets dst[i] = dst[i] + wt·v[i], rounding the product first.
+// v must have len(dst) cells.
+//
+//go:noinline
+func mulAddRow(dst, v []float32, wt float32) {
+	v = v[:len(dst)]
+	for len(dst) > 8 && len(v) > 8 {
+		dst[0] = float32(dst[0] + float32(wt*v[0]))
+		dst[1] = float32(dst[1] + float32(wt*v[1]))
+		dst[2] = float32(dst[2] + float32(wt*v[2]))
+		dst[3] = float32(dst[3] + float32(wt*v[3]))
+		dst[4] = float32(dst[4] + float32(wt*v[4]))
+		dst[5] = float32(dst[5] + float32(wt*v[5]))
+		dst[6] = float32(dst[6] + float32(wt*v[6]))
+		dst[7] = float32(dst[7] + float32(wt*v[7]))
+		dst, v = dst[8:], v[8:]
+	}
+	v = v[:len(dst)]
+	for i := range dst {
+		dst[i] = float32(dst[i] + float32(wt*v[i]))
+	}
+}
+
+// addRow sets dst[i] += v[i]. v must have len(dst) cells.
+//
+//go:noinline
+func addRow(dst, v []float32) {
+	v = v[:len(dst)]
+	for len(dst) > 8 && len(v) > 8 {
+		dst[0] += v[0]
+		dst[1] += v[1]
+		dst[2] += v[2]
+		dst[3] += v[3]
+		dst[4] += v[4]
+		dst[5] += v[5]
+		dst[6] += v[6]
+		dst[7] += v[7]
+		dst, v = dst[8:], v[8:]
+	}
+	v = v[:len(dst)]
+	for i := range dst {
+		dst[i] += v[i]
+	}
+}
+
+// divRow sets dst[i] /= n.
+//
+//go:noinline
+func divRow(dst []float32, n float32) {
+	for len(dst) > 8 {
+		dst[0] /= n
+		dst[1] /= n
+		dst[2] /= n
+		dst[3] /= n
+		dst[4] /= n
+		dst[5] /= n
+		dst[6] /= n
+		dst[7] /= n
+		dst = dst[8:]
+	}
+	for i := range dst {
+		dst[i] /= n
 	}
 }
