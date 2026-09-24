@@ -21,6 +21,11 @@
 //   - An operation that cannot be a pipeline stage yet (focal Mean, Min,
 //     Max and CorrelateSeparable, which need scratch of their own) runs as
 //     a pass of its own over a stored input.
+//   - A grid change (Resample) is a pass of its own too, between the
+//     fused passes on its source's grid and on its own. Values carry
+//     grids: InputOn declares an input's, and combining values on two
+//     grids panics when the node is built. A fused pass runs over one
+//     grid.
 //
 // Building a graph computes nothing:
 //

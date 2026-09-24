@@ -13,6 +13,7 @@ import (
 	"github.com/LukasSelin/strata/internal/summary"
 	"github.com/LukasSelin/strata/raster"
 	"github.com/LukasSelin/strata/reduce"
+	"github.com/LukasSelin/strata/resample"
 )
 
 // Result is what a run returns besides its rasters.
@@ -31,8 +32,11 @@ type ChunkedOptions struct {
 }
 
 // Run runs the plan over rasters in memory. in binds every input the
-// plan reads, and out every output, by name; all must have the same
-// dimensions. Every output is written with the bits the separate
+// plan reads, and out every output, by name. Each must have the size of
+// its grid: an input declared with InputOn its grid's, an output that of
+// the grid its value lies on, and the inputs declared with Input and the
+// values computed from them one size between them. Every output is
+// written with the bits the separate
 // operations would write (DESIGN.md §55), and every rule of those
 // operations applies: an output must have a mask if an input has one, and
 // must not overlap an input or another output.
@@ -46,36 +50,34 @@ type ChunkedOptions struct {
 // errors: a missing or unknown name, and the operations' own checks.
 func (p *Plan) Run(ctx context.Context, in, out map[string]raster.Float32Raster, opts engine.Options) (*Result, error) {
 	p.bind(keys(in), keys(out))
-	var w, h int
-	masked := false
+	masked := p.uncovered()
 	store := map[int]raster.Float32Raster{}
+	insz := map[string][2]int{}
 	for v, name := range p.inputOf {
 		r, ok := in[name]
 		if !ok {
 			continue
 		}
-		if w == 0 {
-			w, h = r.Width, r.Height
-		} else if r.Width != w || r.Height != h {
-			panic(fmt.Sprintf("graph: input %q is %d×%d, other inputs are %d×%d", name, r.Width, r.Height, w, h))
-		}
+		insz[name] = [2]int{r.Width, r.Height}
 		masked = masked || r.Valid != nil
 		store[v] = r
 	}
-	if w == 0 {
-		panic("graph: Run needs at least one input")
+	sizes := p.sizes(insz)
+	for name, r := range out {
+		p.checkOutput(name, r.Width, r.Height, sizes)
 	}
 	res := &Result{Stats: map[string]reduce.Summary{}}
 	ranges := map[int][2]float32{}
-	temp := func() raster.Float32Raster {
-		r := raster.NewFloat32(w, h, make([]float32, w*h))
-		if masked {
-			r.Valid = raster.NewMask(w * h)
-		}
-		return r
-	}
 	for i := range p.passes {
 		ps := &p.passes[i]
+		w, h := sizes[ps.grid][0], sizes[ps.grid][1]
+		temp := func() raster.Float32Raster {
+			r := raster.NewFloat32(w, h, make([]float32, w*h))
+			if masked {
+				r.Valid = raster.NewMask(w * h)
+			}
+			return r
+		}
 		// A value the pass reads and would copy only to fold it is
 		// already a raster here: fold that, and leave the copy out.
 		reads := map[int]bool{}
@@ -97,7 +99,12 @@ func (p *Plan) Run(ctx context.Context, in, out map[string]raster.Float32Raster,
 			outs = append(outs, j)
 			dsts = append(dsts, dst())
 		}
-		if len(outs) > 0 {
+		if rs := ps.stages[0].rs; rs != nil {
+			err := resample.ResampleTiled(ctx, raster.NewDataset(rs.dst, dsts[0]), raster.NewDataset(rs.src, store[ps.sources[0]]), rs.opts, opts)
+			if err != nil {
+				return nil, err
+			}
+		} else if len(outs) > 0 {
 			k, srcs := p.lower(ps, outs, ranges)
 			rs := make([]raster.Float32Raster, len(srcs))
 			for j, v := range srcs {
@@ -137,7 +144,7 @@ func (p *Plan) Run(ctx context.Context, in, out map[string]raster.Float32Raster,
 // RunChunked runs the plan over sources and sinks, a tile at a time, in
 // memory bounded by the tile size and worker count rather than the
 // rasters. in binds every input the plan reads and out every output, by
-// name; all must have the same size. The sinks receive the bits Run
+// name, with the sizes Run requires. The sinks receive the bits Run
 // would write into rasters holding the sources' data.
 //
 // A value stored between passes goes to a temporary file under
@@ -149,23 +156,21 @@ func (p *Plan) Run(ctx context.Context, in, out map[string]raster.Float32Raster,
 // files, or ctx.Err(); the sinks may then hold some of their tiles.
 func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource, out map[string]engine.RasterSink, opts ChunkedOptions) (res *Result, err error) {
 	p.bind(keys(in), keys(out))
-	var w, h int
 	store := map[int]engine.RasterSource{}
+	insz := map[string][2]int{}
 	for v, name := range p.inputOf {
 		s, ok := in[name]
 		if !ok {
 			continue
 		}
 		sw, sh := s.Size()
-		if w == 0 {
-			w, h = sw, sh
-		} else if sw != w || sh != h {
-			panic(fmt.Sprintf("graph: input %q is %d×%d, other inputs are %d×%d", name, sw, sh, w, h))
-		}
+		insz[name] = [2]int{sw, sh}
 		store[v] = s
 	}
-	if w == 0 {
-		panic("graph: RunChunked needs at least one input")
+	sizes := p.sizes(insz)
+	for name, s := range out {
+		sw, sh := s.Size()
+		p.checkOutput(name, sw, sh, sizes)
 	}
 	var dir string
 	var spills []*spill
@@ -188,13 +193,21 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 	ranges := map[int][2]float32{}
 	for i := range p.passes {
 		ps := &p.passes[i]
-		all := make([]int, len(ps.outs))
-		for j := range all {
-			all[j] = j
+		w, h := sizes[ps.grid][0], sizes[ps.grid][1]
+		rs := ps.stages[0].rs
+		var k exec.Kernel
+		var srcs []int
+		if rs != nil {
+			srcs = ps.sources
+		} else {
+			all := make([]int, len(ps.outs))
+			for j := range all {
+				all[j] = j
+			}
+			k, srcs = p.lower(ps, all, ranges)
 		}
-		k, srcs := p.lower(ps, all, ranges)
 		sources := make([]engine.RasterSource, len(srcs))
-		masked := false
+		masked := rs != nil && rs.uncovered
 		for j, v := range srcs {
 			sources[j] = store[v]
 			masked = masked || sources[j].Masked()
@@ -230,7 +243,11 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 			}
 			sinks[j], tees[j] = t, t
 		}
-		if err := exec.ProcessChunked(ctx, sinks, sources, k, opts.Engine); err != nil {
+		if rs != nil {
+			if err := resample.ResampleChunked(ctx, sinks[0], rs.dst, sources[0], rs.src, rs.opts, opts.Engine); err != nil {
+				return nil, err
+			}
+		} else if err := exec.ProcessChunked(ctx, sinks, sources, k, opts.Engine); err != nil {
 			return nil, err
 		}
 		for j, t := range tees {
@@ -240,6 +257,69 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 		}
 	}
 	return res, nil
+}
+
+// uncovered reports whether a resampling of the plan leaves cells of its
+// grid outside its source, which are invalid whatever the inputs.
+func (p *Plan) uncovered() bool {
+	for _, ps := range p.passes {
+		if rs := ps.stages[0].rs; rs != nil && rs.uncovered {
+			return true
+		}
+	}
+	return false
+}
+
+// sizes returns the width and height of every grid of the plan, by id,
+// from the sizes of the inputs bound, and panics unless each input has
+// its grid's size and the inputs on the undeclared grid one size between
+// them.
+func (p *Plan) sizes(in map[string][2]int) [][2]int {
+	sizes := make([][2]int, len(p.grids))
+	for id := 1; id < len(p.grids); id++ {
+		sizes[id] = [2]int{p.grids[id].Width, p.grids[id].Height}
+	}
+	var first string
+	for _, name := range p.inputs {
+		sz := in[name]
+		id := p.valueGrid[p.valueOfInput(name)]
+		switch {
+		case id != 0:
+			if sz != sizes[id] {
+				panic(fmt.Sprintf("graph: input %q is %d×%d, but it is declared on %s", name, sz[0], sz[1], describeGrid(p.grids, id)))
+			}
+		case first == "":
+			first, sizes[0] = name, sz
+		case sz != sizes[0]:
+			panic(fmt.Sprintf("graph: input %q is %d×%d, but input %q, also on the undeclared grid, is %d×%d",
+				name, sz[0], sz[1], first, sizes[0][0], sizes[0][1]))
+		}
+	}
+	return sizes
+}
+
+// checkOutput panics unless output name is w×h, the size of the grid its
+// value lies on.
+func (p *Plan) checkOutput(name string, w, h int, sizes [][2]int) {
+	for _, r := range p.outputs {
+		if r.name != name {
+			continue
+		}
+		id := p.valueGrid[r.v]
+		if sz := sizes[id]; sz != [2]int{w, h} {
+			panic(fmt.Sprintf("graph: output %q is %d×%d, but its value lies on %s, %d×%d",
+				name, w, h, describeGrid(p.grids, id), sz[0], sz[1]))
+		}
+	}
+}
+
+func (p *Plan) valueOfInput(name string) int {
+	for v, n := range p.inputOf {
+		if n == name {
+			return v
+		}
+	}
+	panic("graph: no input " + name)
 }
 
 // record keeps a value's summary under its Stats names, and its range if

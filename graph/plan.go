@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/LukasSelin/strata/internal/exec"
+	"github.com/LukasSelin/strata/raster"
 )
 
 // Boundary is how a plan carries a value across a pass boundary, when a
@@ -62,6 +63,10 @@ type Plan struct {
 	passes  []pass
 	notes   []string
 	opts    PlanOptions
+	// grids are the graph's grids by id, and valueGrid the id of each
+	// value's.
+	grids     []raster.Grid
+	valueGrid []int
 }
 
 type passKind uint8
@@ -69,15 +74,18 @@ type passKind uint8
 const (
 	// passFused is a Pipeline of stages over the pass's sources.
 	passFused passKind = iota
-	// passAlone is one kernel that cannot be a stage (a ScratchKernel),
-	// run over stored values.
+	// passAlone is one operation that cannot be a stage (a ScratchKernel,
+	// or a grid change), run over stored values.
 	passAlone
 )
 
-// pass is one run of the engine over the whole raster.
+// pass is one run of the engine over the whole of one grid.
 type pass struct {
 	kind  passKind
 	phase int
+	// grid is the id of the grid the pass writes: every value of a fused
+	// pass lies on it, and a grid change's output does.
+	grid int
 	// sources are the graph values the pass reads: inputs and stored
 	// values, in value order. They are the pipeline's inputs.
 	sources []int
@@ -105,6 +113,8 @@ type stage struct {
 	in          []int
 	first, nout int
 	label       string
+	// rs is a Resample stage's resampling; its kernel is nil.
+	rs *resampling
 }
 
 // dest is what becomes of one value a pass writes.
@@ -148,10 +158,12 @@ func (g *Graph) Plan(opts PlanOptions) *Plan {
 	pl.shareGradients()
 	pl.markLive()
 	pl.phases()
-	p := &Plan{opts: opts, inputOf: map[int]string{}}
+	p := &Plan{opts: opts, inputOf: map[int]string{}, grids: slices.Clone(g.grids)}
 	p.labels = make([]string, len(g.values))
+	p.valueGrid = make([]int, len(g.values))
 	for v := range g.values {
 		p.labels[v] = pl.label(v)
+		p.valueGrid[v] = g.gridOfValue(v)
 	}
 	for name, v := range g.inputs {
 		p.inputOf[v] = name
@@ -287,8 +299,12 @@ func (pl *planner) phases() {
 }
 
 // alone reports whether node n must run as a pass of its own: its kernel
-// asks for scratch, which a pipeline stage cannot have (DESIGN.md §52).
+// asks for scratch, which a pipeline stage cannot have (DESIGN.md §52),
+// or it changes grid, reading a footprint of its own shape for each tile.
 func (pl *planner) alone(n int) bool {
+	if pl.nodes[n].kind == kindResample {
+		return true
+	}
 	_, ok := pl.nodes[n].kernel.(exec.ScratchKernel)
 	return ok
 }
@@ -419,17 +435,15 @@ func (pl *planner) passes() []pass {
 				out = append(out, pl.alonePass(n))
 			}
 		}
-		if p, ok := pl.fusedPass(ph); ok {
-			out = append(out, p)
-		}
+		out = append(out, pl.fusedPasses(ph)...)
 	}
 	return out
 }
 
 func (pl *planner) alonePass(n int) pass {
 	nd := pl.nodes[n]
-	p := pass{kind: passAlone, phase: pl.phase[n], sources: slices.Clone(nd.in)}
-	p.stages = []stage{{kernel: nd.kernel, norm: -1, in: nd.in, first: nd.first, nout: nd.nout, label: nd.label}}
+	p := pass{kind: passAlone, phase: pl.phase[n], grid: nd.grid, sources: slices.Clone(nd.in)}
+	p.stages = []stage{{kernel: nd.kernel, norm: -1, in: nd.in, first: nd.first, nout: nd.nout, label: nd.label, rs: nd.rs}}
 	for v := nd.first; v < nd.first+nd.nout; v++ {
 		p.outs = append(p.outs, v)
 		d := pl.dests[v]
@@ -441,12 +455,11 @@ func (pl *planner) alonePass(n int) pass {
 	return p
 }
 
-// fusedPass builds phase ph's pipeline: every value with a destination in
-// this phase, and the stages they need back to values this pass can read
-// stored. It reports false if the phase writes nothing.
-func (pl *planner) fusedPass(ph int) (pass, bool) {
+// fusedPasses builds phase ph's pipelines, one for each grid that has a
+// value with a destination in this phase: a pipeline runs over one grid.
+func (pl *planner) fusedPasses(ph int) []pass {
 	g := pl.g
-	var roots []int
+	byGrid := map[int][]int{}
 	for v := range g.values {
 		d := pl.dests[v]
 		if d == nil || d.empty() || pl.alone(g.values[v]) {
@@ -454,13 +467,25 @@ func (pl *planner) fusedPass(ph int) (pass, bool) {
 		}
 		n := g.values[v]
 		if pl.nodes[n].kind == kindInput && ph == 0 || pl.nodes[n].kind != kindInput && pl.phase[n] == ph {
-			roots = append(roots, v)
+			byGrid[pl.nodes[n].grid] = append(byGrid[pl.nodes[n].grid], v)
 		}
 	}
-	if len(roots) == 0 {
-		return pass{}, false
+	var out []pass
+	for id := range g.grids {
+		if roots := byGrid[id]; len(roots) > 0 {
+			out = append(out, pl.fusedPass(ph, id, roots))
+		}
 	}
-	p := pass{kind: passFused, phase: ph}
+	return out
+}
+
+// fusedPass builds the pipeline of phase ph on grid id: the values roots,
+// which have destinations in this phase, and the stages they need back to
+// values this pass can read stored. Every one of those lies on grid id,
+// since only a grid change, a pass of its own, moves a value off it.
+func (pl *planner) fusedPass(ph, id int, roots []int) pass {
+	g := pl.g
+	p := pass{kind: passFused, phase: ph, grid: id}
 	included := map[int]bool{}
 	sources := map[int]bool{}
 	var need func(v int)
@@ -519,7 +544,7 @@ func (pl *planner) fusedPass(ph int) (pass, bool) {
 		p.outs = append(p.outs, v)
 		p.dests = append(p.dests, *pl.dests[v])
 	}
-	return p, true
+	return p
 }
 
 // String describes the plan: its passes, what each reads, runs and
@@ -538,12 +563,32 @@ func (p *Plan) String() string {
 	for _, name := range p.inputs {
 		fmt.Fprintf(&b, "  input %q is read %d time(s)\n", name, reads[name])
 	}
+	if len(p.grids) > 1 {
+		used := map[int]bool{}
+		for _, ps := range p.passes {
+			used[ps.grid] = true
+			for _, v := range ps.sources {
+				used[p.valueGrid[v]] = true
+			}
+		}
+		for id := range p.grids {
+			if used[id] {
+				fmt.Fprintf(&b, "  grid %d: %s\n", id, strings.TrimPrefix(describeGrid(p.grids, id), "grid "))
+			}
+		}
+	}
 	for i, ps := range p.passes {
 		kind := "fused"
 		if ps.kind == passAlone {
 			kind = "alone"
 		}
-		fmt.Fprintf(&b, "pass %d (%s, phase %d)\n", i+1, kind, ps.phase)
+		// Grids are named only in a graph that declares one, so a plan
+		// over one undeclared grid prints as it always has.
+		on := ""
+		if len(p.grids) > 1 {
+			on = fmt.Sprintf(", grid %d", ps.grid)
+		}
+		fmt.Fprintf(&b, "pass %d (%s, phase %d%s)\n", i+1, kind, ps.phase, on)
 		for _, v := range ps.sources {
 			if name, ok := p.inputOf[v]; ok {
 				fmt.Fprintf(&b, "  read  %s = input %q\n", p.labels[v], name)
