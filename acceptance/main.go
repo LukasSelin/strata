@@ -81,6 +81,29 @@ type rasterCase struct {
 	// A two-input terrain operation's second input, and its mask.
 	Weight     string `json:"weight,omitempty"`
 	WeightMask string `json:"weight_mask,omitempty"`
+	// A heat load case's options: the latitude in degrees, McCune and
+	// Keon's equation number (1 to 3), the fold for direct radiation
+	// rather than heat load, and the arithmetic scale.
+	Latitude  float64 `json:"latitude,omitempty"`
+	Equation  int     `json:"equation,omitempty"`
+	Radiation bool    `json:"radiation,omitempty"`
+	Linear    bool    `json:"linear,omitempty"`
+}
+
+// heatPoint is HeatLoad at one of the latitude, slope and aspect points
+// of McCune and Keon's test spreadsheet: the centre of a 5×5 DEM on unit
+// cells, z = t·row with t = tan(slope) for aspect 0 (falling towards
+// row 0, north) and -tan(slope) for aspect 180. The elevations are
+// written as they were passed, so a checker can see the plane it was
+// given.
+type heatPoint struct {
+	Latitude  float64   `json:"latitude"`
+	Slope     float64   `json:"slope"`
+	Aspect    float64   `json:"aspect"`
+	Equation  int       `json:"equation"`
+	Radiation bool      `json:"radiation"`
+	DEM       []float32 `json:"dem"`
+	Value     float32   `json:"value"`
 }
 
 type scalarCase struct {
@@ -100,6 +123,9 @@ type manifest struct {
 	Fill    float64      `json:"fill"`
 	Rasters []rasterCase `json:"rasters"`
 	Scalars []scalarCase `json:"scalars"`
+	// HeatPoints are check 15's: HeatLoad on planes at the points of
+	// McCune and Keon's test spreadsheet.
+	HeatPoints []heatPoint `json:"heat_points"`
 }
 
 var dir = flag.String("dir", "out", "directory for the generated files")
@@ -160,6 +186,7 @@ func run() error {
 	if err := runWeighted(&m, dems[2]); err != nil {
 		return err
 	}
+	runHeatPoints(&m)
 	if err := runResample(); err != nil {
 		return err
 	}
@@ -196,6 +223,7 @@ type op struct {
 	fit      int
 	weights  []float32
 	row, col []float32
+	heat     *terrain.HeatLoadOptions
 	plain    func(dst, dem raster.Float32Raster)
 	tiled    func(ctx context.Context, dst, dem raster.Float32Raster, eo engine.Options) error
 	chunked  func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error
@@ -291,6 +319,24 @@ func (d dem) ops() []op {
 		}
 	}
 
+	// heatLoad is McCune and Keon's heat load or radiation, named by what
+	// it computes so that check.py can find its options in the manifest.
+	heatLoad := func(name string, o terrain.HeatLoadOptions) op {
+		o.CellSize, o.CellSizeY = d.cellX, d.cellY
+		return op{
+			name:  name,
+			heat:  &o,
+			plain: func(dst, dm raster.Float32Raster) { terrain.HeatLoad(dst, dm, o) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.HeatLoadTiled(ctx, dst, dm, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.HeatLoadChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+	heatEq1 := terrain.HeatLoadOptions{CellSize: d.cellX, CellSizeY: d.cellY, Latitude: 45}
+
 	// surface runs terrain.Surface for all five products at once and
 	// emits one: check 12 requires each to be the standalone product's
 	// file bit for bit, so the multi-output pipeline is judged against
@@ -350,6 +396,8 @@ func (d dem) ops() []op {
 		{"ruggedness_roughness_r8", 8, terrain.RuggednessOptions{Type: terrain.RuggednessRoughness, Radius: 8}},
 		{"slope_deg_fit4", 4, terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees, FitRadius: 4}},
 		{"curvature_mean_fit1", 1, terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: terrain.CurvatureMean, FitRadius: 1}},
+		{"heatload_eq1", 0, heatEq1},
+		{"heatload_eq1_fit4", 4, func() terrain.HeatLoadOptions { o := heatEq1; o.FitRadius = 4; return o }()},
 	}
 	features := func(which int) op {
 		outs := func(dst, dm raster.Float32Raster) []terrain.Feature {
@@ -429,6 +477,14 @@ func (d dem) ops() []op {
 		curvature(terrain.CurvatureProfile, "profile"),
 		curvature(terrain.CurvaturePlan, "plan"),
 		curvature(terrain.CurvatureMean, "mean"),
+		// Heat load and direct radiation: Equation 1 in the north, the
+		// same with the radiation fold (sabotage.py swaps the two),
+		// Equation 3 in the south, and Equation 2 on the arithmetic scale.
+		heatLoad("heatload_eq1", heatEq1),
+		heatLoad("radiation_eq1", terrain.HeatLoadOptions{Latitude: 45, Radiation: true}),
+		heatLoad("heatload_eq3_south", terrain.HeatLoadOptions{Latitude: -33.5, Equation: terrain.HeatLoadEquation3}),
+		heatLoad("radiation_eq2_linear", terrain.HeatLoadOptions{Latitude: 52, Equation: terrain.HeatLoadEquation2,
+			Radiation: true, Linear: true}),
 	}
 	for _, r := range []int{1, 3, terrain.MaxRadius} {
 		ops = append(ops,
@@ -505,10 +561,59 @@ func (d dem) fitted(r int, ao terrain.AspectOptions, ho terrain.HillshadeOptions
 			},
 		})
 	}
+	heat := terrain.HeatLoadOptions{CellSize: d.cellX, CellSizeY: d.cellY, Latitude: 45, FitRadius: r}
+	ops = append(ops, op{
+		name:  "heatload_eq1" + sfx,
+		heat:  &heat,
+		plain: func(dst, dm raster.Float32Raster) { terrain.HeatLoad(dst, dm, heat) },
+		tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+			return terrain.HeatLoadTiled(ctx, dst, dm, heat, eo)
+		},
+		chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+			return terrain.HeatLoadChunked(ctx, dst, src, heat, eo)
+		},
+	})
 	for i := range ops {
 		ops[i].radius, ops[i].fit = r, r
 	}
 	return ops
+}
+
+// runHeatPoints runs HeatLoad at the latitude, slope and aspect points of
+// McCune and Keon's test spreadsheet (testrad.xls), for every equation
+// and both folds, north of the equator and mirrored south of it: at
+// latitude -L, aspect 180 − θ. By McCune's (2004) southern-hemisphere
+// rule those have the northern points' values, which check.py holds them
+// to.
+func runHeatPoints(m *manifest) {
+	for _, p := range [][3]float64{{40, 0, 0}, {40, 30, 0}, {40, 30, 180}, {60, 0, 0}, {60, 30, 0}, {60, 30, 180}} {
+		for _, south := range []bool{false, true} {
+			lat, slope, aspect := p[0], p[1], p[2]
+			if south {
+				lat, aspect = -lat, 180-aspect
+			}
+			t := math.Tan(slope * math.Pi / 180)
+			if aspect == 180 {
+				t = -t
+			}
+			z := make([]float32, 25)
+			for y := range 5 {
+				for x := range 5 {
+					z[y*5+x] = float32(t * float64(y))
+				}
+			}
+			dem := raster.NewFloat32(5, 5, z)
+			for eq := range 3 {
+				for _, radiation := range []bool{false, true} {
+					dst := raster.NewFloat32Like(dem)
+					terrain.HeatLoad(dst, dem, terrain.HeatLoadOptions{CellSize: 1, Latitude: lat,
+						Equation: terrain.HeatLoadEquation(eq), Radiation: radiation})
+					m.HeatPoints = append(m.HeatPoints, heatPoint{Latitude: lat, Slope: slope, Aspect: aspect,
+						Equation: eq + 1, Radiation: radiation, DEM: z, Value: dst.Data[dst.Index(2, 2)]})
+				}
+			}
+		}
+	}
 }
 
 // focalOps are the focal operations, with weights and taps that are
@@ -678,6 +783,10 @@ func (d dem) emit(m *manifest, o op, form string, r raster.Float32Raster) error 
 		Weights:   o.weights,
 		Row:       o.row,
 		Col:       o.col,
+	}
+	if o.heat != nil {
+		c.Latitude, c.Equation = o.heat.Latitude, int(o.heat.Equation)+1
+		c.Radiation, c.Linear = o.heat.Radiation, o.heat.Linear
 	}
 	if d.r.Valid != nil {
 		c.DEMMask = d.name + ".mask.u8"

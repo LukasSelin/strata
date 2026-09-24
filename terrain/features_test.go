@@ -186,11 +186,17 @@ func featureCases() []featureCase {
 	fslope.FitRadius, fcurv.FitRadius = 2, 3
 	faspect, fshade := aspect, shade
 	faspect.FitRadius, fshade.FitRadius = 1, 4
+	// Heat load, Horn's and fitted, north and south, after the fit.
+	heat := HeatLoadOptions{CellSize: cs, CellSizeY: csy, Latitude: 47}
+	fheat := HeatLoadOptions{CellSize: cs, CellSizeY: csy, FitRadius: 3, Latitude: -33,
+		Equation: HeatLoadEquation3, Radiation: true, Linear: true}
 	return append(cases,
 		featureCase{fslope, func(d, m raster.Float32Raster) { Slope(d, m, fslope) }},
 		featureCase{fcurv, func(d, m raster.Float32Raster) { Curvature(d, m, fcurv) }},
 		featureCase{faspect, func(d, m raster.Float32Raster) { Aspect(d, m, faspect) }},
 		featureCase{fshade, func(d, m raster.Float32Raster) { Hillshade(d, m, fshade) }},
+		featureCase{heat, func(d, m raster.Float32Raster) { HeatLoad(d, m, heat) }},
+		featureCase{fheat, func(d, m raster.Float32Raster) { HeatLoad(d, m, fheat) }},
 	)
 }
 
@@ -212,6 +218,7 @@ func TestFeaturesAreTheStandaloneProducts(t *testing.T) {
 		{12, 0, 13, 8, 15, 2}, // mixed radii, out of order
 		{5, 5},                // one operation twice
 		{16, 0, 17, 13},       // fitted slope and curvature next to Horn's and ruggedness
+		{20, 0, 21, 6},        // heat load, Horn's and fitted, next to slope and TRI
 		func() []int { // everything
 			all := make([]int, len(cases))
 			for i := range all {

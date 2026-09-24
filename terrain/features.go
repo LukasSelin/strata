@@ -10,9 +10,9 @@ import (
 )
 
 // FeatureOp is the operation behind one output of Features. It is one of
-// SlopeOptions, AspectOptions, HillshadeOptions, CurvatureOptions and
-// RuggednessOptions, each meaning what it means to its own function; no
-// other type can implement it.
+// SlopeOptions, AspectOptions, HillshadeOptions, HeatLoadOptions,
+// CurvatureOptions and RuggednessOptions, each meaning what it means to
+// its own function; no other type can implement it.
 type FeatureOp interface {
 	featureKernel() exec.Kernel
 }
@@ -20,6 +20,7 @@ type FeatureOp interface {
 func (o SlopeOptions) featureKernel() exec.Kernel      { return slopeOp(o) }
 func (o AspectOptions) featureKernel() exec.Kernel     { return aspectOp(o) }
 func (o HillshadeOptions) featureKernel() exec.Kernel  { return hillshadeOp(o) }
+func (o HeatLoadOptions) featureKernel() exec.Kernel   { return heatLoadOp(o) }
 func (o CurvatureOptions) featureKernel() exec.Kernel  { return curvatureOp(o) }
 func (o RuggednessOptions) featureKernel() exec.Kernel { return newRuggednessKernel(o) }
 
@@ -37,8 +38,8 @@ type FeatureSink struct {
 }
 
 // Features computes several terrain features of one DEM in one pass over
-// it: any mix of Slope, Aspect, Hillshade, Curvature and Ruggedness,
-// each with its own options, so the same measure can be taken at several
+// it: any mix of Slope, Aspect, Hillshade, HeatLoad, Curvature and
+// Ruggedness, each with its own options, so the same measure can be taken at several
 // window sizes: RuggednessOptions.Radius for the ruggedness measures, and
 // FitRadius for the derivatives.
 // This is the shape of a feature stack for a model or a geomorphometric

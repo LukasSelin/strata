@@ -90,6 +90,20 @@ func BenchmarkHillshade(b *testing.B) {
 	benchShade(b, func(dst, dem raster.Float32Raster) { Hillshade(dst, dem, HillshadeOptions{CellSize: 10}) })
 }
 
+// BenchmarkHeatLoad is BenchmarkAspect for HeatLoad, Equation 1 and on
+// the arithmetic scale (with its exp). Its equation is scalar float64 on
+// every build; "simd" is the SIMD Horn gradient under it.
+//
+//	GOEXPERIMENT=simd go test -run - -bench HeatLoad ./terrain
+func BenchmarkHeatLoad(b *testing.B) {
+	for _, linear := range []bool{false, true} {
+		b.Run(fmt.Sprintf("linear=%v", linear), func(b *testing.B) {
+			o := HeatLoadOptions{CellSize: 10, Latitude: 45, Linear: linear}
+			benchShade(b, func(dst, dem raster.Float32Raster) { HeatLoad(dst, dem, o) })
+		})
+	}
+}
+
 // BenchmarkCurvature is BenchmarkAspect for each kind of Curvature.
 //
 //	GOEXPERIMENT=simd go test -run - -bench Curvature ./terrain

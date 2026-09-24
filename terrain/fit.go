@@ -77,12 +77,14 @@ const (
 	fitSlope
 	fitAspect
 	fitHillshade
+	fitHeatLoad
 	fitCurvature
 )
 
 // fitKernel computes a product of the quadratic fit: the gradient
 // (p, q) through the same from-gradient kernels Surface finishes Horn's
 // gradient with, or a curvature through ZT's curvature formulas.
+// HeatLoad is a from-gradient product too.
 type fitKernel struct {
 	fit     woodFit
 	product fitProduct
@@ -93,6 +95,7 @@ type fitKernel struct {
 	c       float32 // hillshade
 	bx, by  float32
 	curv    stencil.CurvatureKind
+	heat    stencil.HeatLoadTerms
 }
 
 func (k fitKernel) Radius() int { return k.fit.r }
@@ -148,6 +151,8 @@ func (k fitKernel) Process(dst exec.Span, src exec.Window) {
 				stencil.AspectFromGradientRow(out, pp, qq, k.flat, k.trig)
 			case fitHillshade:
 				stencil.HillshadeFromGradientRow(out, pp, qq, k.c, k.bx, k.by)
+			case fitHeatLoad:
+				stencil.HeatLoadFromGradientRow(out, pp, qq, k.heat)
 			default:
 				ct := colT2[:cols]
 				focalrow.ColumnCorrelate(ct, win, dem.Stride, f.t2)
