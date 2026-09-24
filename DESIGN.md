@@ -512,6 +512,8 @@ internal/vec/                      internal/stencil/
                                    └── simd_arm64.go
 ```
 
+- `internal/vec`'s fill-value test (§31) is `validity.go` (scalar and
+  dispatch) beside `validity_amd64.go` and `validity_arm64.go`.
 - `internal/accum` has the same pair, with the block loop they share in
   `blocks.go`, and so has `internal/focalrow` (§53), after a scalar
   `focalrow.go`. There is no `simd.go` (portable SIMD), per §14.
@@ -1587,6 +1589,55 @@ more on the 3×3 slope. Sentinel values cost 14–25% more. Only the bitmap
 has none of the correctness hazards of the other two, and it works
 unchanged for integer data.
 
+### Rules 4 and 5 at the file boundary
+
+Rule 5 puts a comparison in front of every read from a file with a fill
+value, and rule 4 makes a mask of all ones work nobody needs. Both are
+IO costs, not kernel costs, and until 2026-09 the raw path paid them in
+full: deriving the mask was 26% of a one-worker slope from a raw file,
+more than the slope kernel.
+
+- **The comparison is a kernel.** `vec.ValidBits(dst, src, fill)`
+  writes a row's mask words straight from its cells. On AVX2, VCMPPS
+  and VMOVMSKPS give eight bits per compare. NEON has no movemask, so
+  it ANDs each compare's lanes with their bit weights and sums them with
+  two pairwise adds. The scalar form tests the cells' bits as integers,
+  eight at a time. All three follow `RawOptions` exactly: `==` as floats,
+  so −0 matches 0, and any NaN for a NaN fill (`TestValidBits`,
+  `FuzzValidBits`, and `TestRawValidityWide` on both backends).
+  `RawSource` calls it once per read call of consecutive rows. Only a
+  row's partial first and last words are merged bit by bit, through
+  `vec.ValidWord`, which returns a word so that no scratch escapes to
+  the heap. `RawSink` skips all-valid words of the mask with one compare
+  each. cog is a separate module that cannot import `internal/vec`, so
+  it keeps its own tests for GDAL's rules in `cog/internal/kern`. Its
+  blocks' mask buffers come from a pool, so a block found all valid
+  costs no allocation.
+- **Rule 4, per tile.** `Masked` describes a whole source, and a source
+  with a fill value is masked everywhere, even where no cell holds the
+  fill. So after a tile is read, `ProcessChunked` and `ReduceChunked`
+  check each masked buffer's bits, halo included, and drop the mask of
+  any buffer whose cells are all valid. That tile then runs as if the
+  source were unmasked: interior validity is filled, not eroded or
+  ANDed, and a fold takes its unmasked path without calling
+  `ValidBits`. The output cannot change. An erosion or AND of all-ones
+  masks is all ones, and a reduction returns the same value whichever
+  path folds it (§49). `TestChunkedAllValidTiles` holds every kind of
+  kernel to the plain function over masks whose invalid cells are
+  clustered. The check lives in the engine, not in a new source method,
+  so memory and cog sources benefit too. It reads 1/32 of the tile's
+  cell bytes and stops at the first invalid cell. `resample`'s chunked
+  driver does not do this yet.
+
+Measured on the benchmark window (benchmarks/gdalsuite/RESULTS.md,
+2026-09-24), one worker from a raw float32 file: slope 0.88 s → 0.64 s,
+stats 0.51 s → 0.31 s and minmax 0.40 s → 0.18 s. Slope's gain is all
+the vector test. For the reductions, turning the per-tile check off
+costs minmax 11% and stats 3%. benchmarks/chunked's masked strips, whose
+10% invalid cells are scattered so that no tile is all valid, run
+1.7–2.1× faster with SIMD kernels and 1.15–1.46× with scalar ones. The
+outputs are unchanged, byte for byte.
+
 ## 32. Point-Cloud to Raster Workflows
 
 Crossing representations — rasterizing point batches into a DEM or a
@@ -2085,7 +2136,8 @@ strata/
 │   └── stats.go               Stats, the traffic counter (§51)
 │
 ├── internal/
-│   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
+│   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go,
+│   │                           validity.go (+ _amd64, _arm64: fill values to masks, §31)
 │   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, rugged.go,
 │   │                           mask.go, simd_amd64.go, simd_arm64.go
 │   ├── focalrow/              implemented (§53): focalrow.go (scalar, dispatch),

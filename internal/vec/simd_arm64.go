@@ -38,6 +38,7 @@ func init() {
 		reduceMin: reduceMinFloat32NEON,
 		reduceMax: reduceMaxFloat32NEON,
 		chain:     chainFloat32NEON,
+		validBits: validBitsNEON,
 	}
 	simdName = "neon"
 	UseScalar(false)

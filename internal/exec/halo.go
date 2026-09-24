@@ -158,7 +158,7 @@ func (e *job) erodedValidity(wk *worker, w, h int) {
 	}
 	first := wk.dstViews[0]
 	stencil.ErodeBox(stencil.MaskRegion{Bits: first.Valid, Off: first.ValidOffset, Stride: first.Stride},
-		wk.regions, w, h, e.r, wk.scratch)
+		wk.regions[:len(e.masked)], w, h, e.r, wk.scratch)
 	for _, d := range wk.dstViews[1:] {
 		for y := range h {
 			raster.MaskCopyRange(d.Valid, d.ValidOffset+y*d.Stride,

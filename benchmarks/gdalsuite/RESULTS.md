@@ -110,6 +110,69 @@ baseline for the others. Rerun with `BASELINE=` pointing at the
 committed timings and `summarize.py` adds a "since" table, per
 operation and tier.
 
+## Validity from a fill value (2026-09-24)
+
+A CPU profile of the one-worker raw flow put 26% of slope's time in
+deriving the validity mask from the file's NoData value: a branchy test
+per cell, then a range copy per 64 cells. That was more than the slope
+kernel itself. The change (DESIGN.md §31, "Rules 4 and 5 at the file
+boundary") has three parts: a vector kernel that writes mask words
+straight from the cells, `vec.ValidBits`; a per-tile rule that drops
+the mask of a tile whose cells are all valid; and a pooled mask buffer
+in cog. The same window was timed on master (8ad43da) and on the change,
+`OPS="slope stats minmax" TIERS="raw cog"`, 5 runs per case, one run
+after the other.
+
+| strata, one worker unless noted | committed run (3ed48ad) | master (8ad43da) | this change | against the committed run |
+|---|---:|---:|---:|---:|
+| slope, raw file to file | 0.883 s | 0.929 s | **0.635 s** | **0.72×** |
+| stats, raw file | 0.508 s | 0.520 s | **0.307 s** | **0.60×** |
+| minmax, raw file | 0.397 s | 0.520 s ⚠ | **0.179 s** | **0.45×** |
+| slope, raw, scalar build | 1.739 s | 1.741 s | 1.646 s | 0.95× |
+| stats, raw, scalar build | 1.121 s | 1.122 s | 1.077 s | 0.96× |
+| minmax, raw, scalar build | 0.589 s | 0.606 s | 0.566 s | 0.96× |
+| slope, raw, 12 workers | 0.435 s | 0.577 s ⚠ | 0.436 s | 1.00× |
+| slope, whole flow from the COG | 2.247 s | 1.522 s ⚠ | 1.472 s | (0.97× master) |
+| stats, whole flow from the COG | 1.895 s | 1.132 s | 1.180 s | (1.04× master) |
+| minmax, whole flow from the COG | 1.756 s | 1.133 s ⚠ | 0.994 s | (0.88× master) |
+
+- **The one-worker raw flow is 28–55% faster**: slope 28%, stats 40%,
+  minmax 55%. The raw path did not change between the committed run and
+  master, and master's own run was noisy (⚠: spreads of 49–77% on the
+  marked cases, with the machine in use), so the committed run is the
+  better baseline for the raw rows. In a profile of slope, the source's
+  validity fell from 0.19 s a run to 4 ms (natively on Windows, window at (0, 0)). What remains is file IO
+  (about 0.37 s) and the kernel.
+- **Only the SIMD build gains much.** In the scalar build (a plain `go
+  build`) the old per-cell branches predicted well on data that is
+  mostly valid. An integer form of the test, eight cells at a time, is
+  1.4–1.8× their speed in isolation, and 4–5% end to end.
+- **Twelve workers do not move.** Raw slope on 12 workers is bound by
+  the file and memory traffic of the tile copies (../chunked/), not by
+  the test.
+- **From the COG, little changes.** #49 already moved cog's NoData test
+  into AVX2 row kernels, so what is left is the mask allocation per
+  block, now pooled (about 10 MB a run less garbage), and the all-valid
+  tiles. Those tiles pay mostly for the reductions: minmax is 12% faster
+  than master. The COG columns against the committed run are #49's
+  gain, not this change's.
+- **The answers did not move.** slope from the COG on 12 workers was
+  byte-identical to slope from the raw file on one, in both runs, and
+  the two runs' agree lines against GDAL are equal. Separately, the
+  change's slope output was byte-identical to master's for raw and COG
+  input, on 1 and 12 workers (SHA-256 of the output file, window at
+  (0, 0)).
+- **The all-valid tiles matter less here than they could.** In the
+  window at (0, 0), 30 of the 44 strips of 256 rows hold NoData, even
+  with their one-row halos, and so do 50 of 484 COG blocks. NoData here
+  is lakes, scattered through the raster. Measured by switching the
+  per-tile check off, the check gives minmax 11% and stats 3% on the
+  raw flow, and nothing measurable on slope. The vector test accounts
+  for the rest.
+
+Raw output: [`testdata/validity-master.txt`](testdata/validity-master.txt)
+and [`testdata/validity-branch.txt`](testdata/validity-branch.txt).
+
 ## Machine and method
 
 | | |

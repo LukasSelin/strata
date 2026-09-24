@@ -51,12 +51,14 @@ func newBlock(w, rows int) *block {
 
 func (b *block) hold() { b.refs.Add(1) }
 
-// release gives back one reference, and the cells' buffer with the last.
+// release gives back one reference, and the cells' and validity's
+// buffers with the last.
 func (b *block) release() {
 	switch n := b.refs.Add(-1); {
 	case n == 0:
 		putVals(b.vals)
-		b.vals = nil
+		putValid(b.valid)
+		b.vals, b.valid = nil, nil
 	case n < 0:
 		panic("cog: a block released more often than it was held")
 	}
@@ -85,6 +87,36 @@ func getVals(n int) []float32 {
 func putVals(v []float32) {
 	if cap(v) > 0 {
 		valsPool.Put(&v)
+	}
+}
+
+// validPool holds the validity buffers of released blocks, and of blocks
+// found all valid, which keep none: without it every masked block cost a
+// new mask, garbage as soon as the block was found all valid or evicted.
+var validPool sync.Pool // of *[]uint64
+
+// getValid returns a buffer for the validity of n cells. Its words are
+// not cleared: the caller writes every one, or clears it (poisoned in
+// tests, as getVals's cells are).
+func getValid(n int) []uint64 {
+	words := raster.MaskWords(n)
+	var v []uint64
+	if p, ok := validPool.Get().(*[]uint64); ok && cap(*p) >= words {
+		v = (*p)[:words]
+	} else {
+		v = make([]uint64, words)
+	}
+	if poisonVals {
+		for i := range v {
+			v[i] = 0x5a5a_dead_beef_a5a5
+		}
+	}
+	return v
+}
+
+func putValid(v []uint64) {
+	if cap(v) > 0 {
+		validPool.Put(&v)
 	}
 }
 
@@ -207,7 +239,8 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		b := newBlock(im.blockW, rows)
 		clear(b.vals)
 		if nd.set {
-			b.valid = make([]uint64, raster.MaskWords(n)) // all invalid
+			b.valid = getValid(n)
+			clear(b.valid) // all invalid
 		}
 		return b, nil
 	}
@@ -344,7 +377,8 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	if im.bits == 1 {
 		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
 		if nd.set && anyEqual(b.vals, float32(nd.cmp)) {
-			b.valid = make([]uint64, raster.MaskWords(n))
+			b.valid = getValid(n)
+			clear(b.valid)
 			for i, v := range b.vals {
 				if v != float32(nd.cmp) {
 					b.valid[i>>6] |= 1 << uint(i&63)
@@ -363,7 +397,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	}
 	anyInvalid := convert(b.vals, data, im.format, im.bits, spb, first, nd, nil)
 	if anyInvalid {
-		b.valid = make([]uint64, raster.MaskWords(n))
+		b.valid = getValid(n) // convert writes every word
 		convert(b.vals, data, im.format, im.bits, spb, first, nd, b.valid)
 	}
 	return b, nil

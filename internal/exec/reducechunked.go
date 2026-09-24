@@ -75,6 +75,8 @@ type reduceChunkJob struct {
 	tilesX, tiles int
 
 	src []engine.RasterSource
+	// masked lists the Masked sources.
+	masked []int
 
 	workers []reduceChunkWorker
 }
@@ -93,6 +95,9 @@ type reduceChunkWorker struct {
 	// worker. Its own worker holds this worker's fold counters; stats
 	// here holds what crossed the source interface.
 	t reduceJob
+	// live holds the masked sources whose current tile has an invalid
+	// cell, with room for all of them (unmaskAllValid).
+	live []int
 	// stats counts the bytes this worker's tiles read from sources.
 	// Padded like reduceSlot.
 	stats engine.Stats
@@ -118,6 +123,7 @@ func newReduceChunkJob(src []engine.RasterSource, opts engine.Options) *reduceCh
 			masked = append(masked, j)
 		}
 	}
+	c.masked = masked
 
 	c.workers = make([]reduceChunkWorker, workerCount(opts.Workers, c.tiles))
 	for i := range c.workers {
@@ -151,6 +157,7 @@ func newReduceChunkJob(src []engine.RasterSource, opts engine.Options) *reduceCh
 		t := &wk.t
 		t.src = views[nin:]
 		t.masked = masked
+		wk.live = make([]int, 0, len(masked))
 		t.allocReduceWorkers(1)
 	}
 	return c
@@ -204,6 +211,8 @@ func foldTile[P any](ctx context.Context, c *reduceChunkJob, wk *reduceChunkWork
 		}
 		t.src[j] = v
 	}
+	// A tile whose masked sources are all valid folds as an unmasked one.
+	t.masked = unmaskAllValid(t.src, c.masked, wk.live)
 	t.ox, t.oy = x0, y0
 	t.plan = newPlan(x1-x0, y1-y0, 0, 0)
 	for b := range t.plan.bands {
