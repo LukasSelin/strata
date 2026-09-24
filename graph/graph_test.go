@@ -172,6 +172,53 @@ func TestTerrainStack(t *testing.T) {
 	}
 }
 
+// TestMultiScaleStack is the same measures at several scales of one DEM:
+// slope, aspect and hillshade from the quadratic fit over 7×7, which
+// share that fit's gradient, next to Horn's slope, which must not share
+// it, a slope from the fit over 11×11, which is its gradient's only
+// reader and so runs the standalone kernel, a fitted curvature and TPI at
+// two radii, from one pass.
+func TestMultiScaleStack(t *testing.T) {
+	sl := terrain.SlopeOptions{CellSize: 12.5, CellSizeY: 9, Units: terrain.SlopePercent}
+	fsl, fas, fhs := sl, terrain.AspectOptions{CellSize: 12.5, CellSizeY: 9}, terrain.HillshadeOptions{CellSize: 12.5, CellSizeY: 9}
+	fsl.FitRadius, fas.FitRadius, fhs.FitRadius = 3, 3, 3
+	lone := sl
+	lone.FitRadius = 5
+	cu := terrain.CurvatureOptions{CellSize: 12.5, CellSizeY: 9, Type: terrain.CurvaturePlan, FitRadius: 2}
+	tpi1 := terrain.RuggednessOptions{Type: terrain.RuggednessTPI}
+	tpi5 := terrain.RuggednessOptions{Type: terrain.RuggednessTPI, Radius: 5}
+	g := New()
+	dem := g.Input("dem")
+	g.Output("slope", Slope(dem, sl))
+	g.Output("slope7", Slope(dem, fsl))
+	g.Output("aspect7", Aspect(dem, fas))
+	g.Output("hillshade7", Hillshade(dem, fhs))
+	g.Output("slope11", Slope(dem, lone))
+	g.Output("curvature5", Curvature(dem, cu))
+	g.Output("tpi3", Ruggedness(dem, tpi1))
+	g.Output("tpi11", Ruggedness(dem, tpi5))
+	p := g.Plan(PlanOptions{})
+	if s := p.String(); len(p.passes) != 1 || strings.Count(s, "is computed once for every product") != 1 {
+		t.Fatalf("want one pass, and the fitted products sharing one gradient that Horn's slope does not read:\n%v", s)
+	}
+	for _, masked := range []bool{false, true} {
+		d := operand(rand.New(rand.NewPCG(5, 6)), 800, masked)
+		want := map[string]raster.Float32Raster{}
+		for _, name := range []string{"slope", "slope7", "aspect7", "hillshade7", "slope11", "curvature5", "tpi3", "tpi11"} {
+			want[name] = blank(masked)
+		}
+		terrain.Slope(want["slope"], d, sl)
+		terrain.Slope(want["slope7"], d, fsl)
+		terrain.Aspect(want["aspect7"], d, fas)
+		terrain.Hillshade(want["hillshade7"], d, fhs)
+		terrain.Slope(want["slope11"], d, lone)
+		terrain.Curvature(want["curvature5"], d, cu)
+		terrain.Ruggedness(want["tpi3"], d, tpi1)
+		terrain.Ruggedness(want["tpi11"], d, tpi5)
+		check(t, "multi-scale stack", p, map[string]raster.Float32Raster{"dem": d}, want, nil, masked)
+	}
+}
+
 // TestLoneProductRunsItsOwnKernel checks the gradient rewrite: a product
 // that is its gradient's only reader runs the standalone kernel, with no
 // gradient stage.

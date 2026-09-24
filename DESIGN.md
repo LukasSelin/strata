@@ -806,6 +806,12 @@ r = 1 the fit is Evans's 3×3 method and not Horn's: `FitRadius: 1` and
 - **Stack buffers, not scratch.** The column and derivative rows are
   blocks of 256 cells on the stack, as for roughness, so a fitted
   product can be a `Features` or `Surface` stage.
+- **The planner follows (§55).** `graph.Slope`, `Aspect` and `Hillshade`
+  pass `FitRadius` to the gradient node they share, so fitted products
+  of one radius share the fit's gradient and never Horn's, and
+  `terrain/opkernel.go` registers the kernels that honour `FitRadius`.
+  Before this, a graph given `FitRadius` would have run Horn's kernel
+  without a word. `TestMultiScaleStack` fails if either half is undone.
 - **Small refactors, no changed bits.** Each product's options are now
   resolved by one helper (`slopeScale`, `aspectFlat`, `hillshadeLight`,
   `curvatureKind`) that the Horn kernels, the fit and `Surface` share.
