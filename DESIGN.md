@@ -1644,15 +1644,25 @@ every file but one costs exactly one prefetch plus one request per stored
 block past it, pixel-interleaved ones included: 8,344 requests and
 165.7 MiB for 165.7 MiB of files, where one fetch per band had cost
 10,814 and 217.0 MiB (`acceptance/coghttpcheck.sh`). Its speed against
-GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
-on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
-Go's inflate, is most of the gap), yet slope over a COG still beats
-`gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Since then the default block cache holds 8 rows of blocks
-(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
-read allocates about its cache rather than its size, and 8- and 16-bit
-integers convert without a float64 detour (UInt16 reads 1.4–1.9×
-faster). Open: writing (a COG sink), internal masks.
+GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md).
+The default block cache holds 8 rows of blocks (64 MiB to 1 GiB), decoded
+blocks' buffers are reused once released, so a read allocates about its
+cache rather than its size, and 8- and 16-bit integers convert without a
+float64 detour (UInt16 reads 1.4–1.9× faster). Deflate is inflated a
+block at a time by the module's own inflater, and the per-row work
+(undoing the predictors, converting rows to float32, the NoData test) is
+in `cog/internal/kern`: kernels with a scalar form in every build and
+AVX2 and NEON forms in `GOEXPERIMENT=simd` builds, held bit for bit to
+the scalar ones, as in `internal/vec` (§14; the cog module cannot import
+strata's internal packages, so it has its own). The floating-point
+predictor sums a float32 row's four byte planes side by side in one pass
+and interleaves them into samples, and costs about 96 ms of a 127M-cell
+one-core read (it was 37–54% of the first reader's). With them, on one
+core, strata reads a predictor-3 float32 COG about as fast as GDAL (ZSTD
+a tie, Deflate 1.17× behind; LZW, whose decoder is a dependency, 1.5×
+behind; uncompressed 1.37× ahead), and slope over a COG beats `gdaldem
+slope` on the same file by 1.9–3.1×, and by 6.0–7.9× on 12 workers.
+Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 
@@ -2120,7 +2130,9 @@ strata/
 │   ├── geo.go                 GeoKeys: geotransform, PixelIsPoint, EPSG code
 │   ├── decode.go              decompression, predictors, float32 and validity
 │   ├── cache.go               byte-bounded LRU of decoded blocks
-│   └── source.go              Open, File, Source (an engine.RasterSource)
+│   ├── source.go              Open, File, Source (an engine.RasterSource)
+│   └── internal/kern/         row kernels: predictors, conversion, NoData test
+│                              (scalar; AVX2 and NEON in GOEXPERIMENT=simd)
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)

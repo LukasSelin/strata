@@ -600,18 +600,15 @@ func horizontalRow(row []byte, size, stride int) {
 // are stored as planes, most significant first. It leaves the samples
 // little-endian.
 //
-// It is the hottest loop in reading a float COG, so the differencing is
-// undone straight into tmp, one byte a step with the running sum in a
-// register when stride is 1, and four-byte samples are reassembled from
-// their planes a whole sample at a time.
+// The usual float COG, one band of float32, never comes here: decodeBlock
+// hands its rows to kern.PlanesRow. For the rest, the differencing is
+// undone into tmp, by kern.SumBytes when stride is 1, and four-byte
+// samples are reassembled from their planes a whole sample at a time.
 func floatPredictorRow(row, tmp []byte, size, stride int) {
 	tmp = tmp[:len(row)]
 	if stride == 1 {
-		var acc byte
-		for i, b := range row {
-			acc += b
-			tmp[i] = acc
-		}
+		copy(tmp, row)
+		kern.SumBytes(tmp)
 	} else {
 		copy(tmp, row[:min(stride, len(row))])
 		for i := stride; i < len(row); i++ {
@@ -711,24 +708,12 @@ func realEqualRun32(b float32) (lo uint32, span uint64, ok bool) {
 // intRow writes one row of single-band little-endian integer samples of
 // the given width and signedness to vals, undoing horizontal differencing
 // first if pred: each sample is then the wrapping sum of those before it.
+// It may use row as scratch.
 func intRow(vals []float32, row []byte, bits int, signed, pred bool) {
 	le := binary.LittleEndian
 	switch {
 	case bits == 8:
-		row = row[:len(vals)]
-		var acc byte
-		for i, v := range row {
-			if pred {
-				acc += v
-			} else {
-				acc = v
-			}
-			if signed {
-				vals[i] = float32(int8(acc)) // #nosec G115 -- reinterpreting the bits is the point
-			} else {
-				vals[i] = float32(acc)
-			}
-		}
+		kern.Uint8Row(vals, row, signed, pred)
 	case pred:
 		row = row[:2*len(vals)]
 		var acc uint16

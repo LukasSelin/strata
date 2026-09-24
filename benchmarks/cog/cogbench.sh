@@ -41,7 +41,9 @@ ROOT=$(cd "$HERE/../.." && pwd)
 OUT="$HERE/out"
 mkdir -p "$OUT"
 
-# Docker needs Windows-style paths and no MSYS path mangling.
+# Docker needs Windows-style paths and no MSYS path mangling, and a
+# Windows checkout may give runbench.sh CRLF line ends, which the
+# container strips before running it (as ../gdalsuite does).
 win() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
 SRC_DIR=$(win "$(cd "$(dirname "$SRC")" && pwd)")
 SRC_NAME=$(basename "$SRC")
@@ -70,7 +72,8 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -e WORK=/work -e OUT=/out -e SRC="/in/$SRC_NAME" \
   -e XOFF="$XOFF" -e YOFF="$YOFF" -e W="$WIDTH" -e H="$HEIGHT" \
   -e REPEATS="$REPEATS" -e CACHE_REPEATS="$CACHE_REPEATS" -e TILE="$TILE" -e N="$N" \
-  "$IMAGE" bash /runbench.sh | tee "$OUT/timings.txt"
+  "$IMAGE" bash -c "tr -d '\r' </runbench.sh >/tmp/runbench.sh && bash /tmp/runbench.sh" |
+  tee "$OUT/timings.txt"
 
 echo
 python "$HERE/summarize.py" "$OUT/timings.txt" "$WIDTH" "$HEIGHT" | tee "$OUT/summary.md"
