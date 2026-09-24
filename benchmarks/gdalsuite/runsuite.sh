@@ -335,7 +335,9 @@ done
 # stratasuite process each, one after another. Prints one run=0 line,
 # the sum of the processes' in-process times.
 separate_strata() {
-  local wf=$1 n=$2 kind=$3 f=$4 p ms total=0
+  # SARGS is local: strata_args would otherwise overwrite the caller's,
+  # and the fused case after this one would run the last product alone.
+  local wf=$1 n=$2 kind=$3 f=$4 p ms total=0 SARGS
   for p in $(products "$wf"); do
     strata_args "$p" "$kind" "$f" -
     GOMAXPROCS="$n" ./stratasuite -mode chunked -workers "$n" "${SARGS[@]}" >/tmp/sep-out 2>&1 ||
@@ -382,8 +384,8 @@ workflow() {
   if has_tier raw; then
     whole_process "tier=raw op=$wf tool=gdal cfg=envi threads=1" separate_gdal "$wf" dem.raw ENVI raw 1
     whole_process "tier=raw op=$wf tool=gdal cfg=gtiff threads=1" separate_gdal "$wf" dem.tif GTiff tif 1
-    strata_args "$wf" raw dem.raw -
     for n in 1 "$N"; do
+      strata_args "$wf" raw dem.raw -
       whole_process "tier=raw op=$wf tool=strata cfg=fused threads=$n" \
         env GOMAXPROCS="$n" ./stratasuite -mode chunked -workers "$n" "${SARGS[@]}"
       whole_process "tier=raw op=$wf tool=strata cfg=separate threads=$n" \
@@ -392,8 +394,8 @@ workflow() {
   fi
 
   if has_tier cog; then
-    strata_args "$wf" cog dem-cog.tif -
     for n in 1 "$N"; do
+      strata_args "$wf" cog dem-cog.tif -
       whole_process "tier=cog op=$wf tool=gdal cfg=to-gtiff threads=$n" \
         separate_gdal "$wf" dem-cog.tif GTiff tif "$n"
       whole_process "tier=cog op=$wf tool=gdal cfg=to-envi threads=$n" \
