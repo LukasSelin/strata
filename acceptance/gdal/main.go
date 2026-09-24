@@ -155,6 +155,57 @@ func run() error {
 		fmt.Printf("%-10s plain %7.0f ms, chunked %7.0f ms, identical -> %s\n",
 			j.name, plainMS, chunkedMS, filepath.Base(outPath))
 	}
+	return weightedSlope(ctx, w, h, dem, in, so, inOpts, outOpts)
+}
+
+// weightedSlope runs terrain.WeightedSlope of the DEM times weight.raw,
+// which gdalcheck.sh wrote with NoData -9999, plain and chunked, and
+// writes strata-wslope.raw.
+func weightedSlope(ctx context.Context, w, h int, dem raster.Float32Raster, in *engine.RawFile,
+	so terrain.SlopeOptions, inOpts, outOpts engine.RawOptions) error {
+	wOpts := engine.RawOptions{Fill: outFill, HasFill: true}
+	wf, err := engine.OpenRawFile(filepath.Join(*dir, "weight.raw"), os.O_RDONLY, 0, 0)
+	if err != nil {
+		return err
+	}
+	defer wf.Close()
+	weight := masked(w, h)
+	if err := engine.NewRawSource(wf, w, h, wOpts).ReadWindow(ctx, weight, 0, 0); err != nil {
+		return err
+	}
+
+	plain := raster.NewFloat32Like(dem)
+	t0 := time.Now()
+	terrain.WeightedSlope(plain, dem, weight, so)
+	plainMS := time.Since(t0).Seconds() * 1000
+
+	outPath := filepath.Join(*dir, "strata-wslope.raw")
+	out, err := engine.OpenRawFile(outPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, 0)
+	if err != nil {
+		return err
+	}
+	t0 = time.Now()
+	err = terrain.WeightedSlopeChunked(ctx, engine.NewRawSink(out, w, h, outOpts),
+		engine.NewRawSource(in, w, h, inOpts), engine.NewRawSource(wf, w, h, wOpts), so,
+		engine.Options{TileHeight: *tile})
+	if err != nil {
+		out.Close()
+		return err
+	}
+	chunkedMS := time.Since(t0).Seconds() * 1000
+	back := masked(w, h)
+	if err := engine.NewRawSource(out, w, h, outOpts).ReadWindow(ctx, back, 0, 0); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := sameBits(plain, back); err != nil {
+		return fmt.Errorf("wslope: plain and chunked disagree: %w", err)
+	}
+	fmt.Printf("%-10s plain %7.0f ms, chunked %7.0f ms, identical -> %s\n",
+		"wslope", plainMS, chunkedMS, filepath.Base(outPath))
 	return nil
 }
 

@@ -8,7 +8,8 @@
 #   ./gdalcheck.sh "C:/Users/you/Downloads/dem.tif" 0 6127 4096
 #
 # It extracts a window, runs gdaldem slope/aspect/hillshade and the four
-# ruggedness modes (TRI, TRI -alg Wilson, TPI, roughness) on it, runs the
+# ruggedness modes (TRI, TRI -alg Wilson, TPI, roughness) on it, and
+# gdaldem slope times a weight raster through gdal_calc.py, runs the
 # same operations through strata's bounded-memory Chunked path, and
 # differences the results. Needs Docker, Go and numpy.
 set -euo pipefail
@@ -44,7 +45,15 @@ gdaldem TRI       dem.tif gdal-tri.tif       -q
 gdaldem TRI       dem.tif gdal-triwilson.tif -q -alg Wilson
 gdaldem TPI       dem.tif gdal-tpi.tif       -q
 gdaldem roughness dem.tif gdal-roughness.tif -q
-for f in dem gdal-slope gdal-aspect gdal-tri gdal-triwilson gdal-tpi gdal-roughness; do
+# A weight with NoData of its own, where the DEM has data: about one cell
+# in seven, scattered by the elevation's tenths (a residue zero cannot
+# land on: rasters like this one are mostly whole numbers and zeros). Then
+# gdaldem's slope times it, as a user would chain the two.
+gdal_calc.py -A dem.tif --outfile weight.tif --type Float32 --NoDataValue -9999 --quiet --overwrite \
+  --calc 'numpy.where(numpy.floor(A*10)%7==3, -9999, 1+0.5*numpy.sin(A/37))'
+gdal_calc.py -A gdal-slope.tif -B weight.tif --outfile gdal-wslope.tif --type Float32 \
+  --NoDataValue -9999 --quiet --overwrite --calc 'A*B'
+for f in dem weight gdal-slope gdal-wslope gdal-aspect gdal-tri gdal-triwilson gdal-tpi gdal-roughness; do
   gdal_translate -q -of ENVI -ot Float32 \$f.tif \$f.raw
 done
 gdal_translate -q -of ENVI -ot Byte gdal-hillshade.tif gdal-hillshade.raw

@@ -75,6 +75,9 @@ type rasterCase struct {
 	Weights []float32 `json:"weights,omitempty"`
 	Row     []float32 `json:"row,omitempty"`
 	Col     []float32 `json:"col,omitempty"`
+	// A two-input terrain operation's second input, and its mask.
+	Weight     string `json:"weight,omitempty"`
+	WeightMask string `json:"weight_mask,omitempty"`
 }
 
 type scalarCase struct {
@@ -149,6 +152,9 @@ func run() error {
 		}
 	}
 	if err := runAlgebra(&m, dems[0], dems[1]); err != nil {
+		return err
+	}
+	if err := runWeighted(&m, dems[2]); err != nil {
 		return err
 	}
 	if err := runResample(); err != nil {
@@ -600,7 +606,119 @@ func runAlgebra(m *manifest, a, b dem) error {
 	return nil
 }
 
+// runWeighted exports terrain.WeightedSlope of d, in degrees, times a
+// weight raster with a mask of its own, in all three forms. The weight's
+// NoData is a horizontal stripe and scattered single cells, so that the
+// result's validity shows whether a weight is read at its cell alone or,
+// wrongly, over the slope's 3x3.
+func runWeighted(m *manifest, d dem) error {
+	ctx := context.Background()
+	weight := weightRaster()
+	if err := writeRaster(filepath.Join(*dir, "weight.f32"), weight); err != nil {
+		return err
+	}
+	if err := writeMask(filepath.Join(*dir, "weight.mask.u8"), weight); err != nil {
+		return err
+	}
+	o := terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY}
+	name := "weighted_slope_deg"
+
+	emit := func(form string, r raster.Float32Raster) error {
+		base := d.name + "-" + name + "-" + form
+		c := rasterCase{
+			Name: base, Surface: d.surface + "-weighted", Op: name, Form: form,
+			DEM: d.name + ".f32", Out: base + ".f32", CellSize: d.cellX, CellSizeY: d.cellY,
+			Weight: "weight.f32", WeightMask: "weight.mask.u8",
+			OutMask: base + ".mask.u8",
+		}
+		if d.r.Valid != nil {
+			c.DEMMask = d.name + ".mask.u8"
+		}
+		if err := writeMask(filepath.Join(*dir, c.OutMask), r); err != nil {
+			return err
+		}
+		if err := writeRaster(filepath.Join(*dir, c.Out), r); err != nil {
+			return err
+		}
+		m.Rasters = append(m.Rasters, c)
+		return nil
+	}
+
+	plain := raster.NewFloat32Like(weight)
+	terrain.WeightedSlope(plain, d.r, weight, o)
+	if err := emit("plain", plain); err != nil {
+		return err
+	}
+	tiled := raster.NewFloat32Like(weight)
+	if err := terrain.WeightedSlopeTiled(ctx, tiled, d.r, weight, o, tiledOpts); err != nil {
+		return err
+	}
+	if err := emit("tiled", tiled); err != nil {
+		return err
+	}
+
+	// Chunked, from the two raw files to a third.
+	open := func(name string) (*engine.RawFile, error) {
+		return engine.OpenRawFile(filepath.Join(*dir, name), os.O_RDONLY, 0, 4)
+	}
+	din, err := open(d.name + ".f32")
+	if err != nil {
+		return err
+	}
+	defer din.Close()
+	win, err := open("weight.f32")
+	if err != nil {
+		return err
+	}
+	defer win.Close()
+	ro := engine.RawOptions{Fill: fill, HasFill: true}
+	tmp := filepath.Join(*dir, d.name+"-"+name+".chunked.tmp")
+	out, err := engine.OpenRawFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, 4)
+	if err != nil {
+		return err
+	}
+	err = terrain.WeightedSlopeChunked(ctx, engine.NewRawSink(out, width, height, ro),
+		engine.NewRawSource(din, width, height, engine.RawOptions{Fill: fill, HasFill: d.r.Valid != nil}),
+		engine.NewRawSource(win, width, height, ro), o, chunkedOpts)
+	if err != nil {
+		out.Close()
+		return err
+	}
+	back := raster.NewFloat32Like(weight)
+	if err := engine.NewRawSource(out, width, height, ro).ReadWindow(ctx, back, 0, 0); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	return emit("chunked", back)
+}
+
 // --- surfaces -------------------------------------------------------
+
+// weightRaster is a smooth weight between 0.2 and 1.8, with NoData in a
+// horizontal stripe that crosses tile edges and in one cell of every 97.
+func weightRaster() raster.Float32Raster {
+	data := make([]float32, width*height)
+	r := raster.NewFloat32(width, height, data)
+	r.Valid = raster.NewMask(width * height)
+	raster.MaskFillRange(r.Valid, 0, width*height, true)
+	for y := range height {
+		for x := range width {
+			i := y*width + x
+			data[i] = float32(1 + 0.8*math.Sin(float64(x)/17)*math.Cos(float64(y)/11))
+			if (y >= 120 && y < 123) || i%97 == 0 {
+				r.SetValid(x, y, false)
+				data[i] = fill
+			}
+		}
+	}
+	return r
+}
 
 func plane(a, b float64) raster.Float32Raster {
 	data := make([]float32, width*height)

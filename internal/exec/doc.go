@@ -73,9 +73,14 @@
 // is valid in every input with a mask, and it is not an edge cell. For
 // radius 0 that is algebra's AND of the inputs. Data under an invalid
 // cell is whatever the kernel wrote there: every cell is computed, valid
-// or not, and validity is never inferred from Data (STRATA-3). Kernels
-// whose validity rule is different, such as a focal mean that skips
-// invalid cells, need an extension of this interface.
+// or not, and validity is never inferred from Data (STRATA-3). A
+// ReachKernel narrows that per output and input: each masked input is
+// eroded by the distance at which the output reads it, or not ANDed at
+// all, which is how a Pipeline that multiplies a stencil's result by a
+// pointwise input keeps the pointwise input's NoData from spreading
+// (DESIGN.md §52). Kernels whose validity rule is different in kind,
+// such as a focal mean that skips invalid cells, need an extension of
+// this interface.
 //
 // Masks are processed in words, apart from the arithmetic: radius 0 uses
 // raster's range functions, with one pass over the whole span when every

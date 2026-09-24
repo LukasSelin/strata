@@ -423,8 +423,24 @@ func TestPipelineChecks(t *testing.T) {
 		{"no stages", "no stages", func() { exec.NewPipeline(1, nil, 1) }},
 		{"no inputs", "at least one", func() { exec.NewPipeline(0, []exec.Stage{stage(ok, 0, 0)}, 1) }},
 		{"nil kernel", "nil kernel", func() { exec.NewPipeline(2, []exec.Stage{stage(nil, 0, 1)}, 2) }},
-		{"radius", "radius 1", func() {
-			exec.NewPipeline(1, []exec.Stage{stage(boxKernel{r: 1, inputs: 1, outputs: 1}, 0)}, 1)
+		{"scratch stage", "scratch of its own", func() {
+			exec.NewPipeline(1, []exec.Stage{stage(&spyKernel{}, 0)}, 1)
+		}},
+		{"edge value before the last stage", "edge value 7", func() {
+			// 1 = box(0) with edge 7, 2 = box(1); the second stage would
+			// compute with the 7s.
+			exec.NewPipeline(1, []exec.Stage{
+				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 0),
+				stage(boxKernel{r: 1, inputs: 1}, 1),
+			}, 2)
+		}},
+		{"edge value narrower than the pipeline", "edge value 7", func() {
+			// 1 = box(0), 2 = box(1) with edge 7: its ring is 1 wide, the
+			// pipeline's 2.
+			exec.NewPipeline(1, []exec.Stage{
+				stage(boxKernel{r: 1, inputs: 1}, 0),
+				stage(edgeBox{boxKernel{r: 1, inputs: 1}, 7}, 1),
+			}, 2)
 		}},
 		{"arity", "names 1 inputs", func() { exec.NewPipeline(2, []exec.Stage{stage(ok, 0)}, 2) }},
 		{"forward reference", "not defined before it", func() {

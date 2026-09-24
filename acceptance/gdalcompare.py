@@ -233,6 +233,51 @@ print(
 )
 
 # --------------------------------------------------------------------
+# 5b. Weighted slope: strata's WeightedSlope against gdaldem slope times
+#     the weight through gdal_calc.py. The weight's NoData must remove
+#     its own cell and no neighbour, so the cells carrying data are
+#     exactly those where the slope and the weight both do. The values
+#     may differ by the slope's float32 bound above, scaled by the
+#     weight, plus a rounding of each tool's product.
+# --------------------------------------------------------------------
+
+gw, sw, wt = f32("gdal-wslope.raw"), f32("strata-wslope.raw"), f32("weight.raw")
+gw_has, sw_has, w_has = gw != GDAL_NODATA, sw != STRATA_FILL, wt != GDAL_NODATA
+record(
+    "weighted slope: same cells as gdal_calc",
+    int((gw_has != sw_has).sum()) == 0,
+    f"{int((gw_has != sw_has).sum())} cells differ; {int(gw_has.sum()):,} carry data",
+)
+want_has = s_has & w_has
+record(
+    "weighted slope: data iff slope and weight",
+    int((sw_has != want_has).sum()) == 0 and bool((~w_has & s_has).any()),
+    f"{int((sw_has != want_has).sum())} cells differ; "
+    f"{int((~w_has & s_has).sum()):,} cells lose their weight and nothing else",
+)
+# GDAL's side is what it claims to be, so that the next check compares
+# like with like: float32 slope times float32 weight, rounded once.
+cw = gw_has & sw_has
+gprod = gslope[cw].astype(np.float32) * wt[cw].astype(np.float32)
+record(
+    "weighted slope: gdal_calc is gdaldem slope x weight",
+    bool(np.array_equal(gprod.view(np.uint32), gw[cw].astype(np.float32).view(np.uint32))),
+    f"over {int(cw.sum()):,} cells",
+)
+cw &= np.isfinite(truth)
+sl_ulp = np.spacing(np.abs(sslope[cw]).astype(np.float32)).astype(np.float64)
+pr_ulp = np.spacing(np.abs(sw[cw]).astype(np.float32)).astype(np.float64)
+wtol = np.abs(wt[cw]) * (2 * np.degrees(np.hypot(gtol[cw], gtol[cw])) + 2 * sl_ulp) + 2 * pr_ulp
+wgap = np.abs(gw[cw] - sw[cw])
+wworst = (wgap / wtol).max()
+record(
+    "weighted slope: within float32 rounding",
+    wworst <= 1.0,
+    f"worst {wworst:.2f}x the bound, {int((wgap > wtol).sum()):,} cells over, "
+    f"{100 * (wgap == 0).mean():.2f}% bit-identical",
+)
+
+# --------------------------------------------------------------------
 # 6. No tile seam: the streamed run must not be worse on the rows where
 #    one chunk meets the next.
 # --------------------------------------------------------------------

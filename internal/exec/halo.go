@@ -95,17 +95,20 @@ func (e *job) interior(wk *worker, x, y, w, h int) {
 // interiorValidity sets the validity of the interior interior just wrote.
 // Some output has a mask.
 func (e *job) interiorValidity(wk *worker, w, h int) {
-	switch {
-	case len(e.masked) == 0:
-		for _, d := range wk.dstViews {
-			if d.Valid != nil {
-				fillValid(d)
-			}
+	for i, d := range wk.dstViews {
+		v := &e.valid[i]
+		switch {
+		case d.Valid == nil:
+		case v.from >= 0:
+			s := wk.dstViews[v.from]
+			copyBits(d, s, compact(d) && compact(s))
+		case len(v.ins) == 0:
+			fillValid(d)
+		case e.r == 0:
+			e.pointwiseValidity(wk, i)
+		default:
+			e.erodedValidity(wk, i, w, h)
 		}
-	case e.r == 0:
-		e.pointwiseValidity(wk)
-	default:
-		e.erodedValidity(wk, w, h)
 	}
 }
 
@@ -147,50 +150,48 @@ func (e *job) clearEdgeValid(y, x0, x1 int) {
 	}
 }
 
-// erodedValidity sets each output view's validity to the AND of every
-// masked input over the (2r+1)×(2r+1) neighbourhood. It erodes once into
-// the first output and copies the bits to the others. Every output has a
-// mask here, because an input does.
-func (e *job) erodedValidity(wk *worker, w, h int) {
-	for i, j := range e.masked {
+// erodedValidity sets output i's validity to the AND, over every masked
+// input it reads, of that input's validity over the neighbourhood of its
+// reach: the (2r+1)×(2r+1) box for a kernel that reads every input over
+// its radius. An input of reach less than the radius is read from the
+// middle of its window, which is grown by the full radius.
+func (e *job) erodedValidity(wk *worker, i, w, h int) {
+	v := &e.valid[i]
+	regions := wk.regions[:len(v.ins)]
+	for k, j := range v.ins {
 		s := wk.srcViews[j]
-		wk.regions[i] = stencil.MaskRegion{Bits: s.Valid, Off: s.ValidOffset, Stride: s.Stride}
+		off := e.r - v.reach[k]
+		regions[k] = stencil.MaskRegion{Bits: s.Valid, Off: s.ValidOffset + off*s.Stride + off, Stride: s.Stride}
 	}
-	first := wk.dstViews[0]
-	stencil.ErodeBox(stencil.MaskRegion{Bits: first.Valid, Off: first.ValidOffset, Stride: first.Stride},
-		wk.regions, w, h, e.r, wk.scratch)
-	for _, d := range wk.dstViews[1:] {
-		for y := range h {
-			raster.MaskCopyRange(d.Valid, d.ValidOffset+y*d.Stride,
-				first.Valid, first.ValidOffset+y*first.Stride, w)
-		}
-	}
+	d := wk.dstViews[i]
+	stencil.ErodeReach(stencil.MaskRegion{Bits: d.Valid, Off: d.ValidOffset, Stride: d.Stride},
+		regions, v.reach, w, h, wk.scratch)
 }
 
-// pointwiseValidity sets each output view's validity to the AND of the
-// masked inputs' bits for the same cells, with the word loops of package
-// algebra: one range operation over the whole view when every operand is
-// compact, one per row otherwise.
-func (e *job) pointwiseValidity(wk *worker) {
-	for i, d := range wk.dstViews {
-		whole := compact(d)
-		for _, j := range e.masked {
-			whole = whole && compact(wk.srcViews[j])
+// pointwiseValidity sets output i's validity to the AND of the masked
+// inputs' bits it reads, for the same cells, with the word loops of
+// package algebra: one range operation over the whole view when every
+// operand is compact, one per row otherwise.
+func (e *job) pointwiseValidity(wk *worker, i int) {
+	d := wk.dstViews[i]
+	ins := e.valid[i].ins
+	whole := compact(d)
+	for _, j := range ins {
+		whole = whole && compact(wk.srcViews[j])
+	}
+	same, rest := e.sameBits[i], ins
+	if same < 0 {
+		a := wk.srcViews[rest[0]]
+		if len(rest) == 1 {
+			copyBits(d, a, whole)
+			return
 		}
-		same, rest := e.sameBits[i], e.masked
-		if same < 0 {
-			a := wk.srcViews[rest[0]]
-			if len(rest) == 1 {
-				copyBits(d, a, whole)
-				continue
-			}
-			andBits(d, a, wk.srcViews[rest[1]], whole)
-			rest = rest[2:]
-		}
-		for _, j := range rest {
-			if j != same {
-				andBits(d, d, wk.srcViews[j], whole)
-			}
+		andBits(d, a, wk.srcViews[rest[1]], whole)
+		rest = rest[2:]
+	}
+	for _, j := range rest {
+		if j != same {
+			andBits(d, d, wk.srcViews[j], whole)
 		}
 	}
 }

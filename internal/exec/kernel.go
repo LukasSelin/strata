@@ -97,6 +97,20 @@ type EdgeKernel interface {
 	Edge() float32
 }
 
+// ReachKernel is a Kernel whose outputs do not all read every input over
+// the full Radius, such as a Pipeline that multiplies a stencil's result
+// by a pointwise input (DESIGN.md §52). The engine derives each output's
+// validity from the reaches: the AND, over every masked input the
+// output reads, of that input's validity eroded by its own reach. A
+// kernel that does not implement it reads every input over Radius.
+type ReachKernel interface {
+	Kernel
+	// Reach is the largest distance at which output out reads input in:
+	// at most Radius, or -1 when out does not depend on in at all. It
+	// must not depend on anything but the kernel's own parameters.
+	Reach(out, in int) int
+}
+
 // Span is the rectangle of output cells one Process call writes.
 type Span struct {
 	// X and Y locate the span's top-left cell in the output rasters, for

@@ -46,8 +46,9 @@ forms (plain, `Tiled` with ragged 37×23 tiles on 3 workers, `Chunked`
 through raw float32 files on 4 workers). The focal cases are Correlate
 and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
 with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
-2, and Min and Max at radii 1 and 3. 720 checks come out of that
-(714 without scipy):
+2, and Min and Max at radii 1 and 3. `WeightedSlope` runs on the noisy
+DEM times a weight raster with NoData of its own. 734 checks come out of
+that (728 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
@@ -61,6 +62,7 @@ with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
 | 8 | Degrees, radians and percent agree with each other | A unit conversion applied twice, or not at all |
 | 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
 | 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
+| 11 | `WeightedSlope` against the float64 Horn slope times the weight, and its validity against the DEM's mask eroded 3×3 AND the weight's mask not eroded; and that the case tells the two readings apart | A weight's NoData wiping out its neighbours (one erosion over every input, the engine's rule before per-input reach, DESIGN.md §52), a weight's NoData ignored, a weight read from the wrong cell |
 
 Resampling is judged separately, by `check_resample.py`: a float64
 reference in plain Python (80×60 sources, so no numpy is needed) written
@@ -127,7 +129,10 @@ plausible defect at a time, and confirms `check.py` goes red:
 ```
 injected defect                   caught   failing checks
 --------------------------------------------------------------
-slope 0.05% too large             yes      12
+slope 0.05% too large             yes      15
+weight validity eroded 3x3        yes      3
+weight NoData ignored             yes      4
+weight read one cell over         yes      3
 dx and dy swapped                 yes      18
 aspect mirrored                   yes      12
 one bad cell on a tile seam       yes      2
@@ -176,7 +181,10 @@ nothing has to be installed locally.
 
 It extracts a window, promotes it to Float32, runs `gdaldem
 slope/aspect/hillshade` and `gdaldem TRI` (Riley, and `-alg Wilson`),
-`TPI` and `roughness`, runs the same operations through strata's
+`TPI` and `roughness`, and `gdaldem slope` times a weight raster
+through `gdal_calc.py` (a weight with NoData of its own, where the
+elevation's tenths are 3 mod 7), runs the same operations
+through strata's
 bounded-memory `Chunked` path ([gdal/main.go](gdal/main.go)), and
 differences them ([gdalcompare.py](gdalcompare.py)). Cell size and
 NoData come from GDAL's own header, not from a hard-coded guess.
@@ -201,8 +209,19 @@ aspect flat cells agree             0 disagree; 2,681,171 flat cells
 aspect == gdaldem aspect            max 3.05e-05 deg
 hillshade == gdaldem hillshade      12,849,447 of 12,849,874 exact, 427 off by one, 0 worse
 within float32 rounding             worst 0.09× the bound, 76.21% bit-identical
+weighted slope: same cells          0 cells differ; 11,644,877 carry data
+weighted slope: data iff both       0 cells differ; 1,204,997 lose their weight and nothing else
+weighted slope: gdal_calc is x      gdaldem slope × weight, rounded once, over 11,644,877 cells
+weighted slope: float32 rounding    worst 0.11× the bound, 78.10% bit-identical
 no seam every 256 rows              1.222e-06 on chunk boundaries vs 1.203e-06 elsewhere
 ```
+
+The weighted slope is the check on DESIGN.md §52's per-input reach:
+strata computes it as one pipeline whose DEM is read over a 3×3 and whose
+weight is read at the cell, and GDAL computes it as two programs. The
+cells each keeps are the same set, so a NoData weight removes its own
+cell and not the eight around it. The values differ by the slope's own
+float32 bound scaled by the weight.
 
 Check 5 asks how far apart two *correct* float32 implementations of
 Horn's slope may land, and the answer is not a fixed number of ulps of
