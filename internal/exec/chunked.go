@@ -113,6 +113,8 @@ type chunkJob struct {
 
 	dst []engine.RasterSink
 	src []engine.RasterSource
+	// masked lists the Masked sources.
+	masked []int
 
 	workers []chunkWorker
 	// out is the caller's Options.Stats, or nil.
@@ -133,6 +135,9 @@ type chunkWorker struct {
 	// worker holds this worker's kernel counters; stats here holds what
 	// crossed the source and sink interfaces, which t cannot see.
 	t job
+	// live holds the masked sources whose current tile has an invalid
+	// cell, with room for all of them. See unmaskAllValid.
+	live []int
 	// stats counts the bytes this worker's tiles read from sources and
 	// wrote to sinks. Padded like worker.stats.
 	stats engine.Stats
@@ -158,6 +163,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			masked = append(masked, j)
 		}
 	}
+	c.masked = masked
 	dstMasked := false
 	for _, d := range dst {
 		dstMasked = dstMasked || d.Masked()
@@ -224,6 +230,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			wk.out[j] = raster.Float32Raster{Data: d, Width: c.tileW, Height: c.tileH, Stride: stride, Valid: m}
 		}
 
+		wk.live = make([]int, 0, len(masked))
 		t := &wk.t
 		t.src, t.dst = views[nin+nout:2*nin+nout:2*nin+nout], views[2*nin+nout:]
 		t.setup(k, r, c.w, c.h, masked, dstMasked)
@@ -317,6 +324,7 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 		}
 		t.src[j] = v
 	}
+	t.masked = unmaskAllValid(t.src, c.masked, wk.live)
 	for j := range c.dst {
 		t.dst[j] = bufferView(wk.out[j], x1-x0, y1-y0)
 	}
@@ -349,6 +357,70 @@ func (e *ioError) Error() string {
 }
 
 func (e *ioError) Unwrap() error { return e.err }
+
+// unmaskAllValid drops the mask of each tile buffer in bufs, of the
+// sources masked lists, whose cells are all valid, and returns the rest
+// of masked in live's memory: the inputs the tile's validity still has to
+// be worked out from.
+//
+// A nil mask means every cell valid (DESIGN.md §31), so this changes no
+// output: an eroded or ANDed mask of all-valid inputs is all valid, and
+// the reductions' results do not depend on the path that folds them
+// (§49). What it changes is the work. A tile read from a source with a
+// fill value that holds none, the usual case away from a raster's
+// NoData border, then gets the unmasked paths: interior validity filled
+// rather than eroded, and a fold that never consults ValidBits. The test
+// costs one pass over the tile's validity words, 1/32 of its cells'
+// bytes, and stops at the first invalid cell.
+func unmaskAllValid(bufs []raster.Float32Raster, masked, live []int) []int {
+	live = live[:0]
+	for _, j := range masked {
+		if allValid(bufs[j]) {
+			bufs[j].Valid = nil
+		} else {
+			live = append(live, j)
+		}
+	}
+	return live
+}
+
+// allValid reports whether every cell of r, which has a mask, is valid.
+func allValid(r raster.Float32Raster) bool {
+	if compact(r) {
+		return bitsAllSet(r.Valid, r.ValidOffset, r.Width*r.Height)
+	}
+	for y := range r.Height {
+		if !bitsAllSet(r.Valid, r.ValidOffset+y*r.Stride, r.Width) {
+			return false
+		}
+	}
+	return true
+}
+
+// bitsAllSet reports whether bits [off, off+n) of m are all set, a word
+// at a time where they are word-aligned, as a tile buffer's rows are.
+func bitsAllSet(m []uint64, off, n int) bool {
+	for n > 0 {
+		if off&63 == 0 && n >= 64 {
+			words := m[off>>6 : off>>6+n>>6]
+			for _, w := range words {
+				if w != ^uint64(0) {
+					return false
+				}
+			}
+			off += len(words) * 64
+			n -= len(words) * 64
+			continue
+		}
+		k := min(n, 64-off&63)
+		if raster.MaskBits(m, off, k) != ^uint64(0)>>(64-uint(k)) {
+			return false
+		}
+		off += k
+		n -= k
+	}
+	return true
+}
 
 // bufferView returns the w×h raster at the start of buf, with buf's
 // stride and mask.
