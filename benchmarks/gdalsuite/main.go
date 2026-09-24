@@ -57,6 +57,7 @@ var (
 	tile    = flag.Int("tile", 256, "tile height in rows")
 	workers = flag.Int("workers", 1, "engine workers")
 	cacheB  = flag.Int64("cache", 0, "cog.SourceOptions.CacheBytes: 0 the default, negative none")
+	reuse   = flag.Bool("reuse", false, "overwrite an existing output (engine.ReuseRawFile) instead of truncating it")
 	repeat  = flag.Int("repeat", 1, "timed runs in this process")
 	list    = flag.Bool("list", false, "print the operations and stop")
 	cpuprof = flag.String("cpuprofile", "", "write a CPU profile of the whole process here")
@@ -265,7 +266,11 @@ func chunkedOnce(ctx context.Context, o op, files []string, eo engine.Options, i
 		return nil
 	}
 	g := dstGrid(grids[0], o.scale)
-	out, err := engine.CreateRawFile(filepath.Join(*dir, "strata-"+o.name+".raw"),
+	create := engine.CreateRawFile
+	if *reuse {
+		create = engine.ReuseRawFile
+	}
+	out, err := create(filepath.Join(*dir, "strata-"+o.name+".raw"),
 		4*int64(g.Width)*int64(g.Height), 0o644, max(*workers, 1))
 	if err != nil {
 		return err
