@@ -68,9 +68,10 @@ func ceilDiv(a, b int) int { return (a + b - 1) / b }
 
 // chunkWorker is one Chunked worker's buffers.
 type chunkWorker struct {
-	ws    workspace
-	in    raster.Float32Raster
-	out   raster.Float32Raster
+	ws workspace
+	in raster.Float32Raster
+	// out is two output buffers, for write-behind (exec.RunUnitsBehind).
+	out   [2]raster.Float32Raster
 	stats engine.Stats
 	_     [64]byte
 }
@@ -108,14 +109,18 @@ func runChunked(ctx context.Context, p plan, dst engine.RasterSink, src engine.R
 	wks := make([]chunkWorker, workers)
 	for i := range wks {
 		wks[i].in = buffer(fpW, fpH, src.Masked())
-		wks[i].out = buffer(tw, th, dst.Masked())
+		wks[i].out[0] = buffer(tw, th, dst.Masked())
+		wks[i].out[1] = buffer(tw, th, dst.Masked())
 	}
 	ioCtx := context.WithoutCancel(ctx)
-	err := exec.RunUnits(ctx, workers, n, func(wi, i int) error {
+	sinks := []engine.RasterSink{dst}
+	wrap := func(_, x, y int, err error) error {
+		return fmt.Errorf("resample: writing dst at (%d, %d): %w", x, y, err)
+	}
+	err := exec.RunUnitsBehind(ctx, workers, n, sinks, wrap, func(wi, i int, b *exec.Behind) error {
 		wk := &wks[wi]
 		x0, y0 := (i%tilesX)*tw, (i/tilesX)*th
 		x1, y1 := min(x0+tw, w), min(y0+th, h)
-		out := view(wk.out, x1-x0, y1-y0)
 		var s source
 		fx0, fy0, fx1, fy1 := pl.Footprint(x0, y0, x1, y1)
 		if fx1 > fx0 {
@@ -126,10 +131,11 @@ func runChunked(ctx context.Context, p plan, dst engine.RasterSink, src engine.R
 			s = source{R: in, X0: fx0, Y0: fy0}
 			wk.stats.SourceRead += int64(fx1-fx0) * int64(fy1-fy0) * 4
 		}
+		set := b.Acquire()
+		out := view(wk.out[set], x1-x0, y1-y0)
 		read := band(pl, &wk.ws, out, x0, y0, s, nil)
-		if err := dst.WriteWindow(ioCtx, out, x0, y0); err != nil {
-			return fmt.Errorf("resample: writing dst at (%d, %d): %w", x0, y0, err)
-		}
+		views := [1]raster.Float32Raster{out}
+		b.Submit(set, views[:], x0, y0)
 		st := &wk.stats
 		st.Tiles++
 		st.Bands++

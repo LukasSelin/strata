@@ -108,7 +108,10 @@ func newFixture(size int) *fixture {
 		must(err)
 		return file
 	}
-	f.demFile, f.fillFile, f.out = create("dem.f32"), create("dem-fill.f32"), create("out.f32")
+	f.demFile, f.fillFile = create("dem.f32"), create("dem-fill.f32")
+	// The output is created at its size, and mapped (engine.CreateRawFile).
+	f.out, err = engine.CreateRawFile(filepath.Join(dir, "out.f32"), 4*int64(size)*int64(size), 0o644, runtime.NumCPU())
+	must(err)
 	ctx := context.Background()
 	dem, _ := f.rasters(false)
 	for _, file := range []*engine.RawFile{f.demFile, f.out} {
@@ -260,7 +263,9 @@ func TestAllocs(t *testing.T) {
 						if w.Run == nil {
 							continue
 						}
-						limit := float64(16 + 12*workers)
+						// Per worker: buffers, views and a writer (goroutine,
+						// channels, views).
+						limit := float64(16 + 20*workers)
 						switch {
 						case tiles == tilesPlain && name == "Clamp":
 							limit = 0

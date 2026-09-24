@@ -14,6 +14,9 @@ type Options struct {
 	// Workers is the number of goroutines that run bands, the calling
 	// goroutine included. 0 means runtime.GOMAXPROCS(0); 1 starts no
 	// goroutines. A call never uses more workers than it has bands.
+	// Chunked calls also start a writer goroutine per worker, which
+	// writes the worker's last tile while it computes the next (see the
+	// package documentation).
 	Workers int
 	// Stats, when not nil, receives how many bytes the call moved at each
 	// stage of its pipeline. It is an out-parameter, not a setting: it
