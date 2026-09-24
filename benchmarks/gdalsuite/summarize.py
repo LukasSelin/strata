@@ -66,7 +66,11 @@ class Run:
             f = dict(p.split("=", 1) for p in line.split() if "=" in p)
             key = (f["tier"], f["op"], f["tool"], f["cfg"], int(f["threads"]))
             if f["real"] != "-":
-                val = float(f["real"])
+                try:
+                    val = float(f["real"])
+                except ValueError:  # bash's time now and then prints e.g. "6.:00"
+                    self.notes.append(f"# dropped, unreadable time: {line}")
+                    continue
                 try:
                     cpu = float(f["user"]) + float(f["sys"])
                 except ValueError:  # bash's time now and then prints e.g. "2.:00"

@@ -178,11 +178,12 @@ COG the run takes 1.51 s, from the raw file 0.84 s.
 [`benchmarks/gdalsuite/`](benchmarks/gdalsuite/RESULTS.md) times all 25
 operations that have a GDAL counterpart (terrain, focal, algebra,
 statistics, resampling) against it at three levels. The arithmetic
-alone is 24× GDAL's on one core and 57× on twelve (geometric means);
-from a raw file to a file, 5.3× and 9.0×; the whole flow from a Deflate
-COG, 2.3× and 4.5×, because decoding the COG is most of strata's run.
-Both tools' outputs are compared on every operation, and most are
-bit-identical.
+alone is 25× GDAL's on one core and 57× on twelve (geometric means);
+from a raw file to a file, 8.7× and 11.2×; the whole flow from a
+Deflate COG, 3.7× and 8.0×, with strata ahead on every operation. The
+lead narrows in the whole flow because decoding the COG is most of
+strata's run. Both tools' outputs are compared on every operation, and
+most are bit-identical.
 
 ## Testing
 
