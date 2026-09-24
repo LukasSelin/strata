@@ -134,7 +134,8 @@ func newPlan(dg, sg raster.Grid, opts Options, eopts engine.Options) plan {
 		panic(fmt.Sprintf("resample: negative Options %+v", eopts))
 	}
 	if !dg.CRS.Matches(sg.CRS) {
-		panic(fmt.Sprintf("resample: dst CRS %q differs from src CRS %q; reprojection is not supported", dg.CRS.Code, sg.CRS.Code))
+		panic(fmt.Sprintf("resample: dst CRS %s differs from src CRS %s; reprojection is not supported",
+			dg.CRS.Describe(), sg.CRS.Describe()))
 	}
 	checkGrid("dst", dg)
 	checkGrid("src", sg)

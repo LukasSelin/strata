@@ -2,8 +2,11 @@ package cog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strings"
 
 	"github.com/LukasSelin/strata/engine"
 	"github.com/LukasSelin/strata/raster"
@@ -14,20 +17,41 @@ import (
 type File struct {
 	c      *container
 	levels []*image
+	masks  []*image // each level's transparency mask, or nil
 	geo    georef
 	nodata float64
 	hasND  bool
+	// shared holds the compressed blocks of pixel-interleaved images,
+	// which every band's source reads; nil for a single band.
+	shared *cache[blockKey, []byte]
 }
+
+// maxOverviews is GDAL's limit on the overviews it reads from one file.
+const maxOverviews = 30
+
+// blockKey names a block of a File: its image, a level or a level's
+// mask, and its index in that image's offsets.
+type blockKey struct {
+	im  *image
+	idx int
+}
+
+// sharedCacheBytes bounds the compressed blocks a File with more than
+// one band keeps for its sources to share.
+const sharedCacheBytes = 64 << 20
 
 // Open reads the header and every image directory of the GeoTIFF that r
 // holds. It reads no cell data. r must stay open while the File and its
 // sources are in use, and must be safe for concurrent ReadAt calls, as
 // *os.File and engine.RawFile are.
 //
-// The first image is level 0, the full resolution. Each later image that
-// is a reduced-resolution one (NewSubfileType bit 0) of the same bands
-// and sample type is an overview, in file order; masks and other images
-// are skipped.
+// The first image is level 0, the full resolution. The other images are
+// read as GDAL reads them: those of the first image's SubIFDs, then the
+// rest of the IFD chain, in that order. Each reduced-resolution image
+// (NewSubfileType bit 0) with the same number of bands is an overview, a
+// level after the ones before it. A transparency mask (NewSubfileType
+// bit 2) of 1- or 8-bit samples becomes the validity of the level of its
+// size, as GDAL's internal mask does; other images are skipped.
 //
 // It returns an error for a file that is not a TIFF, is corrupt, or uses
 // something outside what the package supports (see the package
@@ -42,24 +66,16 @@ func Open(r io.ReaderAt) (*File, error) {
 		return nil, fmt.Errorf("cog: %w", err)
 	}
 	f := &File{c: c}
-	main, err := c.parseImage(ifds[0])
+	main, err := c.parseImage(ifds[0], false)
 	if err != nil {
 		return nil, fmt.Errorf("cog: image 0: %w", err)
 	}
-	f.levels = append(f.levels, main)
-	for i, ifd := range ifds[1:] {
-		t := c.subfileType(ifd)
-		if t&subfileReduced == 0 || t&subfileMask != 0 {
-			continue
-		}
-		im, err := c.parseImage(ifd)
-		if err != nil {
-			return nil, fmt.Errorf("cog: image %d (an overview): %w", i+1, err)
-		}
-		if im.bands != main.bands || im.format != main.format || im.bytes != main.bytes {
-			continue // not an overview of this image
-		}
-		f.levels = append(f.levels, im)
+	f.levels, f.masks = []*image{main}, []*image{nil}
+	if err := f.scan(ifds); err != nil {
+		return nil, fmt.Errorf("cog: %w", err)
+	}
+	if err := c.checkNoDataValues(ifds[0], main.bands); err != nil {
+		return nil, fmt.Errorf("cog: %w", err)
 	}
 	if f.geo, err = c.georef(ifds[0]); err != nil {
 		return nil, fmt.Errorf("cog: georeferencing: %w", err)
@@ -67,7 +83,106 @@ func Open(r io.ReaderAt) (*File, error) {
 	if f.nodata, f.hasND, err = c.noData(ifds[0]); err != nil {
 		return nil, fmt.Errorf("cog: %w", err)
 	}
+	if main.bands > 1 {
+		f.shared = newCache[blockKey](sharedCacheBytes, func(b []byte) int64 { return int64(len(b)) + 64 })
+	}
 	return f, nil
+}
+
+// scan finds the overviews and masks among the images after the first,
+// as GDAL's GTiffDataset::ScanDirectories does.
+func (f *File) scan(ifds []rawIFD) error {
+	c, main := f.c, f.levels[0]
+	var rest []rawIFD
+	if e, ok := ifds[0].entries[tagSubIFDs]; ok {
+		offs, err := c.uints(e)
+		if err != nil {
+			return fmt.Errorf("SubIFDs: %w", err)
+		}
+		for _, off := range offs {
+			ifd, _, err := c.readIFD(off)
+			if err != nil {
+				break // as GDAL: the SubIFDs end at one it cannot read
+			}
+			rest = append(rest, ifd)
+		}
+	}
+	for _, ifd := range ifds[1:] {
+		if _, ok := ifd.entries[tagSubIFDs]; !ok {
+			rest = append(rest, ifd)
+		}
+	}
+	// A file whose first image is itself reduced is an external .ovr,
+	// and its mask is flagged reduced too.
+	_, hasSub := ifds[0].entries[tagSubIFDs]
+	ovrFile := !hasSub && c.subfileType(ifds[0]) == subfileReduced
+	for i, ifd := range rest {
+		t := c.subfileType(ifd)
+		switch {
+		case t&subfileReduced != 0 && t&subfileMask == 0:
+			if len(f.levels)-1 >= maxOverviews {
+				continue
+			}
+			im, err := c.parseImage(ifd, false)
+			if err != nil {
+				return fmt.Errorf("image %d (an overview): %w", i+1, err)
+			}
+			if im.bands != main.bands {
+				continue // not an overview of this image
+			}
+			if im.format != main.format || im.bits != main.bits {
+				return fmt.Errorf("image %d: an overview of a different sample type is not supported", i+1)
+			}
+			f.levels, f.masks = append(f.levels, im), append(f.masks, nil)
+		case t&subfileMask != 0:
+			im, err := c.parseImage(ifd, true)
+			if err != nil || !im.isMask(main.bands) {
+				continue // GDAL ignores a mask it cannot use
+			}
+			if f.masks[0] == nil && (t&subfileReduced == 0) != ovrFile &&
+				im.width == main.width && im.height == main.height {
+				f.masks[0] = im
+				continue
+			}
+			if t&subfileReduced == 0 {
+				continue
+			}
+			for lvl := 1; lvl < len(f.levels); lvl++ {
+				if f.masks[lvl] == nil && f.levels[lvl].width == im.width && f.levels[lvl].height == im.height {
+					f.masks[lvl] = im
+					break
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// isMask reports whether im can serve as the mask of an image of bands
+// bands: one band, or one per band, of 1- or 8-bit unsigned samples.
+func (im *image) isMask(bands int) bool {
+	return (im.bands == 1 || im.bands == bands) && im.format == sampleUint && (im.bits == 1 || im.bits == 8)
+}
+
+// nodataValues finds GDAL's dataset-level NODATA_VALUES metadata item.
+var nodataValues = regexp.MustCompile(`<Item name="NODATA_VALUES"(?: domain="")?>([^<]*)</Item>`)
+
+// checkNoDataValues refuses a file whose GDAL metadata holds one
+// NODATA_VALUES entry per band: GDAL then masks a cell only where every
+// band holds its value, which a single-band source cannot express.
+func (c *container) checkNoDataValues(ifd rawIFD, bands int) error {
+	e, ok := ifd.entries[tagGDALMetadata]
+	if !ok {
+		return nil
+	}
+	s, err := c.ascii(e)
+	if err != nil {
+		return nil // metadata is optional: GDAL would warn and go on
+	}
+	if m := nodataValues.FindStringSubmatch(s); m != nil && len(strings.Fields(m[1])) == bands {
+		return errors.New("GDAL's NODATA_VALUES, a NoData value across all bands, is not supported")
+	}
+	return nil
 }
 
 // Levels returns the number of resolution levels: 1 for the full
@@ -85,8 +200,9 @@ func (f *File) Size(level int) (width, height int) {
 func (f *File) Bands() int { return f.levels[0].bands }
 
 // NoData returns GDAL's NoData value for the file, and whether it has
-// one. A source over a file with one is Masked: cells that hold it,
-// compared in the file's sample type, are invalid.
+// one. A source over a level with neither a mask nor a NoData value the
+// sample type can hold is not Masked; see the package documentation for
+// how cells compare with NoData.
 func (f *File) NoData() (float64, bool) { return f.nodata, f.hasND }
 
 // Georeferenced reports whether the file has a geotransform:
@@ -96,7 +212,8 @@ func (f *File) Georeferenced() bool { return f.geo.ok }
 // Grid returns the grid of a level, as GDAL reports it. An overview has
 // the full resolution's origin and its resolution scaled by the size
 // ratio, as GDAL computes it. Without a geotransform (see Georeferenced)
-// the grid is GDAL's default: origin (0, 0), resolution (1, 1). The CRS
+// the grid of every level is GDAL's default: origin (0, 0), resolution
+// (1, 1), the grid of the level's own cells. The CRS
 // is the EPSG code of the GeoKeys, or empty if it is user-defined or
 // absent. It panics if the level does not exist.
 func (f *File) Grid(level int) raster.Grid {
@@ -107,7 +224,7 @@ func (f *File) Grid(level int) raster.Grid {
 		g.OriginX, g.OriginY = f.geo.originX, f.geo.originY
 		g.ResolutionX, g.ResolutionY = f.geo.resX, f.geo.resY
 	}
-	if level > 0 {
+	if level > 0 && f.geo.ok {
 		g.ResolutionX *= float64(full.width) / float64(im.width)
 		g.ResolutionY *= float64(full.height) / float64(im.height)
 	}
@@ -121,9 +238,22 @@ func (f *File) level(fn string, level int) *image {
 	return f.levels[level]
 }
 
-// DefaultCacheBytes is the decoded-block cache of a source whose
-// SourceOptions.CacheBytes is 0: 64 MiB.
-const DefaultCacheBytes = 64 << 20
+// The decoded-block cache of a source whose SourceOptions.CacheBytes is
+// 0 holds DefaultCacheRows rows of the level's blocks, but never less
+// than DefaultCacheBytes nor more than MaxDefaultCacheBytes.
+//
+// A row of blocks is what one band of tiles needs, so the cache scales
+// with the raster's width. Eight rows hold what 12 engine workers on
+// 256-row tiles have in flight over 512-row blocks, with room for the
+// halos; benchmarks/cog/RESULTS.md measured a 64 MiB cache decoding
+// each block 1.57 times there on an 11264-wide raster, and 8 rows once.
+// More workers, taller tiles or a wider raster than the cap allows
+// need CacheBytes set.
+const (
+	DefaultCacheRows     = 8
+	DefaultCacheBytes    = 64 << 20
+	MaxDefaultCacheBytes = 1 << 30
+)
 
 // SourceOptions selects what a Source reads.
 type SourceOptions struct {
@@ -134,8 +264,11 @@ type SourceOptions struct {
 	Level int
 	// CacheBytes bounds the memory of decoded blocks the source keeps,
 	// so blocks that several windows touch are decoded once: 0 means
-	// DefaultCacheBytes, a negative value no cache. The cache always
-	// holds at least the most recent block.
+	// the default (DefaultCacheRows rows of blocks, within
+	// DefaultCacheBytes and MaxDefaultCacheBytes), a negative value no
+	// cache. The cache always holds at least the most recent block. It
+	// does not cover the compressed blocks a pixel-interleaved File
+	// shares between its sources; see File.Source.
 	CacheBytes int64
 }
 
@@ -147,13 +280,22 @@ type Source struct {
 	level int
 	band  int
 	nd    noData
-	cache *cache
+	cache *cache[int, *block]
+	mask  *Source // the level's transparency mask, which gives validity, or nil
 }
 
 var _ engine.RasterSource = (*Source)(nil)
 
 // Source returns a source reading the band and level that opts select.
 // It returns an error if either does not exist.
+//
+// A pixel-interleaved file (PlanarConfiguration 1) stores every band of a
+// cell together, so each band's source needs the same blocks. The File
+// keeps the compressed blocks its sources read, up to 64 MiB, and a block
+// that one band's source fetched is not fetched again for another's while
+// it is kept. Sources reading the same region at about the same time
+// share every fetch; ones reading a large file band after band share
+// what the 64 MiB holds.
 func (f *File) Source(opts SourceOptions) (*Source, error) {
 	if opts.Level < 0 || opts.Level >= len(f.levels) {
 		return nil, fmt.Errorf("cog: level %d, and the file has %d", opts.Level, len(f.levels))
@@ -162,22 +304,62 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 	if opts.Band < 0 || opts.Band >= im.bands {
 		return nil, fmt.Errorf("cog: band %d, and the file has %d", opts.Band, im.bands)
 	}
-	s := &Source{f: f, im: im, level: opts.Level, band: opts.Band, nd: prepareNoData(f.nodata, f.hasND, im.format, im.bytes)}
-	switch {
-	case opts.CacheBytes == 0:
-		s.cache = newCache(DefaultCacheBytes)
-	case opts.CacheBytes > 0:
-		s.cache = newCache(opts.CacheBytes)
+	newSource := func(im *image, band int, nd noData) *Source {
+		s := &Source{f: f, im: im, level: opts.Level, band: band, nd: nd}
+		size := func(b *block) int64 { return b.size() }
+		hold, drop := (*block).hold, (*block).release
+		switch {
+		case opts.CacheBytes == 0:
+			s.cache = newCache[int](defaultCacheBytes(im), size).withHolds(hold, drop)
+		case opts.CacheBytes > 0:
+			s.cache = newCache[int](opts.CacheBytes, size).withHolds(hold, drop)
+		}
+		return s
 	}
+	mask := f.masks[opts.Level]
+	if mask == nil {
+		return newSource(im, opts.Band, prepareNoData(f.nodata, f.hasND, im.format, im.bits)), nil
+	}
+	// With a mask, GDAL ignores NoData: the mask alone says which cells
+	// are valid, those where it is not 0.
+	s := newSource(im, opts.Band, noData{})
+	band := 0
+	if mask.bands > 1 {
+		band = opts.Band
+	}
+	s.mask = newSource(mask, band, noData{set: true, cmp: 0})
 	return s, nil
+}
+
+// defaultCacheBytes is the cache of a source over im whose CacheBytes
+// is 0: DefaultCacheRows rows of decoded blocks, as block.size counts
+// them, clamped to [DefaultCacheBytes, MaxDefaultCacheBytes].
+func defaultCacheBytes(im *image) int64 {
+	cells := int64(im.blockW) * int64(im.blockH)
+	perBlock := 4*cells + 8*int64(raster.MaskWords(int(cells))) + 64
+	across := int64((im.width + im.blockW - 1) / im.blockW)
+	if across > MaxDefaultCacheBytes/(DefaultCacheRows*perBlock) {
+		return MaxDefaultCacheBytes // and no overflow on the way
+	}
+	return min(max(DefaultCacheRows*across*perBlock, DefaultCacheBytes), MaxDefaultCacheBytes)
+}
+
+// CacheBytes returns the bound on the source's decoded-block cache: the
+// one SourceOptions gave, or the default it chose, or 0 for no cache.
+func (s *Source) CacheBytes() int64 {
+	if s.cache == nil {
+		return 0
+	}
+	return s.cache.limit
 }
 
 // Size returns the level's width and height.
 func (s *Source) Size() (width, height int) { return s.im.width, s.im.height }
 
-// Masked reports whether the file has a NoData value that the band's
-// sample type can hold, so that some cells may be invalid.
-func (s *Source) Masked() bool { return s.nd.set }
+// Masked reports whether some cells may be invalid: the level has a
+// transparency mask, or the file a NoData value that the band's sample
+// type can hold.
+func (s *Source) Masked() bool { return s.nd.set || s.mask != nil }
 
 // Grid returns the grid of the level the source reads.
 func (s *Source) Grid() raster.Grid { return s.f.Grid(s.level) }
@@ -196,9 +378,24 @@ func (s *Source) ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y 
 		panic(fmt.Sprintf("cog: Source.ReadWindow: %d×%d region at (%d, %d) outside %d×%d raster",
 			dst.Width, dst.Height, x, y, im.width, im.height))
 	}
-	if s.nd.set && dst.Valid == nil {
-		panic("cog: Source.ReadWindow: the source has a NoData value and dst has no validity mask")
+	if s.Masked() && dst.Valid == nil {
+		panic("cog: Source.ReadWindow: the source is Masked and dst has no validity mask")
 	}
+	if err := s.read(ctx, dst, x, y, true); err != nil {
+		return err
+	}
+	if s.mask != nil {
+		if err := s.mask.read(ctx, dst, x, y, false); err != nil {
+			return fmt.Errorf("the mask: %w", err)
+		}
+	}
+	return nil
+}
+
+// read copies the blocks that the region at (x, y) touches into dst: the
+// cells and their validity, or only the validity when values is false.
+func (s *Source) read(ctx context.Context, dst raster.Float32Raster, x, y int, values bool) error {
+	im := s.im
 	x1, y1 := x+dst.Width, y+dst.Height
 	for by := y / im.blockH; by*im.blockH < y1; by++ {
 		for bx := x / im.blockW; bx*im.blockW < x1; bx++ {
@@ -209,16 +406,24 @@ func (s *Source) ReadWindow(ctx context.Context, dst raster.Float32Raster, x, y 
 			if err != nil {
 				return fmt.Errorf("cog: level %d, band %d, block (%d, %d): %w", s.level, s.band, bx, by, err)
 			}
-			s.copyBlock(dst, x, y, b, bx*im.blockW, by*im.blockH)
+			s.copyBlock(dst, x, y, b, bx*im.blockW, by*im.blockH, values)
+			b.release()
 		}
 	}
 	return nil
 }
 
-// block returns the decoded block at (bx, by), through the cache.
+// block returns the decoded block at (bx, by), through the cache, held
+// once for the caller, who releases it.
 func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 	idx := s.im.blockIndex(bx, by, s.band)
-	load := func() (*block, error) { return s.f.c.decodeBlock(s.im, idx, by, s.band, s.nd) }
+	var read func(off, n uint64) ([]byte, error) // nil: read into a scratch buffer
+	if s.f.shared != nil && s.im.planar == planarChunky {
+		read = func(off, n uint64) ([]byte, error) {
+			return s.f.shared.get(ctx, blockKey{s.im, idx}, func() ([]byte, error) { return s.f.c.readFull(off, n) })
+		}
+	}
+	load := func() (*block, error) { return s.f.c.decodeBlock(s.im, idx, by, s.band, s.nd, read) }
 	if s.cache == nil {
 		return load()
 	}
@@ -226,15 +431,18 @@ func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 }
 
 // copyBlock copies the part of b, whose top-left cell is (bx0, by0) in
-// the raster, that lies inside dst, whose top-left is (x, y).
-func (s *Source) copyBlock(dst raster.Float32Raster, x, y int, b *block, bx0, by0 int) {
+// the raster, that lies inside dst, whose top-left is (x, y): its cells
+// unless values is false, and their validity.
+func (s *Source) copyBlock(dst raster.Float32Raster, x, y int, b *block, bx0, by0 int, values bool) {
 	cx0, cx1 := max(x, bx0), min(x+dst.Width, bx0+b.w, s.im.width)
 	cy0, cy1 := max(y, by0), min(y+dst.Height, by0+b.rows)
 	n := cx1 - cx0
 	for yy := cy0; yy < cy1; yy++ {
 		src := (yy-by0)*b.w + cx0 - bx0
 		d := (yy-y)*dst.Stride + cx0 - x
-		copy(dst.Data[d:d+n], b.vals[src:src+n])
+		if values {
+			copy(dst.Data[d:d+n], b.vals[src:src+n])
+		}
 		if dst.Valid == nil {
 			continue
 		}

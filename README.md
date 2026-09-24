@@ -166,6 +166,23 @@ gdaldem's 9.39 s; on 12 workers, 1.33 s. On the scalar kernels — a build
 without `GOEXPERIMENT=simd` — it is roughly a tie, so the advantage is
 AVX2, not the language.
 
+[`benchmarks/cog/`](benchmarks/cog/RESULTS.md) does the same for the
+GeoTIFF/COG reader. GDAL decodes a compressed float32 COG 1.4–2.1×
+faster on one core, mostly because it inflates with libdeflate. Slope
+straight from the COG still beats `gdaldem slope` on the same file, by
+1.8–2.6× on one core and 4.3–5.6× on 12 workers. Reading the format
+costs more than computing the slope: from a Deflate COG the run takes
+2.28 s on one worker, from the raw file 0.89 s.
+
+[`benchmarks/gdalsuite/`](benchmarks/gdalsuite/RESULTS.md) times all 25
+operations that have a GDAL counterpart (terrain, focal, algebra,
+statistics, resampling) against it at three levels. The arithmetic
+alone is 24× GDAL's on one core and 57× on twelve (geometric means);
+from a raw file to a file, 5.3× and 9.0×; the whole flow from a Deflate
+COG, 2.3× and 4.5×, because decoding the COG is most of strata's run.
+Both tools' outputs are compared on every operation, and most are
+bit-identical.
+
 ## Testing
 
 Beyond unit tests, the suite runs fuzz tests, metamorphic relations (also
@@ -184,10 +201,10 @@ program written from published definitions then judges the results.
 raster, and `cogcheck.sh` requires the `cog` reader to read every cell of
 98 GDAL-written GeoTIFFs exactly as GDAL does.
 
-CI runs the suite on Linux, Windows, and macOS, and runs the tests, the
-race detector, and `golangci-lint` in both the default and the
+CI runs the tests and `golangci-lint` in both the default and the
 `GOEXPERIMENT=simd` build, since the vector kernels are behind a build tag
-and a default build never compiles them.
+and a default build never compiles them. Release tags also run the suite
+on Windows and macOS and the race detector over every package.
 
 ## Documentation
 

@@ -100,10 +100,11 @@ def stretch(method, s):
     return 1.0
 
 
-def axis(method, n, o, r, sn, so, sr, shift=0.0):
+def axis(method, n, o, r, sn, so, sr, shift=0.0, unwidened=False):
     """Per output index: centre cell (or None), taps [(i, w)] inside the
     source, whether a tap of non-zero weight was outside it, and the
-    in-source cells the kernel reaches (the half-valid window)."""
+    in-source cells the kernel reaches (the half-valid window).
+    unwidened=True never stretches the kernel."""
     inv1 = 1 / sr
     inv0 = -so * inv1
     s = abs(r / sr)
@@ -128,7 +129,7 @@ def axis(method, n, o, r, sn, so, sr, shift=0.0):
             out.append((None, taps, False, []))
             continue
         k, sup = KERNELS[method]
-        st = stretch(method, s)
+        st = 1.0 if unwidened else stretch(method, s)
         taps, clipped, window = [], False, []
         for i in range(math.floor(u - 0.5 - sup * st) - 1, math.ceil(u - 0.5 + sup * st) + 2):
             d = (i + 0.5 - u) / st
@@ -145,17 +146,31 @@ def axis(method, n, o, r, sn, so, sr, shift=0.0):
     return out, s
 
 
-def reference(case, src, valid, shift=0.0):
+def unwidened_to_half(case):
+    """Whether Bilinear or Cubic keeps its unwidened four-sample kernel
+    under the rule gdalwarp adopted in GDAL 3.13.0: unless an axis
+    downsamples by 2 or more (DESIGN.md §54)."""
+    sg, dg = case["src_grid"], case["dst_grid"]
+    return (case["method"] in ("Bilinear", "Cubic")
+            and abs(dg["rx"] / sg["rx"]) < 2 and abs(dg["ry"] / sg["ry"]) < 2)
+
+
+def reference(case, src, valid, shift=0.0, half_valid=True, four_sample_to_half=False):
+    """Per output cell, (value, tolerance) or None where it is invalid.
+    half_valid=False leaves out Lanczos's half-valid rule, which gdalwarp
+    dropped in GDAL 3.13.1; four_sample_to_half=True widens Bilinear and
+    Cubic only as gdalwarp does from GDAL 3.13.0 (DESIGN.md §54)."""
     sg, dg, m = case["src_grid"], case["dst_grid"], case["method"]
-    ax, sx = axis(m, dg["width"], dg["ox"], dg["rx"], sg["width"], sg["ox"], sg["rx"], shift)
-    ay, sy = axis(m, dg["height"], dg["oy"], dg["ry"], sg["height"], sg["oy"], sg["ry"])
+    flat = four_sample_to_half and unwidened_to_half(case)
+    ax, sx = axis(m, dg["width"], dg["ox"], dg["rx"], sg["width"], sg["ox"], sg["rx"], shift, flat)
+    ay, sy = axis(m, dg["height"], dg["oy"], dg["ry"], sg["height"], sg["oy"], sg["ry"], 0.0, flat)
     sw = sg["width"]
-    widened = stretch(m, sx) > 1 or stretch(m, sy) > 1
+    widened = not flat and (stretch(m, sx) > 1 or stretch(m, sy) > 1)
     cubic4 = m == "Cubic" and not widened
     masked = case.get("src_mask") is not None
     if cubic4:
-        bx, _ = axis("Bilinear", dg["width"], dg["ox"], dg["rx"], sg["width"], sg["ox"], sg["rx"], shift)
-        by, _ = axis("Bilinear", dg["height"], dg["oy"], dg["ry"], sg["height"], sg["oy"], sg["ry"])
+        bx, _ = axis("Bilinear", dg["width"], dg["ox"], dg["rx"], sg["width"], sg["ox"], sg["rx"], shift, flat)
+        by, _ = axis("Bilinear", dg["height"], dg["oy"], dg["ry"], sg["height"], sg["oy"], sg["ry"], 0.0, flat)
         # four-sample mode never widens
         bx = [(c, t, cl, w) for (c, t, cl, w) in bx]
     def centres(n, o, rr, so, sr, sh):
@@ -203,7 +218,7 @@ def reference(case, src, valid, shift=0.0):
                 row.append(None)
                 continue
             exact = abs(((ux[c] - 0.5) % 1.0)) < 1e-9 and abs(((uy[r] - 0.5) % 1.0)) < 1e-9
-            if m == "Lanczos" and masked and not exact:
+            if half_valid and m == "Lanczos" and masked and not exact:
                 nv = sum(1 for j in wy_ for i in wx_ if valid[j * sw + i])
                 if 2 * nv < len(wx_) * len(wy_):
                     row.append(None)

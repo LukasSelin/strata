@@ -28,6 +28,7 @@ python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ./cogcheck.sh [some.tif]        # the GeoTIFF/COG reader against GDAL's reading, in Docker
 python cogsabotage.py out-cog   # ... and check that comparison's checker
+./coghttpcheck.sh               # the same files read over HTTP range requests, from nginx
 ```
 
 `check.py` needs numpy; with scipy installed it also cross-checks its
@@ -290,7 +291,7 @@ misreading of the TIFF, GeoTIFF or libtiff predictor specifications.
    - the same levels and sizes;
    - the geotransform to 1e-9 of a cell;
    - the same EPSG code;
-   - `Masked` exactly when GDAL has NoData;
+   - `Masked` exactly when GDAL's mask is not all-valid;
    - every validity bit;
    - the float32 bits of every valid cell.
 
@@ -321,11 +322,254 @@ caught  sparse block valid      sparse blocks read as valid zeros
 ```
 
 What it does not cover:
-- files GDAL did not write: other writers' quirks, such as old-style LZW
-  or odd strip layouts;
+- files GDAL did not write, which "Reading GeoTIFFs other software
+  wrote" below takes on;
 - compressions the reader refuses (JPEG, WebP, LERC);
-- reading over HTTP;
-- decode speed, which nothing here measures yet.
+- decode speed, which [`benchmarks/cog/`](../benchmarks/cog/RESULTS.md)
+  measures against GDAL.
+
+### Over HTTP: coghttpcheck.sh
+
+`cog.HTTPReaderAt` is an `io.ReaderAt` over HTTP range requests, so the
+reader above runs unchanged on a COG in S3, GCS or behind any HTTPS URL.
+Its unit tests (`cog/http_test.go`) use Go's own file server and inject
+faults: 200 instead of 206, another range than the one asked for,
+truncated bodies, dropped connections, 429 and 5xx, 412 and 416 from a
+replaced file, and cancellation while waiting for a response, a retry or
+a request slot. `coghttpcheck.sh` checks it from outside, against a
+server strata did not write:
+
+1. It runs `cogcheck.sh` first if `out-cog/` is empty, then deletes
+   strata's local reading, so that reading cannot be what gets compared.
+2. nginx (`nginx:alpine`, in Docker) serves `out-cog/` on a loopback
+   port.
+3. `go run ./cog -url <nginx> -workers 8` reads every file through
+   `cog.NewHTTPReaderAt`, with eight goroutines reading windows of each
+   source at once, and records each file's requests and bytes.
+4. `cogcompare.py` judges the result exactly as before.
+5. `cogblocks.py` counts, through GDAL's `BLOCK_OFFSET_x_y` and
+   `BLOCK_SIZE_x_y` metadata, the blocks each file stores, the block
+   reads strata's per-band sources make, and how many stored blocks end
+   past the 64 KiB prefetch. It prints them next to the requests, and
+   fails if any file was not read over HTTP.
+
+With GDAL 3.14 and nginx 1.31, in about 25 s, all 98 files are identical to GDAL's
+reading, as they are from disk. The request counts:
+
+```
+file                                              KiB blocks  reads fetches requests other fetched
+cog-Float32-DEFLATE-FLOATING_POINT                958     39     39      34       35     0    100%
+cog-Byte-ZSTD-STANDARD                            129     39     39      20       21     0    100%
+gtiff-Float32-tiles-BAND-be                      3624    561    561     554      555     0    100%
+gtiff-Float32-tiles-PIXEL-be                     3310    187    561     185      186     0    100%
+...
+98/98 files read over HTTP. The 97 counted: 8,344 requests for 8,789 blocks (11,399 block reads,
+8,247 blocks past the prefetch) = 97 prefetches + 8,247 fetches + 0 other.
+165.7 MiB fetched of 165.7 MiB
+```
+
+On every counted file, requests = 1 prefetch + 1 per stored block that
+ends past the prefetch, and nothing else. Open never needed a request
+beyond the prefetch, not even for the stripped GeoTIFFs. The caches meant
+no block was fetched twice, although eight goroutines read 100×77
+windows that cut every block and, in a pixel-interleaved file, three
+band sources read each block: `reads` is 3 × `blocks` on those rows,
+and `fetched` is still 100%, because the File keeps the compressed
+blocks for its sources to share (up to 64 MiB, which holds every file
+here). Before that cache, the PIXEL rows fetched every block once per
+band: 10,814 requests and 217.0 MiB in total. A COG stores its smallest overviews
+first, so those blocks sit inside the prefetch: a 129 KiB ZSTD COG with
+39 blocks took 21 requests. Merging adjacent reads could only save
+requests between blocks, and nothing issues those as one read, so the
+reader does not merge.
+
+Two costs remain:
+- **A large pixel-interleaved file read band after band fetches again.**
+  The shared cache holds 64 MiB of compressed blocks, least recently
+  used out. Sources that read the same region at about the same time
+  share every fetch, whatever the file's size; a source that reads a
+  whole band of a file bigger than that before the next band starts
+  finds the first blocks gone. None of the files here is that large.
+- **Blocks over 1 MiB take one request per MiB.** `cog` reads a block in
+  1 MiB pieces, so that a corrupt byte count cannot make it allocate
+  before it reads. `gtiff-Float32-onestrip`, a single 1.4 MB strip,
+  takes 3 requests: the prefetch and two pieces. GDAL reports that strip
+  as virtual strips of 2 rows, so `cogblocks.py` prints it with a note
+  and leaves it out of the counts.
+
+A planted defect, one bit flipped in the middle of every fetched range,
+makes 0 of 98 files identical, so the comparison sees the HTTP path.
+
+## Reading GeoTIFFs other software wrote
+
+`cogcheck.sh` only sees files GDAL wrote with the options it chose.
+`cogcorpus.sh` runs the same comparison over a directory of files it
+did not write:
+
+```bash
+python3 corpus/fetch.py       # 675 files, 840 MB, each checked by SHA-256
+corpus/generate.sh            # 80 more, from tiffcp, rasterio and GDAL
+./cogcorpus.sh                # GDAL records, strata reads, cogcompare.py judges
+```
+
+- `cogcorpus.py` has GDAL record its reading of every `*.tif` and
+  `*.tiff`, through `cogtruth.py`, the recorder `cogmake.py` now shares.
+  GDAL sees each file alone: no `.ovr`, `.msk`, `.aux.xml` or `.tfw`,
+  which strata does not read either.
+- A level over 2²⁴ cells is compared over a 4096² window a third of the
+  way in, and at most 16 bands, so a 36000² product does not need 5 GB a
+  band. `cog/main.go` applies the same rule and the comparison checks
+  both read the same window.
+- A file cog refuses with a "not supported" error is **refused**, not
+  failed. So is one GDAL cannot read either (**refused, GDAL too**). A file
+  whose mask GDAL takes from an alpha band has its values compared on
+  every cell, since cog reads alpha as a band. The EPSG code compared is
+  that of GDAL's horizontal 2D CRS; one that cog leaves empty and GDAL
+  identifies through PROJ is counted (**no EPSG**) but not failed, while
+  a code that differs from GDAL's fails. Any other error or difference
+  fails.
+
+### The corpus
+
+`corpus/sources.tsv` lists every downloaded file with its URL, SHA-256
+and licence. Nothing is committed.
+
+- **GDAL autotest** (MIT, OSGeo/gdal@7617801f): every TIFF in
+  `autotest/gcore/data`, `alg/data` and `gdrivers/data/gtiff`. Deliberately
+  odd files: masks, SubIFDs, broken tags, truncations, every codec, and
+  files from ArcGIS, ERDAS IMAGINE and VICAR.
+- **libtiff** (BSD-style, libtiff@0962d91b): `test/images`, including
+  old-style LZW, and the `pics-3.8.0` set: GraphicsMagick's bit-depth
+  matrix (public domain), CMYK, YCbCr, LogLuv, and Photoshop, HP, Wang and
+  camera output (no licence stated beyond libtiff's distribution).
+- **Go** `golang.org/x/image` v0.45.0 testdata (BSD-3-Clause).
+- **OSGeo GeoTIFF samples** (no licence stated): USGS DRGs and DEMs, and
+  files from PCI, Intergraph, ERDAS, SPOT and Z/I Imaging, in 60-odd
+  projections.
+- **Products**: Copernicus DEM GLO-30 and GLO-90; USGS 3DEP 1″ (public
+  domain); Sentinel-2 L2A COGs (Copernicus licence); Landsat 9 C2 L2
+  (public domain); NASADEM and MODIS MOD13Q1 (NASA, no restrictions); JAXA
+  AW3D30; ESA WorldCover (CC-BY 4.0); JRC surface water; AWS Terrain
+  Tiles; Natural Earth shaded relief (public domain, Photoshop). The
+  Planetary Computer ones are fetched with its free anonymous token.
+- **Generated** (`corpus/generate.sh`, not hash-pinned since they
+  depend on the writers' versions, which each directory records):
+  `tiffcp` (libtiff 4.7) rewrites into 16-bit and float predictors, odd
+  RowsPerStrip, planar strips and tiles, big-endian, BigTIFF and
+  FillOrder 2; rasterio and rio-cogeo (their own GDAL build) write COGs
+  with masks, web-optimised tiling and dataset masks; GDAL writes what
+  `cogmake.py` does not ask for: big-endian with predictor 2, internal
+  masks, alpha, COG band and tile interleaving, strips of 1 row or more
+  than the height, NoData values near and beyond each type's limits, and
+  the types and codecs cog refuses.
+
+### Results
+
+With GDAL 3.14, every one of the 755 files is identical to GDAL's
+reading, refused by design, or refused by GDAL too:
+
+| Source | Files | Identical | Refused | GDAL refuses too | Fixed | No EPSG | Failed | Cells compared |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| gdal-autotest | 434 | 279 | 109 | 46 | 55 | 16 | 0 | 122,993,952 |
+| generated-gdal | 50 | 38 | 12 | 0 | 3 | 0 | 0 | 2,000,645 |
+| generated-rasterio | 11 | 11 | 0 | 0 | 1 | 0 | 0 | 48,898,844 |
+| generated-tiffcp | 19 | 16 | 3 | 0 | 2 | 0 | 0 | 471,267 |
+| libtiff-pics | 61 | 26 | 34 | 1 | 7 | 0 | 0 | 4,054,245 |
+| libtiff-test | 31 | 18 | 12 | 1 | 5 | 0 | 0 | 1,773,395 |
+| osgeo-samples | 113 | 108 | 5 | 0 | 8 | 5 | 0 | 176,204,528 |
+| products | 19 | 19 | 0 | 0 | 0 | 0 | 0 | 451,276,700 |
+| x-image | 17 | 12 | 5 | 0 | 0 | 0 | 0 | 340,470 |
+| **all** | 755 | 527 | 180 | 48 | 81 | 21 | 0 | 808,014,046 |
+
+[`corpus/RESULTS.md`](corpus/RESULTS.md) has a row per file: writer,
+features, result and cells compared. A run takes about 5 minutes.
+
+The first run failed 79 files; a second, after the fixes and with the
+FillOrder files added, 2 more. Each finding was cut down to a unit test
+built with `cog/writer_test.go` (in `cog/foreign_test.go`), fixed, and
+the corpus, `cogcheck.sh` (98/98) and `cogsabotage.py` (8/8) rerun:
+
+| Finding | Files | Example | Fix |
+|---|---:|---|---|
+| Internal masks ignored: masked cells read as valid | 12 | `test_with_mask_1bit.tif`, rio-cogeo `--add-mask` | Read transparency-mask IFDs (1- or 8-bit) as GDAL does, from the chain and SubIFDs, matched to levels by size; a mask replaces NoData |
+| EPSG code GDAL does not give | 26 | ERDAS `erdas_spnad83.tif`: EPSG:26966 with US-foot units | Name a code only when no key or citation redefines it; units checked against a table generated from PROJ's `proj.db` (`cog/epsg_gen.py`); deprecated codes as their replacement |
+| YCbCr, CMYK, CIELab read as stored | 15 | `ycbcr_22_lzw.tif`, `rgbsmall_cmyk.tif` | Refuse them: GDAL converts them to RGB (at 8 bits or fewer) |
+| NoData parsed or matched differently | 5 | NoData 12.5 on bytes; `"-1.#INF"`; `""` | GDAL's `CPLAtofM`; integer NoData truncated, out of range none; floats matched with `ARE_REAL_EQUAL`; float32 NoData near ±MaxFloat32 snapped, beyond it Inf |
+| Strip and tile tags libtiff accepts | 7 | `size_of_stripbytecount_lower_than_stripcount.tif`, `cramps-tile.tif` | Pad or cut offset lists; SLONG8 offsets; missing byte counts computed; tiles under StripOffsets |
+| Old-style LZW | 3 | `quad-lzw-compat.tiff` | Recognise libtiff's pre-5.0 LSB-first LZW by its first code |
+| IFD chain loops | 3 | `test_ifd_loop_to_self.tif` | Stop the chain, as libtiff does |
+| Overviews in SubIFDs | 2 | `tiff_with_subifds.tif` | Read IFD0's SubIFDs before the chain; unscaled overview grids without a geotransform |
+| Blocks with an offset but 0 bytes | 2 | `cog_strile_arrays_zeroified_when_possible.tif` | A 0-byte block is absent |
+| Edge tile cut at the image's last row | 2 | `contig_tiled.tif` | Accept a tile that covers the rows inside the image |
+| FillOrder 2 | 2 | tiffcp `-f lsb2msb` | Reverse each stored byte's bits, as libtiff does for every codec but JPEG |
+| Negative ScaleY | 1 | `negative_scaley.tif` | North-up, GDAL's default |
+| NODATA_VALUES | 1 | `test_nodatavalues.tif` | Refuse: GDAL masks a cell only where every band holds its value |
+
+The NoData finding is the one to remember. The unit test
+`TestNoDataNative` said three things: a fractional NoData on integers
+matches nothing, a float64 cell that only rounds to NoData stays valid,
+and 1e39 on float32 matches nothing. GDAL does none of these. Its mask
+band truncates integer NoData and compares floats within
+2·FLT_EPSILON·|a+b|. In float32 that sum overflows near ±MaxFloat32, so
+every cell there matches. The corpus caught the byte case; GDAL's source
+(`gdalnodatamaskband.cpp`) gave the rest, and `generated-gdal/*nodata*`
+confirms each rule against GDAL, cell by cell. The test is now
+`TestNoDataGDAL`.
+
+What the corpus still does not cover:
+- **Few current non-GDAL writers.** All 19 products turned out to be
+  COGs made with GDAL (by ESA, USGS, Element 84, Microsoft), apart from
+  Natural Earth's Photoshop files. The other writers come from test sets
+  of 1995 to 2011: ERDAS, PCI, Intergraph, VICAR, GraphicsMagick,
+  ImageMagick and libtiff's tools. No QGIS or current ArcGIS export is
+  included (QGIS writes through GDAL anyway), and no current commercial
+  tool (ENVI, Global Mapper, FME).
+- **What cog refuses is checked only for the refusal**: JPEG, WebP,
+  LERC, LZMA, JPEG XL, CCITT, 1- to 7- and 12-bit, 64-bit integer,
+  complex and 16-bit float data; 180 files.
+- **Alpha bands** are compared as values only (17 files), and the 21
+  files whose CRS GDAL identifies through PROJ get no EPSG code from cog.
+- **Sidecar files** (`.ovr`, `.msk`, `.aux.xml`, `.tfw`) are hidden from
+  GDAL, because cog does not read them.
+- **Very large levels** are compared over one 4096² window, not whole.
+- **Generated files** depend on the writers' current versions, so a
+  later `generate.sh` may produce different ones.
+
+### The EPSG table against epsg.io: epsgcheck.py
+
+cog's unit and deprecation table (`cog/epsg_table.go`) comes from PROJ's
+`proj.db`, and so does GDAL's reading of the same keys. Every comparison
+above would pass a mistake in it. [`epsgcheck.py`](epsgcheck.py)
+checks the table against [epsg.io](https://epsg.io), MapTiler's import
+of the same EPSG registry, which does not go through `proj.db`. It uses
+only the free per-code pages (no API key) and needs no packages:
+
+```
+python3 epsgcheck.py              # judge the table
+python3 epsgcheck.py --sabotage   # plant 4 defects; each must be caught
+```
+
+It checks every unit entry (first axis unit, by name), every replacement
+(the old code is deprecated, and the new one is an EPSG CRS of the same
+kind), and that 668 codes the table leaves out (every neighbour of a
+listed code, plus 400 random ones) really are in metres or degrees.
+About 3,000 pages are cached in `out-epsg/cache`, so only the first run
+takes minutes. Last run, both on EPSG 12.029: no disagreements.
+
+It reports, without failing:
+
+- **26 replacements deprecated themselves**, e.g. 31265 → 31275 → 3907
+  → 8677. The table follows one step, and so does GDAL: for all 419
+  replaced codes, `ImportFromEPSG` in GDAL 3.14 gives the table's
+  replacement, even where it is deprecated (despite its warning calling it
+  "non-deprecated").
+- **EPSG:8449 → 8860**, a 3D geographic CRS replaced by a 2D one.
+- **Codes epsg.io answers with ESRI's definition**, such as 26761 (NAD27
+  / Hawaii zone 1, which EPSG does not have), are skipped: they are not
+  EPSG codes.
+
+epsg.io does not publish which code replaces which, so it cannot check
+the pairing itself; GDAL agreeing on all 419 is the evidence for that.
 
 ## What this does not tell you
 

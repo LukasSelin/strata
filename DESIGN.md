@@ -24,6 +24,8 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
+- [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): the GeoTIFF/COG reader's decode speed against GDAL, and slope over a COG against `gdaldem` (§34).
+- [benchmarks/gdalsuite/RESULTS.md](benchmarks/gdalsuite/RESULTS.md): all 25 operations with a GDAL counterpart timed against it, compute only, file to file and the whole flow from a COG, with both tools' outputs compared (§38).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
@@ -52,7 +54,7 @@ the detailed record; this table only points at it.
 | Register-level operation fusion | §29 | measured, not built: about 5% out of cache (`benchmarks/fusion`) |
 | N-dimensional arrays | §10 | not started (v0.3) |
 | Point clouds | §11 | not started (v0.7) |
-| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files; writing, HTTP range reads open |
+| Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode and mosaics open |
@@ -1593,15 +1595,34 @@ values into `float32` plus validity at the boundary (§9, §31).
 
 Status: GeoTIFF/COG reading is done: `cog.Open` over an `io.ReaderAt`,
 `File.Source` as an `engine.RasterSource` for one band of one resolution
-level, with a byte-bounded cache of decoded blocks. It reads classic and
+level, with a byte-bounded cache of decoded blocks per source and, for a
+pixel-interleaved file, one of compressed blocks that its band sources
+share, so each block is fetched once for all bands. It reads classic and
 BigTIFF, tiles and strips, chunky and planar, 8/16/32-bit integers and
 32/64-bit floats, none/LZW/Deflate/PackBits/ZSTD with predictors 2 and 3,
 overviews, sparse blocks, GDAL NoData (compared in the native type) and
 the geotransform and EPSG code. It is bit-identical to GDAL 3.14 on 98
 files, 58.5M cells, and all eight of `cogsabotage.py`'s planted defects
-fail that comparison. Open: writing (a COG sink), a byte-range
-`io.ReaderAt` over HTTP, internal masks, and a benchmark of decode
-throughput against GDAL.
+fail that comparison. `cog.NewHTTPReaderAt` reads the same files from a
+URL (S3, GCS, any HTTPS server, presigned or public) with range requests
+and the standard library only: a 64 KiB header prefetch that serves Open,
+then one request per block past it, 206 required, bounded retries of 429,
+5xx and truncated bodies, at most 8 requests in flight, and If-Match on
+the ETag so a replaced file fails instead of mixing versions. Read through
+it from nginx, all 98 files are again identical to GDAL's reading, and
+every file but one costs exactly one prefetch plus one request per stored
+block past it, pixel-interleaved ones included: 8,344 requests and
+165.7 MiB for 165.7 MiB of files, where one fetch per band had cost
+10,814 and 217.0 MiB (`acceptance/coghttpcheck.sh`). Its speed against
+GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
+on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
+Go's inflate, is most of the gap), yet slope over a COG still beats
+`gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
+workers. Since then the default block cache holds 8 rows of blocks
+(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
+read allocates about its cache rather than its size, and 8- and 16-bit
+integers convert without a float64 detour (UInt16 reads 1.4–1.9×
+faster). Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 
@@ -1612,9 +1633,8 @@ strata's differentiator is computation, not parsing.
 The GeoTIFF adapter is the exception, recorded in
 [ADR 0002](docs/adr/0002-cog-adapter.md): no Go library reads a
 window's blocks of a floating-point TIFF, and GDAL means cgo. So `cog`
-parses the container itself and wraps libraries only for LZW
-(`golang.org/x/image/tiff/lzw`), Deflate (the standard library) and ZSTD
-(`klauspost/compress`). An exception to this rule needs an outside
+parses the container itself and wraps a library only for LZW, Deflate
+and ZSTD (`klauspost/compress`). An exception to this rule needs an outside
 judge, and GDAL is that judge here (§34).
 
 ## 36. CRS and Reprojection
@@ -1640,7 +1660,10 @@ format adapter), not part of execution.
    (`raster.CRS.Matches`): equal codes, or either code empty. Empty means
    unknown, and the caller vouches for it. Codes are compared as strings,
    so `"EPSG:25833"` and `"urn:ogc:def:crs:EPSG::25833"` do not match;
-   normalise codes at the IO boundary.
+   normalise codes at the IO boundary. The panic names both sides with
+   `raster.CRS.Describe`: the quoted code, and for `EPSG:<number>` a link
+   to its epsg.io page. The link is for the reader; nothing else is read
+   from the code.
 5. **Operations that take bare rasters cannot check.** `algebra`, `focal`,
    `terrain`, `transfer`, `reduce` and the engine see `Float32Raster`s and
    `engine.RasterSource`s, never grids (§9), so for them the contract
@@ -1913,13 +1936,18 @@ findings carry a `#nosec` comment giving the reason. Neither tool
 detected the overflow in `raster.Validate` found by fuzzing: gosec's
 integer overflow rule covers conversions, not arithmetic.
 
-CI (`.github/workflows/ci.yml`) runs all of this on every push and pull
-request: build, vet and test on Linux, Windows and macOS; the same under
-`GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS (arm64, NEON);
-`go test -race`; golangci-lint; and `kernelborder` (§12), a custom
-analyzer in the separate `lint/` module, run as a vet tool. The race and
-lint jobs run in both builds, and in the SIMD build for arm64 too (lint
-cross-compiled), so the vet tool sees each backend's files:
+CI (`.github/workflows/ci.yml`) runs in two tiers. Every pull request
+and push to master gets the quick one: build, vet and test on Linux, and
+the same under `GOEXPERIMENT=simd` on Linux (amd64, AVX2) and macOS
+(arm64, NEON); `go test -race` on `internal/exec` and `engine`, the
+packages that start goroutines; golangci-lint; and `kernelborder` (§12),
+a custom analyzer in the separate `lint/` module, run as a vet tool. The
+lint jobs run in both builds, and in the SIMD build for arm64 too
+(cross-compiled), so the vet tool sees each backend's files. A release
+tag (`v*`) or a manual run gets the full tier, which adds the scalar
+build on Windows and macOS, the race detector over every package in both
+builds and on both SIMD backends, and the `cog` module on all three
+platforms with its race run and a minute of fuzzing:
 
 ```text
 (cd lint && go build -o /tmp/kernelborder ./cmd/kernelborder)
@@ -3604,10 +3632,11 @@ inverted for the weights. What it does, and strata now does:
   cubic with a = −0.5, and the Lanczos-3 window. When an axis downsamples,
   s is its source cells per output cell, which stretches the kernel so it
   averages: for Bilinear and Cubic once 1/s < 0.95, for Lanczos once s > 1,
-  per axis. Average weighs by area of overlap. Weights are renormalised
-  over the source cells inside the source, so the edge renormalises; an
-  output cell whose centre lies outside the source is invalid (Average:
-  one that overlaps no source cell).
+  per axis (gdalwarp 3.13.0 moved the first threshold, below). Average
+  weighs by area of overlap. Weights are renormalised over the source
+  cells inside the source, so the edge renormalises; an output cell
+  whose centre lies outside the source is invalid (Average: one that
+  overlaps no source cell).
 - Cubic has two modes. With neither axis stretched it is gdalwarp's
   four-sample formula, which falls back to unstretched Bilinear for a
   cell whose 4×4 taps of non-zero weight lose one to the edge or, with a
@@ -3635,7 +3664,8 @@ Lanczos downsampling by four — around every NoData cell:
   stays valid), except a cell whose centre lies exactly on a source
   centre on both axes, which copies that cell. The first probes had
   missed the rule below 1:1, because the 1:1 probe was aligned, which is
-  the exception; the gdalwarp comparison found it;
+  the exception; the gdalwarp comparison found it. gdalwarp has dropped
+  the rule since 3.13.1 (below);
 - its value is Σ w·v·x / Σ w·v over the valid cells, where v is 0 or 1.
 
 Both sums are separable, so the masked path runs the same passes over
@@ -3656,11 +3686,12 @@ derived from the sums (A/|D|, not a fixed ulp count) for that reason.
 
 ### Where strata departs from gdalwarp
 
-Only where gdalwarp departs from its own definitions:
+Only where gdalwarp departs from its own definitions, or has changed them
+since they were measured:
 
-- the stretch: gdalwarp derives it for each warp chunk from pixel
-  counts, the chunk's source window (clipped to the source) over its
-  destination cells, not from the resolutions. The two agree for a
+- the stretch, before GDAL 3.13.0: gdalwarp derives it for each warp
+  chunk from pixel counts, the chunk's source window (clipped to the
+  source) over its destination cells, not from the resolutions. The two agree for a
   destination inside the source on its cell edges, and nearly agree in
   the interior of a large warp, but where the destination overhangs the
   source, or gdalwarp splits a warp into chunks, its kernel width depends
@@ -3668,7 +3699,15 @@ Only where gdalwarp departs from its own definitions:
   under 59 cells of 1.37 is stretched by 80/59 = 1.356). strata keeps the
   resolution ratio, which is the geometry and the same for every tiling,
   as §23 needs. The acceptance cases compare a non-integer stretch on a
-  grid where the two agree (1.25) and record the others as excluded;
+  grid where the two agree (1.25) and record the others as excluded.
+  From 3.13.0 (OSGeo/gdal commit 7e18bd36cf) gdalwarp takes it from the
+  geometry instead, the source extent of unit squares of the destination,
+  which in one CRS is the resolution ratio: the 1.37 grids' Lanczos
+  values, 1004 to 1473 cells out per case on 3.12.2, all agree on
+  3.13.0. The acceptance cases still exclude those grids, because on 3.13.0 two cells of the
+  masked 1.37 Lanczos case, next to the source's bottom edge (31 of 63
+  window cells valid), are valid in gdalwarp and not in strata, which the
+  exclusion had hidden and which is not yet explained;
 - Lanczos downsampling by an odd integer factor (3, 5): gdalwarp gives the
   tap at an output centre about 83 times its weight, which looks like a
   defect in its optimised Lanczos path;
@@ -3676,7 +3715,33 @@ Only where gdalwarp departs from its own definitions:
   kernels;
 - a source one cell wide or high, where gdalwarp's Bilinear degrades to
   Nearest;
-- Average on output cells that extend past the source's edge, by about 1%.
+- Average on output cells that extend past the source's edge, by about 1%;
+- Bilinear and Cubic downsampling by less than 2, from GDAL 3.13.0: the
+  same commit keeps the four-sample, unwidened formula until an axis's
+  scale 1/s falls to 0.5, where it had widened below 0.95, to blur less.
+  That is a changed definition, not a defect: gdalwarp's values on the
+  1.25 grids agree with §54's reference with the kernels unwidened (the
+  Cubic fallback to Bilinear included), and with strata's on 3.12.2.
+  strata keeps the 0.95 threshold, because an unwidened tent or cubic
+  downsampling by up to 2 weighs the source cells unevenly and aliases,
+  which is what widening is for. From 3.13.0 `acceptance/gdalwarp_resample.py` judges
+  those cases' gdalwarp values against the unwidened reference instead
+  of strata's, and counts them; older GDAL is held to strata's values;
+- Lanczos's half-valid rule, from GDAL 3.13.1: gdalwarp dropped it
+  (OSGeo/gdal commit c9507793, issue #14560, which found it erased text
+  drawn on a transparent background), and its source now leaves the right
+  rule as an open TODO. It keeps any cell whose centre cell is valid and
+  whose valid weight is at least 1e-6, so it keeps cells, never drops
+  them, and only where fewer than half of the window's cells are valid.
+  strata keeps the rule as measured on 3.12.1. On the benchmark suite's
+  11264² canopy grid halved (3.14.0dev) that is 42 of 30.8M cells, all
+  at inside corners of NoData blocks, with 36 to 64 of 144 window cells
+  valid. The rule without the count gives gdalwarp's validity on all
+  31.5M interior cells, and the rule with it gives strata's. It is not
+  chunking: `-wm 2048` already warps that grid in one chunk, and
+  `-wm 6000` gives the same cells. `acceptance/gdalwarp_resample.py`
+  counts these cells on GDAL 3.13.1 and later, and holds older GDAL to
+  exact validity.
 
 Values otherwise agree with gdalwarp to within float32 rounding, and
 validity exactly (`acceptance/gdalwarp_resample.py`).

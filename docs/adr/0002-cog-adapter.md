@@ -27,8 +27,9 @@ The adapter is `github.com/LukasSelin/strata/cog`, in `cog/` with its own
 `go.mod`. `acceptance/` and `lint/` are set up the same way.
 
 - The core module keeps no dependencies beyond its test libraries.
-  Reading LZW and ZSTD blocks needs `golang.org/x/image/tiff/lzw` and
-  `github.com/klauspost/compress/zstd`. Anyone who imports strata only
+  Reading LZW, Deflate and ZSTD blocks needs `github.com/klauspost/compress`
+  (at first `golang.org/x/image/tiff/lzw` too; see the note at the end
+  of this section). Anyone who imports strata only
   for computation should not pull them in, and later adapters (Zarr,
   LAS/LAZ) will bring heavier ones.
 - The adapter uses strata only through its public API: `engine.RasterSource`,
@@ -38,6 +39,14 @@ The adapter is `github.com/LukasSelin/strata/cog`, in `cog/` with its own
 - It lives in the repository rather than a repository of its own, so it
   is tested against the strata it sits next to. Until strata is tagged, it
   resolves strata through a `replace` directive, as `acceptance/` does.
+
+Amended 2026-09-23 by [benchmarks/cog](../../benchmarks/cog/RESULTS.md):
+the reader first took LZW from `golang.org/x/image/tiff/lzw` and Deflate
+from the standard library. Profiling put both decoders at the top of the
+read path, and `klauspost/compress`, already the ZSTD dependency, has an
+LZW decoder with libtiff's early-change variant (`SetAldusCompatible`)
+and a faster Deflate. The module now has that one dependency, and
+`cogcheck.sh` still finds all 98 files identical to GDAL.
 
 ### 2. strata writes its own minimal GeoTIFF parser
 
@@ -56,8 +65,8 @@ The adapter is `github.com/LukasSelin/strata/cog`, in `cog/` with its own
 What strata needs from TIFF is small and fully specified. It needs the
 container (TIFF 6.0 and BigTIFF, IFDs, tags) and the block layouts (tiles,
 strips, chunky and planar). It needs five decompressors, of which it
-writes only PackBits: the standard library supplies Deflate, and the two
-dependencies supply LZW and ZSTD. It needs libtiff's two predictors, a
+writes only PackBits: one dependency, `klauspost/compress`, supplies LZW,
+Deflate and ZSTD. It needs libtiff's two predictors, a
 few integer and float sample types, and the handful of GeoTIFF keys that
 give a geotransform and an EPSG code. The package is about 1600 lines,
 comments included and tests aside. It still wraps existing libraries wherever one does part of
@@ -111,3 +120,32 @@ passed.
   scale/offset metadata are not read.
 - Later adapters follow the same pattern: a module in the repository, a
   wrapped library where one fits, and an outside tool as the judge.
+
+## Addendum, 2026-09-23: files GDAL did not write
+
+The 98 files above were all written by GDAL, so they could not show how
+the reader fares with other writers. `acceptance/cogcorpus.sh` runs the
+same comparison over a corpus of GeoTIFFs from libtiff, tiffcp,
+rasterio and rio-cogeo, ERDAS, PCI, Intergraph and USGS software, GDAL's
+own deliberately odd test files, and Landsat, Sentinel-2, Copernicus,
+NASA, USGS, JAXA and ESA products (`acceptance/README.md`, "Reading
+GeoTIFFs other software wrote"). It changed three decisions above:
+
+- **Internal masks are read.** A transparency-mask IFD now gives its
+  level's validity, as GDAL's internal mask does, because rio-cogeo and
+  GDAL write them for masked COGs and ignoring one reads masked cells as
+  valid.
+- **NoData compares as GDAL's mask band compares it, not exactly.**
+  GDAL truncates an integer NoData, ignores one outside the type's range,
+  and matches floats within `ARE_REAL_EQUAL`'s 2·FLT_EPSILON·|a+b|. The
+  first draft compared exactly in the sample type, and its unit test
+  encoded that belief, as the first draft's float64 overflow test had
+  encoded another. The corpus found it through a byte file with NoData
+  12.5; GDAL's source gave the rest, and generated files confirm each
+  rule.
+- **The CRS is named more cautiously.** An EPSG code is reported only
+  when no other key or citation redefines it, and deprecated codes as
+  their replacements, from a table generated from PROJ's database
+  (`cog/epsg_gen.py`). Where GDAL identifies a redefined CRS with a code
+  through PROJ, cog reports none; the corpus counts those files
+  separately rather than failing them.
