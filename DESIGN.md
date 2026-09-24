@@ -765,9 +765,10 @@ call typed entry points (§25). STRATA-8 settled a first shape:
   erosion, or over each input's own reach for a `ReachKernel` (§52).
 
 It stays internal until worker pools, sources and fusion have exercised
-it. Worker pools (§26) and sources (§24) now have, and so has tile-level
-fusion, as the radius-0 `Pipeline` (§52); §52's "Where it lives" is why
-the contract is still not published.
+it. Worker pools (§26) and sources (§24) now have, and so has fusion, as
+the `Pipeline` of §52 with stages of any radius and several outputs.
+Publishing was then decided against, for now: §52's "Publishing
+`Kernel`: the decision" records the evidence and what would change it.
 
 `Reducer` is the fold counterpart (§49): inputs and no outputs, radius
 fixed at 0, and a value rather than a raster. It is a separate interface
@@ -3342,6 +3343,7 @@ rather than code. After the first two, §22 and this section record which
 parts of the contract changed shape to support them (`ReachKernel`,
 padded windows, scratch that grows with the suffix radius) and what
 would trigger publishing. Until then a caller gets typed entry points.
+It is recorded below, under "Publishing `Kernel`: the decision".
 
 Status: radius > 0 is done, as specified above, with three things the
 spec did not say and the code had to:
@@ -3482,6 +3484,86 @@ On one 12-core Zen 2, AVX2, masked, the median of six pinned runs of
 
 The spreads were 2–20%, so the table shows direction, not a published
 result.
+
+### Publishing `Kernel`: the decision
+
+**Not yet.** `Kernel`, `Span`, `Window` and the optional interfaces stay
+in `internal/exec`. A caller who wants operations composed gets a typed
+entry point for that composition, as `WeightedSlope` and `Surface` are:
+each is about fifty lines over a `Pipeline`, and needs no public
+contract. The two changes above were the test this section set, and the
+evidence came out on the side of waiting.
+
+**The contract has not settled.** Since STRATA-8 made it internal
+(2026-09-17), every change to what a kernel sees came from a real use.
+Published, each one would have been a breaking or semantic change for
+someone else's implementation:
+
+| date | change | forced by |
+|---|---|---|
+| 09-19 | `ScratchKernel`, `ScratchSize`, `Scratch`, `Span.Scratch` | the radius-0 pipeline's intermediates |
+| 09-22 | scratch pooled and unzeroed: what a call finds there is unspecified | allocation cost more than the pipeline saved |
+| 09-22 | `FusableKernel` | register-level fusion (§29) |
+| 09-24 | `ReachKernel`: validity per output and input | `Slope(a)·b` must not erode `b` |
+| 09-24 | `ReachKernel` edge rings; `Window` no longer promises every cell exists | several outputs of different radii |
+
+The last row is the telling one. "Every view cell exists" was a promise
+a kernel could rely on. Keeping it would have cost a second kernel
+interface and a second planning pass (the rejected projected-sub-kernel
+design). Internally it could be loosened, for the one kind of kernel
+that opts in, in an afternoon.
+
+**The contract has gaps that a public version would expose.** Each is
+harmless inside the module, where every kernel is ours and tested
+against its unfused form, and none is harmless outside:
+
+- **`FusableKernel` returns a `vec.Step`,** an `internal/vec` type.
+  Publishing it means publishing the vector op set, or leaving caller
+  kernels permanently unfusable.
+- **A stage may not be a `ScratchKernel`.** A caller's kernel that
+  needs working memory could not join a pipeline until stages get
+  scratch lent to them, which needs a second `Scratch` value per worker.
+- **A pipeline equals its unfused form at the edge only if its later
+  stages carry NaN through.** Every strata kernel does, and the engine
+  cannot check it. A caller's comparison or NaN-filling stage would
+  break the rule silently.
+- **A `ReachKernel` must report its reach exactly.** One that
+  under-reports reads padding into kept cells without any error. Our
+  tests catch that for our kernels; a public contract could only say
+  "must".
+- **One edge value per kernel, and one kind of validity rule** (AND
+  and erosion). The focal mean that skips NoData (§22) is the known
+  case that needs more.
+
+**No caller is asking.** Both compositions §52 was written for, a
+weighted factor product and several terrain products at once, were
+served by typed entry points.
+
+**What would change the decision.** It takes all three:
+
+1. **A need typed entry points cannot meet.** That means a concrete
+   request to compose a caller's own operation with strata's in one
+   pass, not a wish for generality. "Several of strata's operations in
+   one pass" alone is met more cheaply by a public pipeline builder
+   over strata's own operations (`Slope` then `Mul`, as values a caller
+   wires together). That publishes names of operations, not the kernel
+   contract, so it comes first if demand appears.
+2. **A quiet contract.** No change to the exported surface of
+   `internal/exec/kernel.go` across the next three operation families
+   to use the engine. `git log -- internal/exec/kernel.go` is the
+   measure.
+3. **The gaps closed or fenced off.** `FusableKernel` stays unexported
+   or stops returning an internal type. Stages get scratch, or the rule
+   is documented as permanent. The NaN assumption becomes a
+   declaration the pipeline checks. For instance, a stage could declare
+   itself NaN-preserving, and `Pipeline` could refuse any stage that
+   has not declared it after a stage with a radius.
+
+**Where it would live.** In package `engine`, beside `Options`, the
+sources and the sinks, with `ProcessN` and `ProcessChunked` joining
+them. `internal/exec` already imports `engine`, so the move creates no
+cycle. The alternative, a new package, would split one runtime across
+two import paths for no benefit a caller can see.
 
 ## 53. Focal Operations
 
