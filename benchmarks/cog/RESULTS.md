@@ -9,45 +9,49 @@ This directory asks how long it takes to get there.
 
 The first version of the reader had never been timed. Profiling it put
 its own loops ahead of the decompressors, and the fixes those profiles
-called for are part of this change. The tables show the reader before
-and after them, and GDAL.
+called for came with the first version of this page. The tables show
+the reader as it first was ("before", 9f658d3), the reader now, and
+GDAL. They were last regenerated with the SIMD row kernels of
+[The SIMD row kernels](#the-simd-row-kernels), so "strata" includes
+every change since the first version of this page, not only those.
 
 ## Headline
 
-- **On a compressed COG, GDAL still reads faster: 1.4–2.1× on one
-  core, 1.5–2× on twelve.** The whole 508 MB float32 raster from a
-  Deflate COG with predictor 3 takes strata 1.70 s on one core and GDAL
-  0.81 s. From ZSTD with predictor 3 it is 1.10 s against 0.80 s; from
-  LZW, 2.21 s against 1.23 s. Only an uncompressed COG is roughly a tie:
-  0.47 s against 0.41 s on one core, and strata 1.1× ahead on twelve.
-- **The fixes made the reader 1.3–2.6× faster.** Deflate went from 3.98 s
-  to 1.70 s on one core, ZSTD from 2.84 s to 1.10 s, LZW from 3.23 s to
-  2.21 s and uncompressed from 0.71 s to 0.47 s (1.3× on 12 threads, the
-  smallest gain). Before them, GDAL was 4.9× faster on Deflate. The
-  biggest single cost was not a decompressor but the loop that undoes
-  the floating-point predictor: 37% of a Deflate read and 54% of a ZSTD
-  read.
-- **Slope over a compressed COG is still 1.8–2.6× faster than gdaldem's
-  on one core, and 4.3–5.6× on twelve workers** (3.7× and 6.7× on the
-  uncompressed COG). gdaldem has to decode the same blocks, and
-  strata's slope kernel is so much faster than gdaldem's (see
-  [`../gdal/`](../gdal/RESULTS.md)) that it covers the slower decode. On the Deflate COG, strata takes 2.28 s on one worker
-  and gdaldem 4.39 s.
-- **But the format now costs more than the computation.** From the raw
-  float32 file, slope takes 0.89 s on one worker. From the Deflate COG
-  it takes 2.28 s, so reading the format is about 60% of the run. From
-  ZSTD it is 1.68 s and from an uncompressed COG 1.07 s. On twelve
-  workers it is 0.46 s raw, and 0.93 s, 0.78 s and 0.59 s from the same
-  three COGs.
-- **The block cache does its job on one worker and falls short on many.**
-  Halos and tiles that do not line up with blocks ask for the same block
-  several times. With the default 64 MiB cache, one worker decodes every
-  block exactly once at tile heights of 16, 64 and 256 rows. Without the
-  cache it decodes each block 3.9, 9.9 and 33.9 times, and 16-row tiles
-  take 54 s instead of 2.3 s. With 12 workers and 256-row tiles, though,
-  the default cache decodes each block 1.57 times. That run is 26% slower
-  than with a cache large enough to hold everything (0.85 s against
-  0.68 s). See [The cache](#the-cache).
+- **On one core, strata now reads a predictor-3 COG about as fast as
+  GDAL: ZSTD is a tie and Deflate 1.17× behind.** The whole 508 MB
+  float32 raster from ZSTD with predictor 3 takes strata 0.79 s and GDAL
+  0.78 s; from Deflate with predictor 3, 0.93 s against 0.80 s. LZW,
+  whose decoder is not strata's, is still 1.5× behind (2.00 s against
+  1.30 s). An uncompressed COG is read 1.37× faster than GDAL reads it
+  (0.29 s against 0.40 s). Twelve threads give the same picture: ZSTD
+  and Deflate within 1.05× and 1.14× of GDAL, LZW 1.8× behind,
+  uncompressed 1.36× ahead.
+- **Against the reader as first proposed, that is 2.5–4.3× faster.**
+  Deflate went from 3.98 s to 0.93 s on one core, ZSTD from 2.82 s to
+  0.79 s, LZW from 3.29 s to 2.00 s and uncompressed from 0.73 s to
+  0.29 s. Most of that came before the SIMD kernels: the fixes of the
+  first version of this page, the whole-block inflater (#44, #49) and a
+  larger default cache.
+- **Undoing the floating-point predictor now costs about 96 ms of a
+  one-core read, down from about 116 ms (Deflate) and 105 ms (ZSTD)
+  with the previous kernel** (30-read profiles), and from 37–54% of the
+  read before the first fixes. The latest kernel alone makes a one-core
+  read 3–4% faster (Deflate 883 → 854 ms, ZSTD 753 → 726 ms, medians of
+  10 interleaved runs). See [The SIMD row kernels](#the-simd-row-kernels).
+- **Slope over a COG is 1.9–3.1× faster than gdaldem's on one core, and
+  6.0–7.9× on twelve workers** (4.4× and 7.4× on the uncompressed COG).
+  On the Deflate COG, strata takes 1.51 s on one worker and gdaldem
+  4.31 s.
+- **On one core the format still costs more than the computation; on
+  twelve, little.** From the raw float32 file, slope takes 0.84 s on
+  one worker; from the Deflate COG 1.51 s, from ZSTD 1.39 s, from an
+  uncompressed COG 0.83 s. On twelve workers it is 0.49 s raw, and
+  0.56 s, 0.54 s and 0.50 s from the same three COGs.
+- **The default block cache now does its job on many workers too.** It
+  holds 8 rows of blocks (182 MiB for this file) rather than 64 MiB, and
+  every block is decoded exactly once at every tile height, on one
+  worker and on twelve. With 64 MiB, twelve workers on 256-row tiles
+  decoded each block 1.57 times. See [The cache](#the-cache).
 
 ## Machine and method
 
@@ -58,13 +62,13 @@ and after them, and GDAL.
 | Host OS | Windows 11 Home 10.0.22631, Docker Desktop 29.8.0 |
 | Container | `ghcr.io/osgeo/gdal:ubuntu-small-latest`, Ubuntu 26.04, Linux 6.18.33.2-microsoft-standard-WSL2 |
 | GDAL | 3.14.0dev-17759e56, released 2026/08/18, linked to libtiff 6, **libdeflate** and libzstd |
-| Go | go1.27.0, cross-compiled `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`, `GOAMD64=v1`, `GOEXPERIMENT=simd` (the slope kernel uses it; the decoder has no SIMD code) |
-| strata | this change (b3c31c2) for "strata"; 9f658d3, the reader as PR #32 first proposed it, for "strata before" |
+| Go | go1.27.0, cross-compiled `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`, `GOAMD64=v1`, `GOEXPERIMENT=simd` (the slope kernel and the reader's row kernels, `cog/internal/kern`, use it: AVX2 here) |
+| strata | the fused SIMD predictor (on top of 8ad43da) for "strata"; 9f658d3, the reader as PR #32 first proposed it, for "strata before" |
 | Raster | `HGV_leaf.tif`, a 12.5 m Swedish canopy-height grid, UInt16, NoData 65535; the window at (1024, 320), 11264 × 11264 = 126.9M cells, promoted to Float32: the same window as [`../gdal/`](../gdal/RESULTS.md). 97.6% of it carries data |
 | Files | written in the container by `gdal_translate -of COG`, 512 × 512 blocks, no overviews: Deflate + predictor 3 (117 MB), ZSTD + predictor 3 (113 MB), LZW with GDAL's default of no predictor (149 MB), uncompressed (508 MB) |
 | Working files | a 16 GB tmpfs inside the container |
 | Runs | one untimed warm-up, then 5 timed (3 for the cache sweep); the median is reported, never the minimum |
-| Raw output | [`testdata/timings.txt`](testdata/timings.txt) |
+| Raw output | [`testdata/timings.txt`](testdata/timings.txt). Two runs are missing from it: bash's `time` printed a garbled field for each (`real=2.:00` in the fifth "strata before" ZSTD read on one thread, `user=0.:00` in the first 1-thread, 256-row, default-cache run of the cache sweep), so they were dropped rather than guessed, and those two cases have 4 and 2 runs |
 
 ```bash
 ./cogbench.sh /path/to/HGV_leaf.tif 1024 320 11264 11264
@@ -102,7 +106,7 @@ them, rerun that one line.
   directory.
 - **The cache sweep** is slope over the Deflate COG at tile heights 16,
   64 and 256, with `SourceOptions.CacheBytes` set to -1 (no cache), 4 MiB,
-  0 (the default, 64 MiB) and 1 GiB.
+  0 (the default: 8 rows of blocks, 182 MiB here) and 1 GiB.
 - **Decodes per block** come from `cogbench`, which counts the source's
   `ReadAt` calls after `Open`. The reader reads each block it decodes with
   one `ReadAt` when the block is at most 1 MiB, as every block here is,
@@ -188,7 +192,11 @@ to 2.1 s and LZW from 3.3 s to 2.3 s. In the container, fusing the
 predictor with the copy and the integer NoData test took ZSTD from 1.34 s
 to 1.10 s and Deflate from 2.0 s to 1.7 s.
 
-What is left is mostly the decompressors, and they are not strata's
+The rest of this section is the state of things when this page was
+first written; [The SIMD row kernels](#the-simd-row-kernels) follows on
+from its last paragraph.
+
+What was left then was mostly the decompressors, and they are not strata's
 code. GDAL inflates Deflate with libdeflate, which is C with SIMD. All of
 GDAL's one-core read takes 0.81 s. In strata's 1.70 s, `klauspost/compress/flate`
 alone takes about 0.87 s (51%). So the inflater, not the reader around
@@ -200,11 +208,72 @@ decoding straight into the caller's buffer when a window covers whole
 blocks, which would skip the cache's copy, and a SIMD predictor. Neither
 is attempted here.
 
+## The SIMD row kernels
+
+The first version of this page ended on a SIMD predictor not being
+attempted. It since has been, in two steps, both in
+[`cog/internal/kern`](../../cog/internal/kern/): a kernel package of the
+cog module with a scalar form of each kernel that every build runs, and
+AVX2 (amd64) and NEON (arm64) forms that `GOEXPERIMENT=simd` builds
+install, as strata's own `internal/vec` and `internal/stencil` do
+([ADR 0001](../../docs/adr/0001-simd-backend.md)). The cog module cannot
+import strata's internal packages, so it has its own. Every SIMD form is
+held bit for bit to its scalar form on every row width from 0 to 300
+samples and some wider ragged ones (`simd_test.go`) and by a fuzz test
+(`FuzzKernels`), and `acceptance/cogcheck.sh` finds all 98 files
+identical to GDAL's reading in both the scalar and the SIMD build.
+
+1. **48532c0, f021657:** the planes put back together sixteen samples a
+   step, after the byte running sum, sixteen bytes a step (three
+   shifted adds, then the previous vector's carry), in a pass of its own
+   that writes the row back.
+2. **The fused kernel:** one pass over the four planes, 32 bytes of
+   each a step, with no running sum written back. A 256-bit register
+   holds two streams, its lower half on the first half of the row and
+   its upper half on the second, so the prefix sum needs no cross-lane
+   step. Each plane's two streams start from the total of every byte
+   before them, found first by one sequential pass of wrapping byte adds
+   (reduced with `VPSADBW`). The four planes then have four independent
+   carry chains of one add each, and the bytes are interleaved into
+   samples with masks, shifts and 16- and 32-bit unpacks (archsimd has
+   no AVX2 byte unpack). The same package now also undoes the predictor
+   for the rows the fast path does not take (float64, float16, one byte
+   apart: `SumBytes`) and reads single-band 8-bit rows with or without
+   predictor 2 (`Uint8Row`). Multi-band chunky predictor rows and 32-bit
+   integers stay scalar.
+
+One 512-sample row (`go test -bench PlanesRow ./internal/kern` on the
+Windows host, cache-hot): scalar about 1,500 ns, the first AVX2 kernel
+about 450 ns, the fused one about 248 ns. Over a whole 512 × 512 block
+just written, as the inflater leaves it, the fused kernel takes about
+308 ns a row against the first AVX2 kernel's 475: a block is 1 MiB,
+more than a Zen 2 core's 512 KiB of L2, so its early rows come back from
+L3. That, not arithmetic, is now most of the predictor's cost, and why
+it still takes about 96 ms of a read when its arithmetic alone would
+take about 61 ms. Undoing the predictor while a block's rows are still
+in L2, as they are inflated, would be the next step; it would change
+the inflater, and is not attempted here.
+
+In the container, the fused kernel against 8ad43da (the first AVX2
+kernel), one core, 10 rounds, each running both builds in turn:
+
+| case | 8ad43da median | fused median | spreads |
+| --- | ---: | ---: | ---: |
+| read, Deflate predictor 3 | 883 ms | 854 ms | 9%, 3% |
+| read, ZSTD predictor 3 | 753 ms | 726 ms | 9%, 5% |
+| slope, Deflate predictor 3 COG, 1 worker | 1,403 ms | 1,383 ms | 3%, 5% |
+
+The predictor's share, from 30-read CPU profiles of each build (about
+300 samples in the kernel each): Deflate 116 → 96 ms a read, ZSTD
+105 → 96 ms. The 5-read profiles `runbench.sh` takes are too short to
+tell these apart; at about 60 samples they put the kernel within ±10%
+or more of either figure.
+
 ## The numbers
 
 <!-- summarize.py output begin -->
 
-11264 x 11264 = 126.9M cells, 508 MB as float32. 5 timed runs per case (3 in the cache sweep) after a warm-up, median reported.
+11264 x 11264 = 126.9M cells, 508 MB as float32. 5 timed runs per case (2 in the cache sweep) after a warm-up, median reported.
 
 ### Pure read: the whole raster, decoded to float32
 
@@ -212,51 +281,51 @@ In-process time, from the first strip to the last, of full-width strips of 256 r
 
 | compression | threads | GDAL s | GDAL MB/s | strata before s | strata s | strata MB/s | strata vs GDAL | before → after |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Deflate, predictor 3 | 1 | 0.807 | 629 | 3.979 | 1.695 | 299 | 0.48x | 2.35x |
-| Deflate, predictor 3 | 12 | 0.178 | 2854 | 0.811 | 0.348 | 1457 | 0.51x | 2.33x |
-| ZSTD, predictor 3 | 1 | 0.801 | 633 | 2.835 | 1.104 | 460 | 0.73x | 2.57x |
-| ZSTD, predictor 3 | 12 | 0.169 | 3001 | 0.607 | 0.246 | 2063 | 0.69x | 2.47x |
-| LZW, no predictor | 1 | 1.229 | 413 | 3.226 | 2.207 | 230 | 0.56x | 1.46x |
-| LZW, no predictor | 12 | 0.230 | 2207 | 0.683 | 0.450 | 1127 | 0.51x | 1.52x |
-| uncompressed | 1 | 0.405 | 1254 | 0.705 | 0.467 | 1087 | 0.87x | 1.51x |
-| uncompressed | 12 | 0.158 | 3208 | 0.190 | 0.143 | 3537 | 1.10x | 1.32x |
+| Deflate, predictor 3 | 1 | 0.795 | 638 | 3.984 | 0.929 | 546 | 0.86x | 4.29x |
+| Deflate, predictor 3 | 12 | 0.167 | 3034 | 0.803 | 0.191 | 2664 | 0.88x | 4.22x |
+| ZSTD, predictor 3 | 1 | 0.779 | 651 | 2.818 | 0.787 | 645 | 0.99x | 3.58x |
+| ZSTD, predictor 3 | 12 | 0.165 | 3085 | 0.592 | 0.173 | 2934 | 0.95x | 3.42x |
+| LZW, no predictor | 1 | 1.302 | 390 | 3.292 | 1.995 | 254 | 0.65x | 1.65x |
+| LZW, no predictor | 12 | 0.221 | 2302 | 0.725 | 0.391 | 1297 | 0.56x | 1.85x |
+| uncompressed | 1 | 0.395 | 1286 | 0.728 | 0.288 | 1762 | 1.37x | 2.53x |
+| uncompressed | 12 | 0.163 | 3123 | 0.211 | 0.119 | 4261 | 1.36x | 1.77x |
 
 Every read case in full, with spreads and whole-process numbers. `gdal_translate -of MEM` has no in-process timer, so it is compared by wall time only; its system time is the kernel faulting in a fresh 507 MB dataset, which the strip readers do not pay.
 
 | case | in-process s | spread | wall s | CPU s | CPU/wall | reads per block |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Deflate, predictor 3, GDAL, ReadAsArray strips, 1 thread | 0.807 | 12% | 0.968 | 1.03 | 1.1 | - |
-| Deflate, predictor 3, GDAL, gdal_translate -of MEM, 1 thread | - | 10% | 1.261 | 1.28 | 1.0 | - |
-| Deflate, predictor 3, strata before, 1 thread | 3.979 | 3% | 4.006 | 4.02 | 1.0 | 1.00 |
-| Deflate, predictor 3, strata, 1 thread | 1.695 | 8% | 1.723 | 1.75 | 1.0 | 1.00 |
-| Deflate, predictor 3, GDAL, ReadAsArray strips, 12 threads | 0.178 | 4% | 0.354 | 1.51 | 4.3 | - |
-| Deflate, predictor 3, GDAL, gdal_translate -of MEM, 12 threads | - | 5% | 0.599 | 1.69 | 2.8 | - |
-| Deflate, predictor 3, strata before, 12 threads | 0.811 | 5% | 0.862 | 4.60 | 5.3 | 1.00 |
-| Deflate, predictor 3, strata, 12 threads | 0.348 | 3% | 0.409 | 2.10 | 5.1 | 1.00 |
-| ZSTD, predictor 3, GDAL, ReadAsArray strips, 1 thread | 0.801 | 6% | 0.964 | 0.96 | 1.0 | - |
-| ZSTD, predictor 3, GDAL, gdal_translate -of MEM, 1 thread | - | 12% | 1.204 | 1.20 | 1.0 | - |
-| ZSTD, predictor 3, strata before, 1 thread | 2.835 | 4% | 2.861 | 2.86 | 1.0 | 1.00 |
-| ZSTD, predictor 3, strata, 1 thread | 1.104 | 2% | 1.131 | 1.13 | 1.0 | 1.00 |
-| ZSTD, predictor 3, GDAL, ReadAsArray strips, 12 threads | 0.169 | 10% | 0.352 | 1.57 | 4.5 | - |
-| ZSTD, predictor 3, GDAL, gdal_translate -of MEM, 12 threads | - | 2% | 0.589 | 1.69 | 2.9 | - |
-| ZSTD, predictor 3, strata before, 12 threads | 0.607 | 7% | 0.667 | 3.47 | 5.2 | 1.00 |
-| ZSTD, predictor 3, strata, 12 threads | 0.246 | 7% | 0.310 | 1.51 | 4.9 | 1.00 |
-| LZW, no predictor, GDAL, ReadAsArray strips, 1 thread | 1.229 | 7% | 1.386 | 1.44 | 1.0 | - |
-| LZW, no predictor, GDAL, gdal_translate -of MEM, 1 thread | - | 3% | 1.698 | 1.70 | 1.0 | - |
-| LZW, no predictor, strata before, 1 thread | 3.226 | 2% | 3.249 | 3.26 | 1.0 | 1.00 |
-| LZW, no predictor, strata, 1 thread | 2.207 | 5% | 2.230 | 2.28 | 1.0 | 1.00 |
-| LZW, no predictor, GDAL, ReadAsArray strips, 12 threads | 0.230 | 7% | 0.408 | 1.96 | 4.8 | - |
-| LZW, no predictor, GDAL, gdal_translate -of MEM, 12 threads | - | 4% | 0.669 | 2.14 | 3.2 | - |
-| LZW, no predictor, strata before, 12 threads | 0.683 | 3% | 0.733 | 3.91 | 5.3 | 1.00 |
-| LZW, no predictor, strata, 12 threads | 0.450 | 8% | 0.506 | 2.63 | 5.2 | 1.00 |
-| uncompressed, GDAL, ReadAsArray strips, 1 thread | 0.405 | 13% | 0.560 | 0.55 | 1.0 | - |
-| uncompressed, GDAL, gdal_translate -of MEM, 1 thread | - | 14% | 0.834 | 0.82 | 1.0 | - |
-| uncompressed, strata before, 1 thread | 0.705 | 12% | 0.729 | 0.74 | 1.0 | 1.00 |
-| uncompressed, strata, 1 thread | 0.467 | 4% | 0.490 | 0.49 | 1.0 | 1.00 |
-| uncompressed, GDAL, ReadAsArray strips, 12 threads | 0.158 | 5% | 0.330 | 1.09 | 3.3 | - |
-| uncompressed, GDAL, gdal_translate -of MEM, 12 threads | - | 5% | 0.595 | 1.29 | 2.2 | - |
-| uncompressed, strata before, 12 threads | 0.190 | 4% | 0.243 | 1.21 | 5.0 | 1.00 |
-| uncompressed, strata, 12 threads | 0.143 | 6% | 0.198 | 0.96 | 4.9 | 1.00 |
+| Deflate, predictor 3, GDAL, ReadAsArray strips, 1 thread | 0.795 | 15% | 0.950 | 0.95 | 1.0 | - |
+| Deflate, predictor 3, GDAL, gdal_translate -of MEM, 1 thread | - | 9% | 1.210 | 1.22 | 1.0 | - |
+| Deflate, predictor 3, strata before, 1 thread | 3.984 | 3% | 4.009 | 4.04 | 1.0 | 1.00 |
+| Deflate, predictor 3, strata, 1 thread | 0.929 | 8% | 0.958 | 0.96 | 1.0 | 1.00 |
+| Deflate, predictor 3, GDAL, ReadAsArray strips, 12 threads | 0.167 | 3% | 0.342 | 1.42 | 4.2 | - |
+| Deflate, predictor 3, GDAL, gdal_translate -of MEM, 12 threads | - | 8% | 0.591 | 1.67 | 2.8 | - |
+| Deflate, predictor 3, strata before, 12 threads | 0.803 | 2% | 0.856 | 4.59 | 5.4 | 1.00 |
+| Deflate, predictor 3, strata, 12 threads | 0.191 | 5% | 0.240 | 1.22 | 5.1 | 1.00 |
+| ZSTD, predictor 3, GDAL, ReadAsArray strips, 1 thread | 0.779 | 11% | 0.939 | 0.96 | 1.0 | - |
+| ZSTD, predictor 3, GDAL, gdal_translate -of MEM, 1 thread | - | 10% | 1.179 | 1.18 | 1.0 | - |
+| ZSTD, predictor 3, strata before, 1 thread | 2.818 | 10% | 2.844 | 2.84 | 1.0 | 1.00 |
+| ZSTD, predictor 3, strata, 1 thread | 0.787 | 10% | 0.816 | 0.83 | 1.0 | 1.00 |
+| ZSTD, predictor 3, GDAL, ReadAsArray strips, 12 threads | 0.165 | 1% | 0.344 | 1.48 | 4.3 | - |
+| ZSTD, predictor 3, GDAL, gdal_translate -of MEM, 12 threads | - | 3% | 0.608 | 1.68 | 2.8 | - |
+| ZSTD, predictor 3, strata before, 12 threads | 0.592 | 3% | 0.652 | 3.46 | 5.3 | 1.00 |
+| ZSTD, predictor 3, strata, 12 threads | 0.173 | 5% | 0.219 | 1.14 | 5.2 | 1.00 |
+| LZW, no predictor, GDAL, ReadAsArray strips, 1 thread | 1.302 | 10% | 1.478 | 1.47 | 1.0 | - |
+| LZW, no predictor, GDAL, gdal_translate -of MEM, 1 thread | - | 12% | 1.709 | 1.77 | 1.0 | - |
+| LZW, no predictor, strata before, 1 thread | 3.292 | 5% | 3.316 | 3.32 | 1.0 | 1.00 |
+| LZW, no predictor, strata, 1 thread | 1.995 | 5% | 2.025 | 2.02 | 1.0 | 1.00 |
+| LZW, no predictor, GDAL, ReadAsArray strips, 12 threads | 0.221 | 6% | 0.403 | 1.89 | 4.7 | - |
+| LZW, no predictor, GDAL, gdal_translate -of MEM, 12 threads | - | 6% | 0.665 | 2.06 | 3.1 | - |
+| LZW, no predictor, strata before, 12 threads | 0.725 | 12% | 0.774 | 4.13 | 5.3 | 1.00 |
+| LZW, no predictor, strata, 12 threads | 0.391 | 23% | 0.453 | 2.39 | 5.3 | 1.00 |
+| uncompressed, GDAL, ReadAsArray strips, 1 thread | 0.395 | 16% | 0.569 | 0.56 | 1.0 | - |
+| uncompressed, GDAL, gdal_translate -of MEM, 1 thread | - | 12% | 0.841 | 0.83 | 1.0 | - |
+| uncompressed, strata before, 1 thread | 0.728 | 8% | 0.754 | 0.77 | 1.0 | 1.00 |
+| uncompressed, strata, 1 thread | 0.288 | 5% | 0.316 | 0.33 | 1.0 | 1.00 |
+| uncompressed, GDAL, ReadAsArray strips, 12 threads | 0.163 | 8% | 0.341 | 1.11 | 3.3 | - |
+| uncompressed, GDAL, gdal_translate -of MEM, 12 threads | - | 19% | 0.606 | 1.38 | 2.3 | - |
+| uncompressed, strata before, 12 threads | 0.211 | 7% | 0.266 | 1.35 | 5.1 | 1.00 |
+| uncompressed, strata, 12 threads | 0.119 | 7% | 0.167 | 0.91 | 5.5 | 1.00 |
 
 ### End to end: slope, file to file
 
@@ -264,31 +333,31 @@ Wall time of the whole process, as in benchmarks/gdal. gdaldem writes an uncompr
 
 | input | threads | gdaldem s | strata before s | strata s | spread | M cells/s | vs gdaldem | vs raw |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| striped GeoTIFF, uncompressed (gdaldem) / raw float32 (strata) | 1 | 3.857 | - | 0.892 | 3% | 142 | 4.32x | 1.00 |
-| Deflate, predictor 3 COG | 1 | 4.386 | 4.546 | 2.283 | 5% | 56 | 1.92x | 0.39 |
-| ZSTD, predictor 3 COG | 1 | 4.357 | 3.419 | 1.683 | 2% | 75 | 2.59x | 0.53 |
-| LZW, no predictor COG | 1 | 4.817 | 3.828 | 2.759 | 3% | 46 | 1.75x | 0.32 |
-| uncompressed COG | 1 | 3.941 | 1.269 | 1.065 | 8% | 119 | 3.70x | 0.84 |
-| striped GeoTIFF, uncompressed (gdaldem) / raw float32 (strata) | 12 | 3.857 | - | 0.463 | 4% | 274 | 8.33x | 1.00 |
-| Deflate, predictor 3 COG | 12 | 4.386 | 1.700 | 0.925 | 5% | 137 | 4.74x | 0.50 |
-| ZSTD, predictor 3 COG | 12 | 4.357 | 1.386 | 0.777 | 10% | 163 | 5.61x | 0.60 |
-| LZW, no predictor COG | 12 | 4.817 | 1.489 | 1.113 | 6% | 114 | 4.33x | 0.42 |
-| uncompressed COG | 12 | 3.941 | 0.644 | 0.592 | 6% | 214 | 6.66x | 0.78 |
+| striped GeoTIFF, uncompressed (gdaldem) / raw float32 (strata) | 1 | 3.913 | - | 0.843 | 2% | 151 | 4.64x | 1.00 |
+| Deflate, predictor 3 COG | 1 | 4.305 | 4.661 | 1.510 | 3% | 84 | 2.85x | 0.56 |
+| ZSTD, predictor 3 COG | 1 | 4.277 | 3.481 | 1.389 | 5% | 91 | 3.08x | 0.61 |
+| LZW, no predictor COG | 1 | 4.539 | 3.623 | 2.412 | 3% | 53 | 1.88x | 0.35 |
+| uncompressed COG | 1 | 3.692 | 1.224 | 0.831 | 4% | 153 | 4.44x | 1.01 |
+| striped GeoTIFF, uncompressed (gdaldem) / raw float32 (strata) | 12 | 3.913 | - | 0.489 | 14% | 259 | 8.00x | 1.00 |
+| Deflate, predictor 3 COG | 12 | 4.305 | 1.710 | 0.564 | 7% | 225 | 7.63x | 0.87 |
+| ZSTD, predictor 3 COG | 12 | 4.277 | 1.328 | 0.542 | 5% | 234 | 7.89x | 0.90 |
+| LZW, no predictor COG | 12 | 4.539 | 1.439 | 0.758 | 11% | 167 | 5.99x | 0.65 |
+| uncompressed COG | 12 | 3.692 | 0.676 | 0.498 | 6% | 255 | 7.41x | 0.98 |
 
 gdaldem's own spreads and CPU, which the table above leaves out:
 
 | gdaldem on | threads | wall s | spread | CPU s | CPU/wall |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| striped GeoTIFF, uncompressed | 1 | 3.958 | 3% | 3.95 | 1.0 |
-| Deflate, predictor 3 | 1 | 4.386 | 3% | 4.36 | 1.0 |
-| ZSTD, predictor 3 | 1 | 4.357 | 4% | 4.35 | 1.0 |
-| LZW, no predictor | 1 | 4.817 | 3% | 4.80 | 1.0 |
-| uncompressed | 1 | 3.941 | 1% | 3.92 | 1.0 |
-| striped GeoTIFF, uncompressed | 12 | 3.857 | 3% | 3.86 | 1.0 |
-| Deflate, predictor 3 | 12 | 8.653 | 2% | 12.54 | 1.4 |
-| ZSTD, predictor 3 | 12 | 8.835 | 2% | 12.77 | 1.4 |
-| LZW, no predictor | 12 | 8.815 | 1% | 13.11 | 1.5 |
-| uncompressed | 12 | 8.769 | 3% | 12.39 | 1.4 |
+| striped GeoTIFF, uncompressed | 1 | 3.913 | 2% | 3.91 | 1.0 |
+| Deflate, predictor 3 | 1 | 4.305 | 3% | 4.31 | 1.0 |
+| ZSTD, predictor 3 | 1 | 4.277 | 3% | 4.28 | 1.0 |
+| LZW, no predictor | 1 | 4.539 | 6% | 4.54 | 1.0 |
+| uncompressed | 1 | 3.692 | 3% | 3.71 | 1.0 |
+| striped GeoTIFF, uncompressed | 12 | 4.568 | 19% | 4.48 | 1.0 |
+| Deflate, predictor 3 | 12 | 8.411 | 21% | 11.83 | 1.4 |
+| ZSTD, predictor 3 | 12 | 8.270 | 1% | 11.85 | 1.4 |
+| LZW, no predictor | 12 | 8.426 | 1% | 12.44 | 1.5 |
+| uncompressed | 12 | 8.361 | 2% | 11.66 | 1.4 |
 
 ### The block cache under halos: slope over the Deflate COG
 
@@ -296,67 +365,68 @@ In-process time and block decodes per block (484 blocks of 512 × 512). 1.00 is 
 
 | tile rows | CacheBytes | 1 thread: s | decodes/block | 12 threads: s | decodes/block |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 16 | -1 (no cache) | 54.047 | 33.91 | 6.141 | 33.91 |
-| 16 | 4 MiB | 53.618 | 33.91 | 4.730 | 4.84 |
-| 16 | 0 (default, 64 MiB) | 2.275 | 1.00 | 1.919 | 1.00 |
-| 16 | 1024 MiB | 2.421 | 1.00 | 2.067 | 1.00 |
-| 64 | -1 (no cache) | 16.069 | 9.91 | 1.918 | 9.91 |
-| 64 | 4 MiB | 16.004 | 9.91 | 1.638 | 3.31 |
-| 64 | 0 (default, 64 MiB) | 2.237 | 1.00 | 1.135 | 1.00 |
-| 64 | 1024 MiB | 2.439 | 1.00 | 1.226 | 1.00 |
-| 256 | -1 (no cache) | 6.838 | 3.91 | 1.025 | 3.91 |
-| 256 | 4 MiB | 6.764 | 3.91 | 0.921 | 2.32 |
-| 256 | 0 (default, 64 MiB) | 2.261 | 1.00 | 0.854 | 1.57 |
-| 256 | 1024 MiB | 2.435 | 1.00 | 0.679 | 1.00 |
+| 16 | -1 (no cache) | 24.609 | 33.91 | 2.674 | 33.91 |
+| 16 | 4 MiB | 57.350 | 33.91 | 2.285 | 4.06 |
+| 16 | 0 (default, 8 block rows) | 1.378 | 1.00 | 1.114 | 1.00 |
+| 16 | 1024 MiB | 1.438 | 1.00 | 1.200 | 1.00 |
+| 64 | -1 (no cache) | 7.295 | 9.91 | 0.892 | 9.91 |
+| 64 | 4 MiB | 7.785 | 9.91 | 0.899 | 4.25 |
+| 64 | 0 (default, 8 block rows) | 1.341 | 1.00 | 0.692 | 1.00 |
+| 64 | 1024 MiB | 1.467 | 1.00 | 0.745 | 1.00 |
+| 256 | -1 (no cache) | 3.254 | 3.91 | 0.572 | 3.91 |
+| 256 | 4 MiB | 3.313 | 3.91 | 0.589 | 2.16 |
+| 256 | 0 (default, 8 block rows) | 1.391 | 1.00 | 0.485 | 1.00 |
+| 256 | 1024 MiB | 1.489 | 1.00 | 0.517 | 1.00 |
 
 ### Floors
 
 | case | wall s | spread |
 | --- | ---: | ---: |
-| cogbench, start and stop | 0.003 | 33% |
-| python3: import gdal and numpy, open the COG | 0.104 | 6% |
+| cogbench, start and stop | 0.004 | 0% |
+| python3: import gdal and numpy, open the COG | 0.105 | 17% |
 
 <!-- summarize.py output end -->
 
 ## The cache
 
-The default cache is 64 MiB. A row of this file's blocks decodes to
-22 × 1 MiB. One worker walks down the raster, so the blocks a tile needs
-are mostly the ones the previous tile just used, plus the next row of
-blocks. 64 MiB holds almost three rows, and the table shows exactly one
-decode per block at every tile height.
-
-Two settings break that:
-
-- **A cache smaller than one row of blocks is no cache.** With 4 MiB,
-  one worker decodes each block as often as with none: 33.9 times at
-  16-row tiles. The LRU evicts a block before the next tile comes back
-  for it. With 12 workers, 4 MiB does help, because tiles running at the
-  same time share the blocks they overlap.
-- **Many workers need more than 64 MiB.** Twelve workers on 256-row
-  tiles have 3072 rows in flight, six block rows or 132 MiB, and the
-  default cache holds fewer than three. The result is 1.57 decodes per
-  block and a run 26% slower than with 1 GiB. Shorter tiles keep fewer
-  rows in flight, so 16- and 64-row tiles on 12 workers still decode
-  once.
-
-This change leaves the default alone. It is a memory bound that callers
-choose, and the right size depends on the worker count, which the
-source cannot see. A rule of thumb consistent with these numbers is at
-least
+A row of this file's blocks decodes to 22 × 1 MiB. When this page was
+first written the default cache was 64 MiB, almost three rows: enough for
+one worker, which walks down the raster so that the blocks a tile needs
+are mostly the ones the previous tile just used, plus the next row. Not
+enough for twelve workers on 256-row tiles, which have 3072 rows in
+flight, six block rows or 132 MiB: they decoded each block 1.57 times,
+and ran 26% slower than with 1 GiB. That page suggested at least
 `(workers × TileHeight / blockHeight + 2)` rows of blocks, each
-`blocksAcross × blockBytes`. For this file on 12 workers with 256-row
-tiles that is 8 × 22 MiB, about 180 MiB. A default that scales with the
-file's block-row size would be the obvious follow-up, if one is wanted.
+`blocksAcross × blockBytes`, about 180 MiB here.
+
+The default has since become 8 rows of blocks (`cog.DefaultCacheRows`,
+between 64 MiB and 1 GiB), 182 MiB for this file, and the table now
+shows exactly one decode per block at every tile height on one worker
+and on twelve, within 7% of the 1 GiB cache's time or faster.
+
+One setting still breaks it: **a cache smaller than one row of blocks
+is no cache.** With 4 MiB, one worker decodes each block as often as
+with none: 33.9 times at 16-row tiles. The LRU evicts a block before the
+next tile comes back for it. With 12 workers, 4 MiB does help, because
+tiles running at the same time share the blocks they overlap. (In this
+run, one worker with 16-row tiles took 57.4 s with 4 MiB against 24.6 s
+with no cache, at the same 33.9 decodes per block. The first version of
+this page had them within 1% of each other, at 53.6 s and 54.0 s. This
+run was not repeated to find out why; a second session's GDAL container
+ran briefly alongside it at about that point.)
 
 One more observation, not investigated: **gdaldem gets twice as slow on a
-COG when `GDAL_NUM_THREADS=12`** (8.7 s against 4.4 s, and 12.5 CPU-seconds
-against 4.4). On the striped GeoTIFF it makes no difference. gdaldem
+COG when `GDAL_NUM_THREADS=12`** (8.4 s against 4.3 s, and 11.8 CPU-seconds
+against 4.3). On the striped GeoTIFF it makes no difference. gdaldem
 reads a few lines at a time, and parallel decoding of such small requests
 seems to cost more than it saves. Every "vs gdaldem" figure uses
 gdaldem's faster setting.
 
 ## What this does not tell you
+
+- **NEON.** The arm64 kernels are tested bit for bit (under QEMU on the
+  Windows host, and on CI's arm64 macOS runner) but never timed. Word,
+  the NoData test, has no NEON form and runs scalar there.
 
 - **Other rasters.** This is one raster, canopy height, which compresses
   4.3× under Deflate, with 2.4% NoData. Data that compresses less makes

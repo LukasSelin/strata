@@ -16,6 +16,8 @@
 //
 //	demFile, err := engine.OpenRawFile("dem.f32", os.O_RDONLY, 0, 0)
 //	...
+//	slopeFile, err := engine.CreateRawFile("slope.f32", 4*20000*20000, 0o644, 0)
+//	...
 //	in := engine.NewRawSource(demFile, 20000, 20000, engine.RawOptions{})
 //	out := engine.NewRawSink(slopeFile, 20000, 20000, engine.RawOptions{})
 //	err := terrain.SlopeChunked(ctx, out, in, terrain.SlopeOptions{CellSize: 30},
@@ -90,7 +92,12 @@
 // Open files for them with OpenRawFile, which gives one file several
 // handles: calls on a single *os.File queue behind each other, which made
 // 12 workers 1.6× slower on Windows (benchmarks/chunked/RESULTS.md).
-// Format adapters implement the same interfaces (DESIGN.md §34).
+// Create output files with CreateRawFile, which sizes the file at once
+// and, for concurrent writers, maps it into memory: the operating system
+// serialises writes into one file through system calls (Linux takes the
+// file's lock for each), and copies into a mapping run in parallel
+// (benchmarks/rawio/RESULTS.md). Format adapters implement the same
+// interfaces (DESIGN.md §34).
 //
 // Validity crosses the interfaces explicitly. A source that is not Masked
 // has every cell valid, and reads set all of a destination's bits; a
@@ -104,16 +111,26 @@
 // on the calling goroutine, and there are never more workers than tiles.
 // A worker reads its tile and the halo around it (the kernel's radius,
 // clipped to the raster) from every source into buffers of its own, runs
-// the operation over the tile's bands on those buffers, and writes the
-// tile to every sink. Bands are not shared between workers, so the tile
-// count, not the band count, bounds the parallelism: a single tile runs
-// on one worker.
+// the operation over the tile's bands on those buffers, and hands the
+// tile to a writer goroutine of its own, which writes it to every sink
+// while the worker reads and computes the next tile (write-behind). Bands
+// are not shared between workers, so the tile count, not the band count,
+// bounds the parallelism: a single tile runs on one worker.
+//
+// Write-behind means a chunked call keeps up to two cores busy per
+// worker, one computing and one writing, and starts a goroutine per
+// worker even with Workers 1. A write waiting in a system call holds no
+// P (no GOMAXPROCS slot), so it overlaps computing even under
+// GOMAXPROCS=1, but the writer needs a P between its calls and may wait
+// a scheduler time slice for one: the overlap is partial there, and full
+// with a P to spare (benchmarks/rawio/RESULTS.md).
 //
 // # Memory
 //
 // Each worker allocates its buffers once per call and reuses them for
 // every tile: one of (TileWidth+2r)×(TileHeight+2r) cells per input, for
-// radius r, and one of TileWidth×TileHeight per output. An operand with
+// radius r, and two of TileWidth×TileHeight per output, one computed
+// while the other is written. An operand with
 // validity also gets a mask, and its buffer's rows are padded to a
 // multiple of 64 cells so that each row's bits start a word (DESIGN.md
 // §23); a buffer without a mask has no padding, so full-width rows are
@@ -123,10 +140,13 @@
 //
 //	Workers × (TileWidth+2r) × (TileHeight+2r) × Σ(bytes per cell)
 //
-// with 4 bytes per float32 operand plus 1/8 per mask, whatever the size
-// of the raster (DESIGN.md §27). Sources and sinks may add their own: the
-// memory and raw implementations read and write straight into and out of
-// the buffers and allocate nothing.
+// with 4 bytes per float32 input plus 1/8 per mask, and twice that per
+// output, whatever the size of the raster (DESIGN.md §27). Sources and
+// sinks may add their own: the memory and raw implementations read and
+// write straight into and out of the buffers and allocate nothing. The
+// pages of a mapped RawFile are the operating system's file cache, like
+// the pages a write system call fills, and not the process's memory: the
+// system writes them back and reclaims them as it needs.
 //
 // An operation built from a chain of kernels (DESIGN.md §52) adds its own
 // working memory, one allocation per call shared out between the workers.
@@ -169,10 +189,14 @@
 //
 // Workers check ctx before each tile, stop taking tiles once ctx is done
 // or a tile has failed, and finish a tile they have taken: its reads, its
-// computation and its writes to every sink. Sources and sinks are passed
+// computation and its writes to every sink. A write fails behind its
+// worker, which has taken its next tile by then, and stops every worker
+// taking tiles the moment it fails. Sources and sinks are passed
 // context.WithoutCancel(ctx), so cancellation never cuts a tile short;
 // with W workers at most W-1 tiles start after ctx is done, and
-// cancellation waits for at most one tile per worker.
+// cancellation waits, per worker, for at most one tile's reads and
+// computation and two tiles' writes. The call returns once every write
+// has finished.
 //
 // The call returns nil when every tile is written; the first error of a
 // source or sink, wrapped with the operand and the window position and
@@ -187,6 +211,6 @@
 // tile whose write failed, whose cells are unspecified in every sink. So
 // after a cancellation the sinks hold a prefix of whole tiles, and after
 // an error that prefix with a hole for each failed tile: one, or up to
-// one per worker if tiles taken before the first error fail too. Cells
+// two per worker if tiles taken before the first error fail too. Cells
 // outside the sinks' regions are never touched.
 package engine

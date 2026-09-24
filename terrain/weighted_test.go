@@ -148,3 +148,47 @@ func TestWeightedSlopePanics(t *testing.T) {
 	mustPanic(t, "mask", func() { WeightedSlope(raster.NewFloat32Like(r), r, masked, SlopeOptions{CellSize: 1}) })
 	mustPanic(t, "cell size", func() { WeightedSlope(raster.NewFloat32Like(r), r, raster.NewFloat32Like(r), SlopeOptions{}) })
 }
+
+// TestWeightedSlopeChunkedAllValidTiles runs WeightedSlopeChunked over a
+// dem and a weight whose invalid cells sit in two separate blocks, in
+// tiles small enough that some tiles drop the dem's mask only, some the
+// weight's, some both and some neither (the chunked driver drops the
+// mask of an all-valid tile buffer). The inputs have different reaches,
+// 1 and 0, so each tile's validity rule has to be derived from the masks
+// it kept. The result must be the plain function's, bit for bit.
+func TestWeightedSlopeChunkedAllValidTiles(t *testing.T) {
+	const w, h = 96, 40
+	rng := rand.New(rand.NewPCG(9, 9))
+	dem := weightedOperand(rng, w, h, 800, false, true)
+	weight := weightedOperand(rng, w, h, 1, true, true)
+	cluster := func(r raster.Float32Raster, x0, y0, bw, bh int) {
+		for y := range r.Height {
+			for x := range r.Width {
+				in := x >= x0 && x < x0+bw && y >= y0 && y < y0+bh
+				raster.MaskSet(r.Valid, r.ValidOffset+y*r.Stride+x, !in || rng.IntN(3) != 0)
+			}
+		}
+	}
+	cluster(dem, 10, 5, 6, 4)
+	cluster(weight, 60, 25, 5, 5)
+	opts := SlopeOptions{CellSize: 12.5}
+	newOut := func() raster.Float32Raster {
+		out := raster.NewFloat32(w, h, make([]float32, w*h))
+		out.Valid = make([]uint64, raster.MaskWords(w*h))
+		return out
+	}
+	want := newOut()
+	WeightedSlope(want, dem, weight, opts)
+	for _, eo := range []engine.Options{
+		{TileWidth: 16, TileHeight: 8, Workers: 1},
+		{TileWidth: 24, TileHeight: 10, Workers: 3},
+		{TileHeight: 4, Workers: 2},
+	} {
+		got := newOut()
+		if err := WeightedSlopeChunked(context.Background(), engine.NewMemorySink(got),
+			engine.NewMemorySource(dem), engine.NewMemorySource(weight), opts, eo); err != nil {
+			t.Fatal(err)
+		}
+		sameCells(t, fmt.Sprintf("chunked %+v", eo), got, want)
+	}
+}

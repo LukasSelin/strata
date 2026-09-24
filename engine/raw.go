@@ -9,6 +9,7 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/LukasSelin/strata/internal/vec"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -91,9 +92,14 @@ func (s *RawSource) ReadWindow(ctx context.Context, dst raster.Float32Raster, x,
 		if !littleEndian {
 			swapBytes(cells)
 		}
-		if dst.Valid != nil {
+		switch {
+		case dst.Valid == nil:
+		case dst.Stride == dst.Width:
+			// The rows' bits are as consecutive as their cells.
+			s.validity(dst.Valid, dst.ValidOffset+start, cells)
+		default:
 			for i := row; i < row+k; i++ {
-				s.rowValidity(dst.Valid, dst.ValidOffset+i*dst.Stride, dst.Row(i))
+				s.validity(dst.Valid, dst.ValidOffset+i*dst.Stride, dst.Row(i))
 			}
 		}
 	}
@@ -125,28 +131,38 @@ func rowsName(y, k int) string {
 	return fmt.Sprintf("rows %d to %d", y, y+k-1)
 }
 
-// rowValidity sets the validity bits at off of a row of cells from the
-// fill value, or all valid without one.
-func (s *RawSource) rowValidity(m []uint64, off int, cells []float32) {
+// validity sets the validity bits at off of a run of cells from the fill
+// value, or all valid without one. vec.ValidBits writes the words the run
+// covers whole straight into m; where a run starts or ends inside a word,
+// only its own bits of that word are replaced, so that the bits beyond
+// it, which are dst's row padding or other cells, are kept.
+func (s *RawSource) validity(m []uint64, off int, cells []float32) {
 	if !s.opts.HasFill {
 		raster.MaskFillRange(m, off, len(cells), true)
 		return
 	}
-	fill, nanFill := s.opts.Fill, s.opts.Fill != s.opts.Fill
-	for i := 0; i < len(cells); i += 64 {
-		chunk := cells[i:min(i+64, len(cells))]
-		var word [1]uint64
-		for k, c := range chunk {
-			if nanFill {
-				if c == c {
-					word[0] |= 1 << uint(k)
-				}
-			} else if c != fill {
-				word[0] |= 1 << uint(k)
-			}
-		}
-		raster.MaskCopyRange(m, off+i, word[:], 0, len(chunk))
+	fill := s.opts.Fill
+	if head := -off & 63; head != 0 {
+		k := min(head, len(cells))
+		putWord(m, off, k, vec.ValidWord(cells[:k], fill))
+		off, cells = off+k, cells[k:]
 	}
+	if body := len(cells) &^ 63; body > 0 {
+		w := off >> 6
+		vec.ValidBits(m[w:w+body>>6], cells[:body], fill)
+		off, cells = off+body, cells[body:]
+	}
+	if len(cells) > 0 {
+		putWord(m, off, len(cells), vec.ValidWord(cells, fill))
+	}
+}
+
+// putWord stores the low k bits of v at bit off of m, within one word,
+// and leaves the word's other bits alone.
+func putWord(m []uint64, off, k int, v uint64) {
+	w, s := off>>6, uint(off&63)
+	mask := ^uint64(0) >> (64 - uint(k))
+	m[w] = m[w]&^(mask<<s) | v<<s
 }
 
 // RawSink is a RasterSink writing a raw float32 file (see RawOptions)
@@ -191,13 +207,17 @@ func (s *RawSink) WriteWindow(ctx context.Context, src raster.Float32Raster, x, 
 	per := rowsPerCall(src, s.w)
 	for row := 0; row < src.Height; row += per {
 		k := min(per, src.Height-row)
-		if src.Valid != nil {
+		start := row * src.Stride
+		cells := src.Data[start : start+(k-1)*src.Stride+src.Width]
+		switch {
+		case src.Valid == nil:
+		case src.Stride == src.Width:
+			fillInvalid(cells, src.Valid, src.ValidOffset+start, s.opts.Fill)
+		default:
 			for i := row; i < row+k; i++ {
 				fillInvalid(src.Row(i), src.Valid, src.ValidOffset+i*src.Stride, s.opts.Fill)
 			}
 		}
-		start := row * src.Stride
-		cells := src.Data[start : start+(k-1)*src.Stride+src.Width]
 		if !littleEndian {
 			swapBytes(cells)
 		}
@@ -221,19 +241,34 @@ func (s *RawSink) WriteWindow(ctx context.Context, src raster.Float32Raster, x, 
 }
 
 // fillInvalid stores fill in the cells whose validity bit, from off in m,
-// is clear.
+// is clear. A word of 64 valid cells, the usual case, costs one compare:
+// straight from m where the bits are word-aligned, as the engine's
+// buffers' rows are, and through raster.MaskBits elsewhere.
 func fillInvalid(cells []float32, m []uint64, off int, fill float32) {
-	for i := 0; i < len(cells); i += 64 {
+	i := 0
+	if off&63 == 0 {
+		words := m[off>>6 : off>>6+len(cells)>>6]
+		for k, w := range words {
+			if w != ^uint64(0) {
+				fillWord(cells[64*k:64*k+64], ^w, fill)
+			}
+		}
+		i = 64 * len(words)
+	}
+	for ; i < len(cells); i += 64 {
 		chunk := cells[i:min(i+64, len(cells))]
-		var word [1]uint64
-		raster.MaskCopyRange(word[:], 0, m, off+i, len(chunk))
-		invalid := ^word[0]
+		invalid := ^raster.MaskBits(m, off+i, len(chunk))
 		if len(chunk) < 64 {
 			invalid &= 1<<uint(len(chunk)) - 1
 		}
-		for ; invalid != 0; invalid &= invalid - 1 {
-			chunk[bits.TrailingZeros64(invalid)] = fill
-		}
+		fillWord(chunk, invalid, fill)
+	}
+}
+
+// fillWord stores fill in the cells of chunk whose bit is set in invalid.
+func fillWord(chunk []float32, invalid uint64, fill float32) {
+	for ; invalid != 0; invalid &= invalid - 1 {
+		chunk[bits.TrailingZeros64(invalid)] = fill
 	}
 }
 

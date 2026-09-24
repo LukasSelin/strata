@@ -11,11 +11,12 @@ import (
 
 // ProcessChunked runs k over sources and sinks with bounded memory
 // (DESIGN.md §24, §27). Each worker owns one buffer per input, the size
-// of a tile grown by the kernel's radius on every side, and one per
+// of a tile grown by the kernel's radius on every side, and two per
 // output, the size of a tile, all allocated once per call. For every
 // tile, a worker reads the tile and its halo from each source, runs the
-// kernel over the tile's bands exactly as ProcessN would, and writes the
-// finished tile to each sink. Only the raster's own edge gets the edge
+// kernel over the tile's bands exactly as ProcessN would, and hands the
+// finished tile to its writer, which writes it to each sink while the
+// worker goes on to the next (write-behind; see RunUnitsBehind). Only the raster's own edge gets the edge
 // policy, so the sinks receive the bits ProcessN would write into
 // in-memory outputs, for every Options value.
 //
@@ -113,6 +114,12 @@ type chunkJob struct {
 
 	dst []engine.RasterSink
 	src []engine.RasterSource
+	// masked lists the Masked sources.
+	masked []int
+	// valid is how each output's validity is derived from all of them
+	// (outValidities), shared by every worker for tiles that keep every
+	// mask; nil when no output has a mask.
+	valid []outValidity
 
 	workers []chunkWorker
 	// out is the caller's Options.Stats, or nil.
@@ -122,17 +129,27 @@ type chunkJob struct {
 // chunkWorker is one worker's buffers and the job that runs its tiles.
 // Nothing in it is shared with another worker.
 type chunkWorker struct {
-	// in and out are whole buffers, one per input and per output: in
-	// holds a tile grown by the radius and clipped to the raster, out a
-	// tile. Buffers with a mask have a Stride that is a multiple of 64
-	// and the mask at bit 0, so every row's validity starts on a word
-	// boundary (DESIGN.md §23); buffers without one are compact.
-	in, out []raster.Float32Raster
+	// in and out are whole buffers, one per input and two sets of one
+	// per output, for write-behind: in holds a tile grown by the radius
+	// and clipped to the raster, out a tile. Buffers with a mask have a
+	// Stride that is a multiple of 64 and the mask at bit 0, so every
+	// row's validity starts on a word boundary (DESIGN.md §23); buffers
+	// without one are compact.
+	in  []raster.Float32Raster
+	out [2][]raster.Float32Raster
 	// t runs the kernel over one tile at a time, with views of in and out
 	// as its operands and one worker, so it takes no locks. Its own
 	// worker holds this worker's kernel counters; stats here holds what
 	// crossed the source and sink interfaces, which t cannot see.
 	t job
+	// live holds the masked sources whose current tile has an invalid
+	// cell, with room for all of them. See unmaskAllValid.
+	live []int
+	// valid and validInts hold the validity rules of a tile that dropped
+	// a mask, derived from live alone; nil when no output or no source
+	// has a mask.
+	valid     []outValidity
+	validInts []int
 	// stats counts the bytes this worker's tiles read from sources and
 	// wrote to sinks. Padded like worker.stats.
 	stats engine.Stats
@@ -158,6 +175,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			masked = append(masked, j)
 		}
 	}
+	c.masked = masked
 	dstMasked := false
 	for _, d := range dst {
 		dstMasked = dstMasked || d.Masked()
@@ -183,6 +201,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 
 	valid := outValidities(k, r, masked, dstMasked,
 		make([]outValidity, len(dst)), make([]int, validityInts(len(masked), len(dst))))
+	c.valid = valid
 	c.workers = make([]chunkWorker, workerCount(opts.Workers, c.tiles))
 	for i := range c.workers {
 		wk := &c.workers[i]
@@ -195,7 +214,7 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 		}
 		for _, d := range dst {
 			_, cells, words := buffer(c.tileW, c.tileH, d.Masked())
-			cellsTotal, maskWords = cellsTotal+cells, maskWords+words
+			cellsTotal, maskWords = cellsTotal+2*cells, maskWords+2*words
 		}
 		data := make([]float32, cellsTotal)
 		var bits []uint64
@@ -203,8 +222,9 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			bits = make([]uint64, maskWords)
 		}
 		nin, nout := len(src), len(dst)
-		views := make([]raster.Float32Raster, 2*(nin+nout))
-		wk.in, wk.out = views[:nin:nin], views[nin:nin+nout:nin+nout]
+		views := make([]raster.Float32Raster, 2*nin+3*nout)
+		wk.in = views[:nin:nin]
+		wk.out[0], wk.out[1] = views[nin:nin+nout:nin+nout], views[nin+nout:nin+2*nout:nin+2*nout]
 		carve := func(cells, words int) ([]float32, []uint64) {
 			d := data[:cells:cells]
 			data = data[cells:]
@@ -220,14 +240,23 @@ func newChunkJob(dst []engine.RasterSink, src []engine.RasterSource, k Kernel, r
 			d, m := carve(cells, words)
 			wk.in[j] = raster.Float32Raster{Data: d, Width: inW, Height: inH, Stride: stride, Valid: m}
 		}
-		for j, s := range dst {
-			stride, cells, words := buffer(c.tileW, c.tileH, s.Masked())
-			d, m := carve(cells, words)
-			wk.out[j] = raster.Float32Raster{Data: d, Width: c.tileW, Height: c.tileH, Stride: stride, Valid: m}
+		for set := range wk.out {
+			for j, s := range dst {
+				stride, cells, words := buffer(c.tileW, c.tileH, s.Masked())
+				d, m := carve(cells, words)
+				wk.out[set][j] = raster.Float32Raster{Data: d, Width: c.tileW, Height: c.tileH, Stride: stride, Valid: m}
+			}
 		}
 
+		// live and a tile's validity rules share one allocation.
+		ints := make([]int, len(masked)+validityInts(len(masked), len(dst)))
+		wk.live = ints[:0:len(masked)]
+		if valid != nil && len(masked) > 0 {
+			wk.valid = make([]outValidity, len(dst))
+			wk.validInts = ints[len(masked):]
+		}
 		t := &wk.t
-		t.src, t.dst = views[nin+nout:2*nin+nout:2*nin+nout], views[2*nin+nout:]
+		t.src, t.dst = views[nin+2*nout:2*nin+2*nout:2*nin+2*nout], views[2*nin+2*nout:]
 		t.setup(k, r, c.w, c.h, masked, dstMasked, valid)
 		t.allocWorkers(1, c.tileW)
 		t.allocScratch(c.spanSize())
@@ -263,10 +292,11 @@ func (c *chunkJob) spanSize() (w, h int) {
 
 func roundUp64(n int) int { return (n + 63) &^ 63 }
 
-// run processes every tile on the workers. Reads and writes get a
-// context without ctx's cancellation, so that a tile a worker has claimed
-// is always read, computed and written completely: cancellation stops
-// workers claiming tiles, and never leaves a tile half written.
+// run processes every tile on the workers, writing behind (see
+// RunUnitsBehind). Reads and writes get a context without ctx's
+// cancellation, so that a tile a worker has claimed is always read,
+// computed and written completely: cancellation stops workers claiming
+// tiles, and never leaves a tile half written.
 func (c *chunkJob) run(ctx context.Context) error {
 	defer func() {
 		for i := range c.workers {
@@ -274,11 +304,10 @@ func (c *chunkJob) run(ctx context.Context) error {
 		}
 	}()
 	ioCtx := context.WithoutCancel(ctx)
-	err := runWorkers(ctx, len(c.workers), c.tiles, func(w, i int) error {
-		return c.tile(ioCtx, &c.workers[w], i)
-	})
-	c.report()
-	return err
+	defer c.report()
+	return runBehind(ctx, len(c.workers), c.tiles, c.dst,
+		func(j, x, y int, err error) error { return &ioError{"writing dst", j, x, y, err} },
+		func(w, i int, b *Behind) error { return c.tile(ioCtx, &c.workers[w], b, i) })
 }
 
 // report totals the workers' counters into the caller's Stats. Each
@@ -299,8 +328,9 @@ func (c *chunkJob) report() {
 	}
 }
 
-// tile reads, computes and writes tile i on worker wk.
-func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
+// tile reads and computes tile i on worker wk, and hands it to b for
+// writing.
+func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, b *Behind, i int) error {
 	r := c.r
 	x0, y0 := (i%c.tilesX)*c.tileW, (i/c.tilesX)*c.tileH
 	x1, y1 := min(x0+c.tileW, c.w), min(y0+c.tileH, c.h)
@@ -319,8 +349,20 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 		}
 		t.src[j] = v
 	}
+	t.masked = unmaskAllValid(t.src, c.masked, wk.live)
+	t.valid = c.valid
+	if c.valid != nil && len(t.masked) < len(c.masked) {
+		// The shared rules name inputs whose masks this tile dropped, and
+		// would erode a nil mask: derive the tile's from the inputs that
+		// kept theirs. Dropping all-valid inputs from an AND changes no
+		// bit (DESIGN.md §31).
+		t.valid = outValidities(t.k, c.r, t.masked, true, wk.valid, wk.validInts)
+	}
+	// The output buffers are taken after the reads, so that the last
+	// tile's write overlaps them too.
+	set := b.Acquire()
 	for j := range c.dst {
-		t.dst[j] = bufferView(wk.out[j], x1-x0, y1-y0)
+		t.dst[j] = bufferView(wk.out[set][j], x1-x0, y1-y0)
 	}
 	t.dx, t.dy, t.sx, t.sy = x0, y0, rx0, ry0
 	t.plan = newPlan(x1-x0, y1-y0, 0, 0)
@@ -328,11 +370,7 @@ func (c *chunkJob) tile(ctx context.Context, wk *chunkWorker, i int) error {
 		t.band(&t.workers[0], b)
 	}
 	wk.stats.SinkWritten += int64(x1-x0) * int64(y1-y0) * bytesPerCell * int64(len(c.dst))
-	for j, d := range c.dst {
-		if err := d.WriteWindow(ctx, t.dst[j], x0, y0); err != nil {
-			return &ioError{"writing dst", j, x0, y0, err}
-		}
-	}
+	b.Submit(set, t.dst, x0, y0)
 	return nil
 }
 
@@ -351,6 +389,70 @@ func (e *ioError) Error() string {
 }
 
 func (e *ioError) Unwrap() error { return e.err }
+
+// unmaskAllValid drops the mask of each tile buffer in bufs, of the
+// sources masked lists, whose cells are all valid, and returns the rest
+// of masked in live's memory: the inputs the tile's validity still has to
+// be worked out from.
+//
+// A nil mask means every cell valid (DESIGN.md §31), so this changes no
+// output: an eroded or ANDed mask of all-valid inputs is all valid, and
+// the reductions' results do not depend on the path that folds them
+// (§49). What it changes is the work. A tile read from a source with a
+// fill value that holds none, the usual case away from a raster's
+// NoData border, then gets the unmasked paths: interior validity filled
+// rather than eroded, and a fold that never consults ValidBits. The test
+// costs one pass over the tile's validity words, 1/32 of its cells'
+// bytes, and stops at the first invalid cell.
+func unmaskAllValid(bufs []raster.Float32Raster, masked, live []int) []int {
+	live = live[:0]
+	for _, j := range masked {
+		if allValid(bufs[j]) {
+			bufs[j].Valid = nil
+		} else {
+			live = append(live, j)
+		}
+	}
+	return live
+}
+
+// allValid reports whether every cell of r, which has a mask, is valid.
+func allValid(r raster.Float32Raster) bool {
+	if compact(r) {
+		return bitsAllSet(r.Valid, r.ValidOffset, r.Width*r.Height)
+	}
+	for y := range r.Height {
+		if !bitsAllSet(r.Valid, r.ValidOffset+y*r.Stride, r.Width) {
+			return false
+		}
+	}
+	return true
+}
+
+// bitsAllSet reports whether bits [off, off+n) of m are all set, a word
+// at a time where they are word-aligned, as a tile buffer's rows are.
+func bitsAllSet(m []uint64, off, n int) bool {
+	for n > 0 {
+		if off&63 == 0 && n >= 64 {
+			words := m[off>>6 : off>>6+n>>6]
+			for _, w := range words {
+				if w != ^uint64(0) {
+					return false
+				}
+			}
+			off += len(words) * 64
+			n -= len(words) * 64
+			continue
+		}
+		k := min(n, 64-off&63)
+		if raster.MaskBits(m, off, k) != ^uint64(0)>>(64-uint(k)) {
+			return false
+		}
+		off += k
+		n -= k
+	}
+	return true
+}
 
 // bufferView returns the w×h raster at the start of buf, with buf's
 // stride and mask.

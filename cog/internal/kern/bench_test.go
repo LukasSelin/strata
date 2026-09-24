@@ -35,6 +35,36 @@ func BenchmarkPlanesRow(b *testing.B) {
 	})
 }
 
+func BenchmarkSumBytes(b *testing.B) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	src, row := make([]byte, 8*512), make([]byte, 8*512)
+	for i := range src {
+		src[i] = byte(rng.Uint32())
+	}
+	backends(b, func(b *testing.B) {
+		b.SetBytes(int64(len(row)))
+		for b.Loop() {
+			copy(row, src)
+			SumBytes(row)
+		}
+	})
+}
+
+func BenchmarkUint8RowPredicted(b *testing.B) {
+	rng := rand.New(rand.NewPCG(7, 8))
+	src, row, vals := make([]byte, 512), make([]byte, 512), make([]float32, 512)
+	for i := range src {
+		src[i] = byte(rng.Uint32())
+	}
+	backends(b, func(b *testing.B) {
+		b.SetBytes(int64(len(row)))
+		for b.Loop() {
+			copy(row, src)
+			Uint8Row(vals, row, false, true)
+		}
+	})
+}
+
 func BenchmarkUint16RowPredicted(b *testing.B) {
 	rng := rand.New(rand.NewPCG(3, 4))
 	src, row, vals := make([]byte, 2*512), make([]byte, 2*512), make([]float32, 512)

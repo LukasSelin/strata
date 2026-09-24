@@ -4,10 +4,12 @@
 // packages are (DESIGN.md §12): slices and scalars in, nothing about
 // rasters, files or blocks.
 //
-// Every kernel has a scalar form, which every build runs, and an AVX2
-// form in GOEXPERIMENT=simd builds on CPUs that have it (simd_amd64.go),
-// written with simd/archsimd as ADR 0001 requires, which is why they live
-// under internal/ (DESIGN.md §14). The two give the same bits.
+// Every kernel has a scalar form, which every build runs, and in
+// GOEXPERIMENT=simd builds an AVX2 form on amd64 CPUs that have it
+// (simd_amd64.go) and a NEON form on arm64 (simd_arm64.go), written with
+// simd/archsimd as ADR 0001 requires, which is why they live under
+// internal/ (DESIGN.md §14). They give the same bits, which
+// simd_test.go and FuzzKernels check.
 //
 // Exported functions panic on mismatched lengths, with a "kern: " prefix.
 //
@@ -32,6 +34,8 @@ const (
 // Backend function variables, swapped in init by SIMD builds.
 var (
 	planesRow = scalarPlanesRow
+	sumBytes  = scalarSumBytes
+	uint8Row  = scalarUint8Row
 	uint16Row = scalarUint16Row
 	word64    = scalarWord
 	copyRow   = scalarCopyRow
@@ -40,12 +44,17 @@ var (
 // kernelSet is one backend's kernels.
 type kernelSet struct {
 	planesRow func(vals []float32, row []byte)
+	sumBytes  func(row []byte)
+	uint8Row  func(vals []float32, row []byte, signed, pred bool)
 	uint16Row func(vals []float32, row []byte, signed, pred bool)
 	word64    func(chunk []float32, mode int, want, care, lo uint32, span uint64) uint64
 	copyRow   func(vals []float32, row []byte)
 }
 
-var scalarKernels = kernelSet{planesRow: scalarPlanesRow, uint16Row: scalarUint16Row, word64: scalarWord, copyRow: scalarCopyRow}
+var scalarKernels = kernelSet{
+	planesRow: scalarPlanesRow, sumBytes: scalarSumBytes, uint8Row: scalarUint8Row,
+	uint16Row: scalarUint16Row, word64: scalarWord, copyRow: scalarCopyRow,
+}
 
 // simdKernels is the SIMD set, or nil when this build or CPU has none.
 var (
@@ -55,7 +64,8 @@ var (
 )
 
 func (k *kernelSet) install() {
-	planesRow, uint16Row, word64, copyRow = k.planesRow, k.uint16Row, k.word64, k.copyRow
+	planesRow, sumBytes, uint8Row = k.planesRow, k.sumBytes, k.uint8Row
+	uint16Row, word64, copyRow = k.uint16Row, k.word64, k.copyRow
 }
 
 // Backend returns the kernel set in use: "scalar", or the SIMD set's name.
@@ -81,12 +91,29 @@ func UseScalar(scalar bool) {
 // PlanesRow writes one row of single-band float32 samples, stored with
 // libtiff's floating-point predictor, to vals: row is the row's bytes,
 // byte-differenced and split into four planes of len(vals) bytes, most
-// significant first. It uses row as scratch.
+// significant first. It may use row as scratch.
 func PlanesRow(vals []float32, row []byte) {
 	if len(row) != 4*len(vals) {
 		panic(fmt.Sprintf("kern: PlanesRow: %d bytes for %d samples", len(row), len(vals)))
 	}
 	planesRow(vals, row)
+}
+
+// SumBytes replaces row's bytes with their running sum, wrapping: the
+// floating-point predictor's differencing undone, one byte apart, for
+// the rows PlanesRow does not take.
+func SumBytes(row []byte) {
+	sumBytes(row)
+}
+
+// Uint8Row writes one row of single-band 8-bit samples, signed or not,
+// to vals, undoing horizontal differencing first if pred. It may use row
+// as scratch.
+func Uint8Row(vals []float32, row []byte, signed, pred bool) {
+	if len(row) < len(vals) {
+		panic(fmt.Sprintf("kern: Uint8Row: %d bytes for %d samples", len(row), len(vals)))
+	}
+	uint8Row(vals, row[:len(vals)], signed, pred)
 }
 
 // Uint16Row writes one row of single-band little-endian 16-bit samples,
@@ -128,16 +155,36 @@ func scalarCopyRow(vals []float32, row []byte) {
 	}
 }
 
-func scalarPlanesRow(vals []float32, row []byte) {
+func scalarSumBytes(row []byte) {
 	var acc byte
 	for i, b := range row {
 		acc += b
 		row[i] = acc
 	}
+}
+
+func scalarPlanesRow(vals []float32, row []byte) {
+	scalarSumBytes(row)
 	n := len(vals)
 	p0, p1, p2, p3 := row[:n], row[n:2*n], row[2*n:3*n], row[3*n:4*n]
 	for i := range vals {
 		vals[i] = math.Float32frombits(uint32(p3[i]) | uint32(p2[i])<<8 | uint32(p1[i])<<16 | uint32(p0[i])<<24)
+	}
+}
+
+func scalarUint8Row(vals []float32, row []byte, signed, pred bool) {
+	row = row[:len(vals)]
+	if pred {
+		scalarSumBytes(row)
+	}
+	if signed {
+		for i, b := range row {
+			vals[i] = float32(int8(b)) // #nosec G115 -- reinterpreting the bits is the point
+		}
+		return
+	}
+	for i, b := range row {
+		vals[i] = float32(b)
 	}
 }
 

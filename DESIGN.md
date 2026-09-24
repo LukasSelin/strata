@@ -20,6 +20,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
+- [benchmarks/rawio/RESULTS.md](benchmarks/rawio/RESULTS.md): writing a chunked call's output file in parallel (a shared mapping) and behind the computation (write-behind), §24, §27.
 - [benchmarks/engine/RESULTS.md](benchmarks/engine/RESULTS.md): worker scaling and tile shape (STRATA-9).
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
@@ -511,6 +512,8 @@ internal/vec/                      internal/stencil/
                                    └── simd_arm64.go
 ```
 
+- `internal/vec`'s fill-value test (§31) is `validity.go` (scalar and
+  dispatch) beside `validity_amd64.go` and `validity_arm64.go`.
 - `internal/accum` has the same pair, with the block loop they share in
   `blocks.go`, and so has `internal/focalrow` (§53), after a scalar
   `focalrow.go`. There is no `simd.go` (portable SIMD), per §14.
@@ -888,6 +891,24 @@ type RasterSink interface {
   (17–21% faster than a call per row) and other windows a row per call;
   joining short rows across the gaps between them costs more than the
   calls it saves.
+- **Writing one file in parallel.** Handles do not make writes to one
+  file parallel: Linux takes the file's lock for every `write`, so 12
+  writers into one file on tmpfs were no faster than one (0.32 s against
+  0.26 s for 508 MB) while 12 separate files took 0.09 s, and on ext4 12
+  writers took as long as one. Much of the cost is the kernel allocating
+  the file's pages, not the system call. `engine.CreateRawFile` gives an
+  output its final size up front (fallocate on Linux disks, where it is
+  cheap and reports a full disk at once, but not on tmpfs, where it
+  means zeroing every page on one core first: 0.19 s) and, with more
+  than one handle, maps it shared into memory on Linux and Windows.
+  Workers' `WriteAt`s become copies into the mapping, whose page faults
+  run in parallel. One writer is faster through system calls (a fault
+  per 4 KiB page cost 0.40 s against 0.26 s on tmpfs), so one handle
+  maps nothing. A page the system cannot back (a full tmpfs, a file
+  truncated underneath) raises SIGBUS, or EXCEPTION_IN_PAGE_ERROR on
+  Windows, inside the copy; `debug.SetPanicOnFault` turns it into a
+  panic the copy recovers and returns as `ErrMappedFault`, so a full
+  disk is an error and not a crash. Measured in benchmarks/rawio.
 
 **Sparse data uses streams**, from v0.7 on:
 
@@ -1051,7 +1072,9 @@ validity and never write it, so the mask lock below has nothing to guard.
 
 **Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
 goroutines per call and uses the calling goroutine as the last worker;
-there is no global pool of goroutines. Workers take bands from the plan
+there is no global pool of goroutines. Chunked calls also start one
+writer goroutine per worker (§27, write-behind), joined before the call
+returns like the workers. Workers take bands from the plan
 in order with an atomic counter, each with its own views and erosion
 scratch, and the call joins them before it returns. Kernels run
 concurrently on disjoint bands.
@@ -1099,11 +1122,20 @@ report measured peak memory against it (§43).
 
 **Implementation.** `exec.ProcessChunked` gives each worker, once per
 call, one buffer per input of at most (TileWidth+2r)×(TileHeight+2r)
-cells (clipped to the raster), one per output of TileWidth×TileHeight,
+cells (clipped to the raster), two per output of TileWidth×TileHeight,
 and a mask per operand with validity. A worker reads a tile and its halo
 from every source, runs the tile's bands in order through the in-memory
-band code on its buffers (no mask lock: nothing is shared), and writes
-the tile to every sink. The unit of parallelism is the tile: there are
+band code on its buffers (no mask lock: nothing is shared), and hands
+the tile to its writer goroutine, which writes it to every sink while
+the worker reads and computes the next into its other output buffers
+(write-behind). The bound above therefore counts outputs twice. A write
+waiting in a system call holds no P, so the writer overlaps the worker
+on a second core even under `GOMAXPROCS=1`, though there it needs the
+one P between calls and the overlap is partial; a Workers=1 call keeps
+up to two cores busy. A failed write stops the workers claiming tiles
+through the context the scheduler checks, so failures and cancellation
+keep their whole-tile, plan-order contract, with at most one more tile
+per worker finished behind a failed write. The unit of parallelism is the tile: there are
 never more workers than tiles, so the zero `Options` (one tile) runs one
 worker with the whole raster in memory. Set `TileHeight`.
 
@@ -1557,6 +1589,55 @@ more on the 3×3 slope. Sentinel values cost 14–25% more. Only the bitmap
 has none of the correctness hazards of the other two, and it works
 unchanged for integer data.
 
+### Rules 4 and 5 at the file boundary
+
+Rule 5 puts a comparison in front of every read from a file with a fill
+value, and rule 4 makes a mask of all ones work nobody needs. Both are
+IO costs, not kernel costs, and until 2026-09 the raw path paid them in
+full: deriving the mask was 26% of a one-worker slope from a raw file,
+more than the slope kernel.
+
+- **The comparison is a kernel.** `vec.ValidBits(dst, src, fill)`
+  writes a row's mask words straight from its cells. On AVX2, VCMPPS
+  and VMOVMSKPS give eight bits per compare. NEON has no movemask, so
+  it ANDs each compare's lanes with their bit weights and sums them with
+  two pairwise adds. The scalar form tests the cells' bits as integers,
+  eight at a time. All three follow `RawOptions` exactly: `==` as floats,
+  so −0 matches 0, and any NaN for a NaN fill (`TestValidBits`,
+  `FuzzValidBits`, and `TestRawValidityWide` on both backends).
+  `RawSource` calls it once per read call of consecutive rows. Only a
+  row's partial first and last words are merged bit by bit, through
+  `vec.ValidWord`, which returns a word so that no scratch escapes to
+  the heap. `RawSink` skips all-valid words of the mask with one compare
+  each. cog is a separate module that cannot import `internal/vec`, so
+  it keeps its own tests for GDAL's rules in `cog/internal/kern`. Its
+  blocks' mask buffers come from a pool, so a block found all valid
+  costs no allocation.
+- **Rule 4, per tile.** `Masked` describes a whole source, and a source
+  with a fill value is masked everywhere, even where no cell holds the
+  fill. So after a tile is read, `ProcessChunked` and `ReduceChunked`
+  check each masked buffer's bits, halo included, and drop the mask of
+  any buffer whose cells are all valid. That tile then runs as if the
+  source were unmasked: interior validity is filled, not eroded or
+  ANDed, and a fold takes its unmasked path without calling
+  `ValidBits`. The output cannot change. An erosion or AND of all-ones
+  masks is all ones, and a reduction returns the same value whichever
+  path folds it (§49). `TestChunkedAllValidTiles` holds every kind of
+  kernel to the plain function over masks whose invalid cells are
+  clustered. The check lives in the engine, not in a new source method,
+  so memory and cog sources benefit too. It reads 1/32 of the tile's
+  cell bytes and stops at the first invalid cell. `resample`'s chunked
+  driver does not do this yet.
+
+Measured on the benchmark window (benchmarks/gdalsuite/RESULTS.md,
+2026-09-24), one worker from a raw float32 file: slope 0.88 s → 0.64 s,
+stats 0.51 s → 0.31 s and minmax 0.40 s → 0.18 s. Slope's gain is all
+the vector test. For the reductions, turning the per-tile check off
+costs minmax 11% and stats 3%. benchmarks/chunked's masked strips, whose
+10% invalid cells are scattered so that no tile is all valid, run
+1.7–2.1× faster with SIMD kernels and 1.15–1.46× with scalar ones. The
+outputs are unchanged, byte for byte.
+
 ## 32. Point-Cloud to Raster Workflows
 
 Crossing representations — rasterizing point batches into a DEM or a
@@ -1614,15 +1695,25 @@ every file but one costs exactly one prefetch plus one request per stored
 block past it, pixel-interleaved ones included: 8,344 requests and
 165.7 MiB for 165.7 MiB of files, where one fetch per band had cost
 10,814 and 217.0 MiB (`acceptance/coghttpcheck.sh`). Its speed against
-GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
-on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
-Go's inflate, is most of the gap), yet slope over a COG still beats
-`gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Since then the default block cache holds 8 rows of blocks
-(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
-read allocates about its cache rather than its size, and 8- and 16-bit
-integers convert without a float64 detour (UInt16 reads 1.4–1.9×
-faster). Open: writing (a COG sink), internal masks.
+GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md).
+The default block cache holds 8 rows of blocks (64 MiB to 1 GiB), decoded
+blocks' buffers are reused once released, so a read allocates about its
+cache rather than its size, and 8- and 16-bit integers convert without a
+float64 detour (UInt16 reads 1.4–1.9× faster). Deflate is inflated a
+block at a time by the module's own inflater, and the per-row work
+(undoing the predictors, converting rows to float32, the NoData test) is
+in `cog/internal/kern`: kernels with a scalar form in every build and
+AVX2 and NEON forms in `GOEXPERIMENT=simd` builds, held bit for bit to
+the scalar ones, as in `internal/vec` (§14; the cog module cannot import
+strata's internal packages, so it has its own). The floating-point
+predictor sums a float32 row's four byte planes side by side in one pass
+and interleaves them into samples, and costs about 96 ms of a 127M-cell
+one-core read (it was 37–54% of the first reader's). With them, on one
+core, strata reads a predictor-3 float32 COG about as fast as GDAL (ZSTD
+a tie, Deflate 1.17× behind; LZW, whose decoder is a dependency, 1.5×
+behind; uncompressed 1.37× ahead), and slope over a COG beats `gdaldem
+slope` on the same file by 1.9–3.1×, and by 6.0–7.9× on 12 workers.
+Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 
@@ -1732,6 +1823,7 @@ benchmarks/
 ├── algebra/            implemented, RESULTS.md
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
+├── rawio/              implemented: writing one output file from many workers (mapping, write-behind), RESULTS.md
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── focal/              implemented: Correlate, Gaussian, Mean, Min, Max by radius, RESULTS.md (§53)
 ├── resample/           implemented: every method at 2×, 4×, ½, 1/1.37, against
@@ -2038,11 +2130,14 @@ strata/
 │   ├── engine.go              Options (STRATA-8)
 │   ├── source.go              RasterSource / RasterSink, memory source and sink
 │   ├── raw.go                 raw float32 file source and sink, RawOptions
-│   ├── rawfile.go             RawFile: one file, several handles
+│   ├── rawfile.go             RawFile: one file, several handles;
+│   │                           CreateRawFile sizes and maps an output
+│   ├── rawmap_*.go            preallocation and mapping per system
 │   └── stats.go               Stats, the traffic counter (§51)
 │
 ├── internal/
-│   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go
+│   ├── vec/                   implemented: scalar.go, dispatch.go, simd_amd64.go,
+│   │                           validity.go (+ _amd64, _arm64: fill values to masks, §31)
 │   ├── stencil/               implemented: horn.go, aspect.go, curvature.go, rugged.go,
 │   │                           mask.go, simd_amd64.go, simd_arm64.go
 │   ├── focalrow/              implemented (§53): focalrow.go (scalar, dispatch),
@@ -2087,7 +2182,9 @@ strata/
 │   ├── geo.go                 GeoKeys: geotransform, PixelIsPoint, EPSG code
 │   ├── decode.go              decompression, predictors, float32 and validity
 │   ├── cache.go               byte-bounded LRU of decoded blocks
-│   └── source.go              Open, File, Source (an engine.RasterSource)
+│   ├── source.go              Open, File, Source (an engine.RasterSource)
+│   └── internal/kern/         row kernels: predictors, conversion, NoData test
+│                              (scalar; AVX2 and NEON in GOEXPERIMENT=simd)
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)
@@ -3553,8 +3650,12 @@ and the masks:
 
 - **Scalar** kernels loop over terms outside and cells inside,
   accumulating in `dst` — the same per-cell order as a register
-  accumulator, with every cell loop indexed by its loop variable alone,
-  so they carry no bounds checks (§39).
+  accumulator — so they carry no bounds checks (§39). The cell loops of
+  the weighted sums, sums and means take eight cells a step, by
+  reslicing: a one-cell loop ran at half speed whenever it spanned two
+  64-byte lines of code, which with Go's 32-byte function alignment was
+  up to the rest of the binary (`benchmarks/focal/RESULTS.md`, "Loop
+  placement").
 - **AVX2 and NEON** kernels keep one output cell's accumulator per lane.
   A block is four vectors (32 cells on AVX2, 16 on NEON) with an
   accumulator each, so four add chains hide one's latency, and each term
@@ -3645,24 +3746,27 @@ rows of the neighbourhood come from cache.
 core) as on NEON (Apple M4), benchmarks/focal/RESULTS.md, at every
 radius and size. Figures are AVX2 at 4096², unmasked.
 
-- Correlate costs what its products cost: 0.96, 1.92, 3.44 and 7.98 ns
-  per cell at r = 1, 2, 3 and 5, a flat 0.066–0.077 ns per product from
+- Correlate costs what its products cost: 0.92, 1.83, 3.27 and 7.65 ns
+  per cell at r = 1, 2, 3 and 5, a flat 0.063–0.073 ns per product from
   r = 2 (0.053–0.064 on NEON), so its throughput falls as (2r+1)² and its
-  memory demand with it, from 8.3 GB/s at r = 1 to 1.0 at r = 5.
-- The separable forms grow linearly: Gaussian 0.75 → 1.65 ns per cell
-  from r = 1 to 5, Mean 0.71 → 1.58, Min 0.82 → 2.45. At r = 5 separable
+  memory demand with it, from 8.7 GB/s at r = 1 to 1.0 at r = 5.
+- The separable forms grow linearly: Gaussian 0.69 → 1.60 ns per cell
+  from r = 1 to 5, Mean 0.67 → 1.51, Min 0.78 → 2.33. At r = 5 separable
   is 4.8× cheaper than the full kernel (6× on NEON).
-- The highest demand in the suite is 15.1 GB/s (Mean at r = 1, 1024²),
+- The highest demand in the suite is 15.4 GB/s (Mean at r = 1, 1024²),
   under a core's 22.
-- AVX2 is worth 2.9–5.5× over scalar where the scalar numbers are
-  stable, NEON 3.3–6.0×: more than the lanes alone would give, because
+- AVX2 is worth 2.6–4.9× over scalar, NEON 3.3–6.0×: more than the lanes alone would give, because
   the scalar kernels accumulate through memory a term at a time (the
   canonical order, bounds-check free) where the lanes hold several
   accumulators in registers. Eight lanes give no more than four; the
-  M4's core is 1.2–2.6× faster in absolute terms. Scalar Correlate and
-  Mean are not stable: the same source ran 11–43% slower after
+  M4's core is 1.1–2.4× faster in absolute terms. Scalar Correlate and
+  Mean were not stable: the same source ran 11–43% slower after
   unrelated commits moved `internal/focalrow`'s functions by 32 bytes,
-  which puts their ratios up to 7.5× in the current run.
+  which put their ratios up to 7.5×. Their one-cell loops spanned two
+  64-byte lines of code at one placement and one at the other; eight
+  cells a step removed the difference, every non-NaN output bit the
+  same, and made scalar Correlate 1.3–1.9× and Gaussian 1.4–1.6× faster
+  than in the run before it.
 - **A 64 KiB row stride, fixed.** At 16384², and not at 8192², 12288²,
   16320² or 16448², Gaussian, Mean and Min at r = 5 ran at 42–56% of
   their 4096² speed (Gaussian 602 → 252 M cells/s). Timing the column

@@ -51,12 +51,14 @@ func newBlock(w, rows int) *block {
 
 func (b *block) hold() { b.refs.Add(1) }
 
-// release gives back one reference, and the cells' buffer with the last.
+// release gives back one reference, and the cells' and validity's
+// buffers with the last.
 func (b *block) release() {
 	switch n := b.refs.Add(-1); {
 	case n == 0:
 		putVals(b.vals)
-		b.vals = nil
+		putValid(b.valid)
+		b.vals, b.valid = nil, nil
 	case n < 0:
 		panic("cog: a block released more often than it was held")
 	}
@@ -85,6 +87,36 @@ func getVals(n int) []float32 {
 func putVals(v []float32) {
 	if cap(v) > 0 {
 		valsPool.Put(&v)
+	}
+}
+
+// validPool holds the validity buffers of released blocks, and of blocks
+// found all valid, which keep none: without it every masked block cost a
+// new mask, garbage as soon as the block was found all valid or evicted.
+var validPool sync.Pool // of *[]uint64
+
+// getValid returns a buffer for the validity of n cells. Its words are
+// not cleared: the caller writes every one, or clears it (poisoned in
+// tests, as getVals's cells are).
+func getValid(n int) []uint64 {
+	words := raster.MaskWords(n)
+	var v []uint64
+	if p, ok := validPool.Get().(*[]uint64); ok && cap(*p) >= words {
+		v = (*p)[:words]
+	} else {
+		v = make([]uint64, words)
+	}
+	if poisonVals {
+		for i := range v {
+			v[i] = 0x5a5a_dead_beef_a5a5
+		}
+	}
+	return v
+}
+
+func putValid(v []uint64) {
+	if cap(v) > 0 {
+		validPool.Put(&v)
 	}
 }
 
@@ -207,7 +239,8 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 		b := newBlock(im.blockW, rows)
 		clear(b.vals)
 		if nd.set {
-			b.valid = make([]uint64, raster.MaskWords(n)) // all invalid
+			b.valid = getValid(n)
+			clear(b.valid) // all invalid
 		}
 		return b, nil
 	}
@@ -344,7 +377,8 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	if im.bits == 1 {
 		expandBits(b.vals, data, im.blockW, rowBytes, spb, first)
 		if nd.set && anyEqual(b.vals, float32(nd.cmp)) {
-			b.valid = make([]uint64, raster.MaskWords(n))
+			b.valid = getValid(n)
+			clear(b.valid)
 			for i, v := range b.vals {
 				if v != float32(nd.cmp) {
 					b.valid[i>>6] |= 1 << uint(i&63)
@@ -363,7 +397,7 @@ func (c *container) decodeBlock(im *image, idx, by, band int, nd noData, read fu
 	}
 	anyInvalid := convert(b.vals, data, im.format, im.bits, spb, first, nd, nil)
 	if anyInvalid {
-		b.valid = make([]uint64, raster.MaskWords(n))
+		b.valid = getValid(n) // convert writes every word
 		convert(b.vals, data, im.format, im.bits, spb, first, nd, b.valid)
 	}
 	return b, nil
@@ -600,18 +634,15 @@ func horizontalRow(row []byte, size, stride int) {
 // are stored as planes, most significant first. It leaves the samples
 // little-endian.
 //
-// It is the hottest loop in reading a float COG, so the differencing is
-// undone straight into tmp, one byte a step with the running sum in a
-// register when stride is 1, and four-byte samples are reassembled from
-// their planes a whole sample at a time.
+// The usual float COG, one band of float32, never comes here: decodeBlock
+// hands its rows to kern.PlanesRow. For the rest, the differencing is
+// undone into tmp, by kern.SumBytes when stride is 1, and four-byte
+// samples are reassembled from their planes a whole sample at a time.
 func floatPredictorRow(row, tmp []byte, size, stride int) {
 	tmp = tmp[:len(row)]
 	if stride == 1 {
-		var acc byte
-		for i, b := range row {
-			acc += b
-			tmp[i] = acc
-		}
+		copy(tmp, row)
+		kern.SumBytes(tmp)
 	} else {
 		copy(tmp, row[:min(stride, len(row))])
 		for i := stride; i < len(row); i++ {
@@ -711,24 +742,12 @@ func realEqualRun32(b float32) (lo uint32, span uint64, ok bool) {
 // intRow writes one row of single-band little-endian integer samples of
 // the given width and signedness to vals, undoing horizontal differencing
 // first if pred: each sample is then the wrapping sum of those before it.
+// It may use row as scratch.
 func intRow(vals []float32, row []byte, bits int, signed, pred bool) {
 	le := binary.LittleEndian
 	switch {
 	case bits == 8:
-		row = row[:len(vals)]
-		var acc byte
-		for i, v := range row {
-			if pred {
-				acc += v
-			} else {
-				acc = v
-			}
-			if signed {
-				vals[i] = float32(int8(acc)) // #nosec G115 -- reinterpreting the bits is the point
-			} else {
-				vals[i] = float32(acc)
-			}
-		}
+		kern.Uint8Row(vals, row, signed, pred)
 	case pred:
 		row = row[:2*len(vals)]
 		var acc uint16
