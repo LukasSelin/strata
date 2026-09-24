@@ -159,3 +159,97 @@ func BenchmarkSurface(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkRuggednessRadius reports what a larger window costs: every
+// measure at radii 1 to 8, one worker, masked, ns per cell. Radius 1
+// runs the SIMD kernels on a SIMD build; larger radii are scalar and
+// sum (2r+1)² − 1 terms a cell.
+//
+//	GOEXPERIMENT=simd go test -run - -bench RuggednessRadius ./terrain
+func BenchmarkRuggednessRadius(b *testing.B) {
+	const n = 1024
+	dem := benchDEM(n, true)
+	dst := raster.NewFloat32Like(dem)
+	names := map[RuggednessType]string{RuggednessTRI: "tri", RuggednessTRIWilson: "wilson",
+		RuggednessTPI: "tpi", RuggednessRoughness: "roughness"}
+	for _, rt := range ruggednessTypes {
+		for _, r := range []int{1, 2, 3, 5, 8} {
+			b.Run(fmt.Sprintf("%s/r=%d", names[rt], r), func(b *testing.B) {
+				o := RuggednessOptions{Type: rt, Radius: r}
+				for b.Loop() {
+					Ruggedness(dst, dem, o)
+				}
+				b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+			})
+		}
+	}
+}
+
+// BenchmarkFeatures compares Features writing a small multi-scale stack
+// (slope, and TPI at radii 1, 3 and 8) with the four standalone calls it
+// replaces, masked, in memory. In memory the DEM is read from cache
+// either way, so this measures what the fan-out costs rather than what
+// it saves; the saving is in reading and decoding a DEM from a file
+// once (benchmarks/gdalsuite/WORKFLOW.md). ns/cell is per DEM cell, for
+// the whole stack.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Features ./terrain
+func BenchmarkFeatures(b *testing.B) {
+	const n = 1024
+	dem := benchDEM(n, true)
+	ops := []FeatureOp{
+		SlopeOptions{CellSize: 10},
+		RuggednessOptions{Type: RuggednessTPI, Radius: 1},
+		RuggednessOptions{Type: RuggednessTPI, Radius: 3},
+		RuggednessOptions{Type: RuggednessTPI, Radius: 8},
+	}
+	out := make([]Feature, len(ops))
+	for i, op := range ops {
+		out[i] = Feature{Op: op, Dst: raster.NewFloat32Like(dem)}
+	}
+	ctx := context.Background()
+	for _, workers := range []int{1, 0} {
+		eo := engine.Options{Workers: workers}
+		b.Run(fmt.Sprintf("workers=%d/separate", workers), func(b *testing.B) {
+			for b.Loop() {
+				for _, f := range out {
+					_ = FeaturesTiled(ctx, []Feature{f}, dem, eo)
+				}
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+		b.Run(fmt.Sprintf("workers=%d/features", workers), func(b *testing.B) {
+			for b.Loop() {
+				_ = FeaturesTiled(ctx, out, dem, eo)
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+	}
+}
+
+// BenchmarkFit reports what the quadratic fit costs by radius, for slope
+// (two derivatives) and mean curvature (all five), one worker, masked,
+// ns per cell, against Horn's slope and ZT's curvature at FitRadius 0.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Fit ./terrain
+func BenchmarkFit(b *testing.B) {
+	const n = 1024
+	dem := benchDEM(n, true)
+	dst := raster.NewFloat32Like(dem)
+	for _, r := range []int{0, 1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("slope/r=%d", r), func(b *testing.B) {
+			o := SlopeOptions{CellSize: 10, FitRadius: r}
+			for b.Loop() {
+				Slope(dst, dem, o)
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+		b.Run(fmt.Sprintf("curvature/r=%d", r), func(b *testing.B) {
+			o := CurvatureOptions{CellSize: 10, Type: CurvatureMean, FitRadius: r}
+			for b.Loop() {
+				Curvature(dst, dem, o)
+			}
+			b.ReportMetric(b.Elapsed().Seconds()*1e9/float64(n*n)/float64(b.N), "ns/cell")
+		})
+	}
+}

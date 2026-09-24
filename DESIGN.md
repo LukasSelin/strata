@@ -31,7 +31,7 @@ Decisions recorded elsewhere and summarized here:
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
-Where things stand, as of 2026-09-23. Each section's own **Status** line is
+Where things stand, as of 2026-09-24. Each section's own **Status** line is
 the detailed record; this table only points at it.
 
 | Area | § | Status |
@@ -41,6 +41,7 @@ the detailed record; this table only points at it.
 | arm64 NEON backend (`GOEXPERIMENT=simd`, STRATA-11) | §14, §17 | done: `vec`, `stencil`, `accum` |
 | `algebra`: Add, Sub, Mul, Min, Max, Clamp, Mask, Normalize | §18 | done |
 | `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
+| `terrain`: multi-scale Ruggedness (radius 1–8), Wood's fit (`FitRadius` 1–8) and `Features` | §20 | done; SIMD ruggedness sums for r > 1 open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -53,7 +54,7 @@ the detailed record; this table only points at it.
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | radius > 0 and several outputs done; public `Kernel` decided against for now |
 | Register-level operation fusion | §29 | done for left-deep chains, all three backends; Zen 2 run and generator open |
-| N-dimensional arrays | §10 | not started (v0.3) |
+| N-dimensional arrays: `Array[T]`, views, broadcasting, axis reductions | §10 | done; tiled and chunked execution, vector reductions and Zarr-shaped chunking open |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
@@ -229,9 +230,10 @@ type Float32Raster struct {
   `Validate` checks a hand-built raster without panicking.
 - **Other data types.** Storage may keep integer or float64 data, but
   source adapters convert it to `float32` plus a validity mask at the IO
-  boundary. A generic element type is deferred to the Array work (v0.3,
-  §10). At that point, decide whether `Float32Raster` becomes a 2D
-  specialization of `Array`.
+  boundary. **Decided in §10:** `Float32Raster` stays the concrete compute
+  type and does not become a specialization of `Array`; integer and
+  float64 grids are rank-2 `Array[T]`s, and `array.FromRaster` and
+  `array.ToRaster` convert between the two without a copy.
 
 Spatial metadata stays separate from the numbers, so kernels never see it:
 
@@ -255,24 +257,110 @@ type Dataset struct {
 ## 10. Multidimensional Arrays
 
 Environmental data is often not purely two-dimensional: `[time,y,x]`,
-`[level,time,y,x]`, `[scenario,time,y,x]`. A future core array may look
-like:
+`[level,time,y,x]`, `[scenario,time,y,x]`. Package `array` holds them:
 
 ```go
 type Array[T Number] struct {
     Data   []T
-    Shape  []int
-    Stride []int
+    Shape  []int // outermost first; every length positive
+    Stride []int // elements, per dimension, never negative
+
+    Valid       []uint64 // as Float32Raster's, nil = every element valid (§31)
+    ValidOffset int
 }
 ```
 
-This aligns with chunked storage such as Zarr. Arrays need the same
-validity bitmap as rasters (§31). `Stride` here is per dimension, while
-`Float32Raster.Stride` is the row stride in elements. The element-type
-decision made here also decides integer and float64 rasters (§9), which
-importing modules need for counts and labels (§7).
+Element (i0, …, iN-1) is `Data[Σ ik·Stride[k]]`. `Stride` here is per
+dimension, while `Float32Raster.Stride` is the row stride in elements.
+This aligns with chunked storage such as Zarr (§34).
 
-Status: not started (v0.3).
+**Decisions.**
+
+- **Element type.** `Number` is the fixed-width integers and both float
+  widths. `int` and `uint` are left out, since a stored array's width
+  does not depend on the platform. The element type is generic because
+  storage is: importing modules need integer labels and counts and
+  float64 model output (§7). The compute type stays float32. The SIMD
+  kernels, and every package that takes a raster, are unchanged.
+  Elementwise operations on `Array[float32]` call the same `internal/vec`
+  kernels as `algebra` for each contiguous run. Other types use scalar
+  loops. `Convert` moves data between types at the boundary.
+- **Rasters stay rasters.** `Float32Raster` does not become a 2-D
+  specialization of `Array` (§9). The two share the validity bit layout,
+  so `FromRaster` and `ToRaster` convert between them with no copy.
+  `ToRaster(stack.Select(0, t))` hands a time step to terrain, focal,
+  reduce or the engine. `ToRaster` needs unit steps along x and rows that
+  do not overlap; a transposed or broadcast view is copied first.
+- **Views.** `Slice`, `Window`, `Select`, `Transpose`, `Reshape`
+  (compact arrays only), `BroadcastTo` and `ExpandDims` share `Data` and
+  `Valid`, as raster windows do (§21). A view's `Data` starts at its first
+  element and `ValidOffset` moves with it, so the mask bits follow the
+  strides with no copy. Strides are never negative. A reversed axis would
+  need a `Data` that starts before the first element, and nothing yet
+  needs one. A stride of 0 repeats an element, which is how
+  `BroadcastTo` works. Such a view can be read but never written.
+- **Broadcasting** is numpy's. Shapes are aligned at their last axis, and
+  each input's length must equal dst's or be 1. `dst` fixes the shape,
+  and inputs are broadcast to it, so `BroadcastShape` is how a caller
+  sizes `dst`.
+- **Operands** follow `algebra` (§18). `dst` is written in place over
+  the same elements in the same layout, or shares no memory with an
+  input. The overlap test is conservative (spans), like
+  `internal/overlap`'s for different strides. A `dst` that repeats an
+  element fails a sufficient no-self-overlap test: sorted by stride,
+  each axis steps past the span of the smaller ones.
+- **Loops.** One run is one kernel call (§19). Length-1 dimensions are
+  dropped. Neighbouring dimensions merge wherever every operand steps
+  through them as one, so compact operands make a single run whatever
+  their rank. Elementwise loops visit dimensions in dst's memory order.
+- **Axis reductions** extend §49. `CountOver`, `SumOver`, `MeanOver`,
+  `MinOver` and `MaxOver` take any set of axes. `dst` has those axes
+  removed, or kept at length 1. No result depends on the layout of `src`
+  or on the order elements are visited. `internal/accum` keeps about
+  10 KB of bins per accumulator, which suits one sum over a raster but
+  not one accumulator per output element. So `SumOver` keeps Shewchuk's
+  non-overlapping partials (Python's `math.fsum`) and rounds once.
+  `MeanOver` divides exactly: it steps the rounded quotient to the
+  correctly rounded one, comparing the exact sum with `mid·n` on the
+  partials. Both are correctly rounded, so on float32 data they equal
+  `reduce.Sum` and `reduce.Stats`' `Mean` bit for bit
+  (`TestAgreesWithReduce`). Outputs are fed in blocks of 256, one slab of
+  `src` at a time, so a reduction over a leading axis reads memory in
+  runs.
+
+**Evidence.** The tests check every operation against a reference that
+reads by logical index with `At`. They draw random shapes, views
+(padded, windowed, transposed, rank 0), broadcasts, masks and element
+types, and use `math/big` for exact sums and means. Mutating the fsum
+tie-break, the mean correction, the dimension merge, the mask AND, NaN
+canonicalisation or the writability check turns them red. From outside,
+`acceptance/check_array.py` judges 34 cases on a masked [5, 23, 300]
+float32 stack and an int16 stack. Every case is exact. numpy broadcasts,
+and the sums are Python integers in units of 2⁻¹⁴⁹, divided once. The
+data include non-finite values, a signed-zero series and views. The
+checker catches all 11 of its injected defects, among them a mean from
+the rounded sum and a float64 running sum.
+
+**Measured** (`array/bench_test.go`, one run on the desktop, not a
+published quiet run): `Add` on a compact [16, 512, 512] float32 stack
+ran at 19–21 GB/s against `algebra.Add`'s 24 GB/s on the same cells.
+Broadcasting a [512, 512] layer cost nothing, and a transposed operand
+fell to the scalar loop at 5 GB/s. The reductions are scalar and
+generic: `SumOver` about 0.45 GB/s, `MeanOver` 0.3–0.47 GB/s, `MinOver`
+1.2 GB/s.
+
+**Open.**
+
+- Tiled and chunked forms. The operations run on the calling goroutine.
+  A chunked N-D source belongs with the Zarr adapter (v0.5).
+- Vector reductions. Min and Max over a leading axis could fold slabs
+  with `vec.Min`, and float32 sums could skip the partials while they
+  stay exact.
+- Negative strides; `Div` (integer division by zero panics in Go);
+  whole-array `Stats` in one call (today `reduce` over `ToRaster` of a
+  `Reshape`).
+
+Status: done for v0.3's list (§45), serial.
 
 ## 11. Point-Cloud Model
 
@@ -646,7 +734,9 @@ terrain/
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
-├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness
+├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness, radius 1–8
+├── fit.go         FitRadius: Wood's least-squares quadratic over (2r+1)², for the derivatives
+├── features.go    Features(out []Feature, dem)   any mix of the above, at any radii, one pass
 └── stencil.go     shared row driver, edge and validity policy
 ```
 
@@ -688,6 +778,215 @@ everything built on it are a separate module's (§7).
   (§23).
 - **Validity.** An output cell is valid iff its whole 3×3 neighbourhood is
   valid, centre included. This is computed by word-level erosion.
+
+### Multi-scale features
+
+Terrain features for forestry, geomorphology and machine-learning
+models are usually the same measures taken at several window sizes of
+one DEM: TPI over 3×3, 9×9 and 17×17, say, next to slope and curvature.
+Two things serve that: a radius on the measures that have an obvious
+larger window, and one call that writes a whole stack.
+
+**`RuggednessOptions.Radius`**, 0 (meaning 1) to `MaxRadius = 8`, focal's
+cap (§53). Over the (2r+1)² window the eight neighbours become the
+n = (2r+1)² − 1 cells other than the centre, still folded in row-major
+order from the first term, and gdaldem's `· 0.125` becomes `/ n`. At
+r = 1 those round to the same bits, so the 3×3 case is gdaldem's
+arithmetic as before, and it still runs the SIMD kernels. The window is
+a square. Weiss's TPI uses an annulus, and other tools weight by
+distance. Both are different measures, and neither is built.
+
+- **The three sums keep their order, so they stay O(r²).** TPI and
+  Wilson's and Riley's TRI are defined by a fold order, as Correlate is
+  (§53), and a running or separable sum would round differently from
+  the definition, and differently with each tiling. They run
+  `stencil.RuggednessWindowRow`, a scalar kernel that takes the
+  window's terms outside and blocks of 256 cells inside, with each pass
+  a helper that takes eight cells a step (the §53 loop-placement fix).
+  Scalar is enough to start with. Nothing about the definition stops a
+  SIMD kernel later.
+- **Roughness is separable, with the same bits.** Max and min do not
+  depend on order, so r > 1 runs focal's `ColumnMax`/`ColumnMin` and
+  `RowMax`/`RowMin` (`internal/focalrow`, AVX2 and NEON). The column
+  results sit in stack buffers of 256 cells plus 2r, not in engine
+  scratch, which is what lets roughness be a `Pipeline` stage (§52
+  forbids `ScratchKernel` stages). `TestRoughnessSeparableIsBruteForce`
+  holds it to the brute-force kernel on NaN, ±Inf and mixed signed
+  zeros, on both focal backends.
+
+On the Zen 2 desktop, 1024², masked, one worker, AVX2 build, in ns per
+cell at r = 1 / 2 / 3 / 5 / 8. The machine was loaded (a game-server
+container), so these show direction and are not a published result:
+
+| measure | r = 1 | 2 | 3 | 5 | 8 |
+|---|---:|---:|---:|---:|---:|
+| TPI | 0.42 | 8.4 | 15.4 | 34.8 | 79.5 |
+| TRI (Wilson) | 0.65 | 15.9 | 30.4 | 70.9 | 165 |
+| TRI (Riley) | 1.9 | 15.4 | 28.9 | 66.7 | 154 |
+| roughness | 0.81 | 3.4 | 4.7 | 7.1 | 10.3 |
+
+That is about 0.28 ns a term for TPI and 0.55 for the two TRIs, against
+Correlate's 0.065 with AVX2 (§53). The eight-cell helpers took TPI from
+155 to 80 ns at r = 8. Before the separable form, roughness at r = 8 was
+357 ns.
+
+**`terrain.Features{,Tiled,Chunked}`** takes a list of `Feature{Op, Dst}`,
+where `Op` is a `SlopeOptions`, `AspectOptions`, `HillshadeOptions`,
+`CurvatureOptions` or `RuggednessOptions` (a sealed interface: the
+option types gain an unexported method, and nothing else can implement
+it). The operations are the standalone ones. The same measure can
+appear at several radii, and the same operation twice.
+
+- **It is a fan-out `Pipeline`, and needs no engine change.** Each
+  feature is a stage that reads value 0, the DEM, and is an output. So
+  the pipeline's radius is the largest of the stages' radii, and the
+  engine gives each output the edge ring and erosion of its own stage
+  (§52's per-output rings and `ReachKernel`). A 3×3 slope next to a
+  17×17 TPI keeps its values one cell from the edge. Outputs live in
+  the Span's views, so the pipeline asks for no scratch cells.
+- **What it shares is the read, not the arithmetic.** Slope, aspect and
+  hillshade in one `Features` call each compute their own Horn
+  gradient, where `Surface` computes it once.
+  `benchmarks/gdalsuite/WORKFLOW.md` measured that sharing the
+  gradient is worth 1.0–1.3× in memory, and reading and decoding the
+  DEM once is worth 1.6–2.1× from a COG. So the fan-out takes the part
+  that matters, with no bespoke stage graph per combination.
+  `BenchmarkFeatures` shows the other side: in memory, where the DEM is
+  in cache either way, a four-output stack costs what the four calls
+  cost (98.5 against 98.0 ns a cell on one worker, 13.0 against 12.5 on
+  all of them, loaded machine).
+
+**`FitRadius`, Wood's quadratic fit.** Horn's 3×3 kernel has no single
+larger form, so the derivatives take a scale by a change of method.
+Gradient, Slope, Aspect, Hillshade, Curvature and Surface take
+`FitRadius`: 0 keeps Horn's gradient (ZT's for curvature), and 1 to 8
+fits Wood's (1996) quadratic z = ax² + by² + cxy + dx + ey + f by
+unweighted least squares to the (2r+1)² window. This is the method of
+GRASS `r.param.scale` and LandSerf. The alternatives were Horn's kernel on
+a Gaussian-smoothed DEM, which is a filter choice rather than a
+standard, and Horn's kernel on a DEM coarsened with `resample`, which
+changes the output's resolution and already works as two calls. A
+separate field, rather than a radius on the Horn methods, because at
+r = 1 the fit is Evans's 3×3 method and not Horn's: `FitRadius: 1` and
+`FitRadius: 0` differ, and the name says so.
+
+- **Five separable sums with integer taps.** On a square window the
+  normal equations separate, and each coefficient is one weighted sum:
+  p = Σ i·z, q = Σ j·z, r = Σ (3i² − r(r+1))·z, t the same in j, and
+  s = Σ i·j·z, each times a factor. The factors are Z/(K·S·cx),
+  6Z/(K·Q·cx²) and Z/(S²·cx·cy), with K = 2r+1, S = Σi² and Q the sum of
+  the squared quadratic taps. They are computed in float64 and rounded
+  once, like `HornScales`. Every tap is an integer, exact in float32, so
+  the sums run on focal's `ColumnSum`, `ColumnCorrelate` and
+  `RowCorrelate` (AVX2 and NEON). They are O(r) a cell, in the fold order
+  `CorrelateSeparable` documents.
+- **The products are the ones that already exist.** p and q go through
+  `SlopeFromGradientRow`, `AspectFromGradientRow` and
+  `HillshadeFromGradientRow`, the kernels `Surface` finishes Horn's
+  gradient with. The curvatures go through a new
+  `stencil.CurvatureFromDerivsRow`, which is ZT's curvature tail as its
+  own function. `TestCurvatureFromDerivsMatchesZT` holds ZT's
+  derivatives followed by it to `ZTCurvatureRow` bit for bit. So a
+  fitted slope is Horn's slope formula applied to the fit's gradient,
+  and `Surface` with a `FitRadius` is its standalone products bit for
+  bit, as with Horn.
+- **Stack buffers, not scratch.** The column and derivative rows are
+  blocks of 256 cells on the stack, as for roughness, so a fitted
+  product can be a `Features` or `Surface` stage.
+- **The planner follows (§55).** `graph.Slope`, `Aspect` and `Hillshade`
+  pass `FitRadius` to the gradient node they share, so fitted products
+  of one radius share the fit's gradient and never Horn's, and
+  `terrain/opkernel.go` registers the kernels that honour `FitRadius`.
+  Before this, a graph given `FitRadius` would have run Horn's kernel
+  without a word. `TestMultiScaleStack` fails if either half is undone.
+- **Small refactors, no changed bits.** Each product's options are now
+  resolved by one helper (`slopeScale`, `aspectFlat`, `hillshadeLight`,
+  `curvatureKind`) that the Horn kernels, the fit and `Surface` share.
+  The Horn and ZT results are unchanged: every existing test and
+  acceptance check passes as before.
+
+On the loaded Zen 2 desktop (1024², masked, one worker, AVX2), fitted
+slope costs 3.7, 4.3, 5.9 and 9.0 ns a cell at r = 1, 2, 4 and 8
+(Horn's slope: 1.6). Fitted mean curvature costs 7.8, 9.5, 12.5 and
+18.0 (ZT's: 0.84). The curvature tail is scalar, about 5 ns of that.
+
+The fit's tests:
+
+- **Integer planes:** the gradient is the plane's, and every curvature
+  is exactly +0 at every radius (the quadratic taps sum to zero against
+  any plane).
+- **Quadratic surfaces:** on rectangular cells with a ZFactor, least
+  squares reproduces a quadratic exactly, so every cell's gradient and
+  curvatures must be the surface's own.
+- **Fused against standalone:** `Surface` and `Features` with a
+  `FitRadius` equal their standalone products in every form and tiling.
+- **Backends and validity:** scalar and SIMD agree, and validity is the
+  whole window's.
+- **Mutations:** a halved r factor, p scaled by the wrong cell size,
+  wrong column taps, s from the wrong column sums and a radius one
+  short each fail them.
+
+In `acceptance/`, `check.py` solves the least-squares problem itself. It
+applies the pseudo-inverse of the full six-column design matrix to every
+window, without strata's closed forms. It judges slope, aspect,
+hillshade and the three curvatures at r = 1 and 4, on the three DEMs, in
+every form, within bounds derived from the documented separable float32
+sums. Errors are 0.01–0.14× those bounds. The plane's analytic answers
+hold at both radii. `sabotage.py` adds three defects, all caught:
+
+- the r = 1 fit replaced by Horn's slope, which uses the same window and
+  a different method;
+- the r = 4 curvature taken over 3×3;
+- the r = 4 slope 0.01% too large.
+
+GRASS `r.param.scale` is the natural outside tool to compare with. It is
+not in the GDAL image the suite uses, so it is not wired in yet.
+
+**Testing.** `stencil`: the any-radius kernel at r = 1 against
+`RuggednessRow` bit for bit (hazards, signed zeros, overflowing
+differences), every kind at r ∈ {1, 2, 3, 5, 8} against a per-cell
+reading of its documented formula, and no reads past the window.
+`terrain`: closed forms on integer planes at every radius, including
+Riley's (a² + b²)(2r+1)Σi². Also: the border and validity at radius r
+against a per-cell reference, Tiled and Chunked equal to plain, the
+separable roughness above, and `TestFeaturesAreTheStandaloneProducts`.
+That test covers sets that mix radii, repeat an operation or have one
+output, on both backends, masked or not, windowed or not, in every
+form and tiling. A radius declared as 1, TPI multiplying by 1/n, the
+centre read one cell left and a row pass one cell short each fail them.
+
+The acceptance harness (`acceptance/`) runs each measure at r = 3 and 8
+on the three DEMs, in all three forms. It adds a `Features` stack of
+slope, plan curvature, TPI at r = 1, 3 and 8, TRI at 3 and roughness at
+8. Each is judged from outside the library:
+
+- **Check 1:** exact equality with the documented float32 arithmetic,
+  transcribed into numpy, as gdaldem's is for the 3×3.
+- **Check 14:** a second reference that shares no code with check 1's.
+  It takes each window with `sliding_window_view` and sums in float64,
+  within derived bounds: (n + 2)u·max|z| for TPI, (n + 1)u·W for Wilson,
+  3u·TRI for Riley, and exact for roughness. Observed errors are 0.01–0.49×
+  those bounds.
+- **Check 3:** the plane's closed forms at every radius.
+- **Checks 2 and 5:** the border and the erosion by r.
+- **Check 13:** every `Features` output equals its standalone file bit
+  for bit, Data and validity.
+
+`sabotage.py` adds four defects, all caught (37 of 37 with the fit's three): TPI dividing by
+49 with the centre counted, roughness one ring short, `Features`
+eroding its 3×3 TPI by the largest radius, and one `Features` cell one
+ulp off. gdaldem has no larger windows, so for r > 1 the numpy
+references are the only outside opinion. scipy was not installed where
+this was run, so no scipy cross-check was added.
+
+Open:
+
+- **SIMD kernels for the three ruggedness sums at r > 1**, and a SIMD
+  curvature tail for the fit.
+- **Comparing the fit against GRASS `r.param.scale`.**
+- **Distance-weighted fits** (r.param.scale's exponent), and annulus and
+  distance-weighted TPI.
+- **Timing a `Features` stack against GDAL in `benchmarks/gdalsuite`.**
 
 Terrain is useful because it exercises:
 
@@ -2095,6 +2394,18 @@ strata/
 │   ├── algebra.go
 │   └── tiled.go               tiled entry points and their kernels
 │
+├── array/                     implemented (§10)
+│   ├── doc.go
+│   ├── array.go               Array, Number, New, Wrap, accessors, Validate
+│   ├── view.go                Slice, Window, Select, Transpose, Reshape,
+│   │                           BroadcastTo, ExpandDims, BroadcastShape
+│   ├── raster.go              FromRaster, ToRaster
+│   ├── ops.go                 Add, Sub, Mul, Min, Max, Copy, Convert, Fill
+│   ├── reduce.go              CountOver, SumOver, MeanOver, MinOver, MaxOver
+│   ├── exact.go               exact sums and correctly rounded means
+│   ├── loop.go                runs over merged dimensions
+│   └── check.go               operand, overlap and broadcast checks
+│
 ├── reduce/                    implemented (STRATA-12, §49)
 │   ├── doc.go
 │   └── reduce.go              Count, MinMax, their engine entry
@@ -2203,7 +2514,7 @@ strata/
 └── docs/adr/
 ```
 
-Later: `array/` (v0.3) and `pointcloud/` (v0.7), and more format
+Later: `pointcloud/` (v0.7), and more format
 adapters (§34). Domain packages other than `terrain` live in other modules (§7).
 
 ## 41. Explicit Non-Goals for v0.1
@@ -2399,14 +2710,15 @@ something to act on. `Normalize` was to write through `Rescale`, and
 does not: its endpoints need a subtraction and a division, not a
 multiply-add (§18).
 
-**v0.3: Array foundation**
+**v0.3: Array foundation** (§10)
 
 ```text
-N-dimensional arrays (generic element type decided here, §9)
-strides
-views
-axis reductions (§49 extended to N-D)
-broadcast-style operations
+N-dimensional arrays (generic element type decided here, §9)   done: array.Array[T]
+strides                                                         done
+views                                                           done
+axis reductions (§49 extended to N-D)                           done, serial and scalar
+broadcast-style operations                                      done
+tiled and chunked N-D execution                                 open
 ```
 
 **v0.4: Streaming and pipelines**

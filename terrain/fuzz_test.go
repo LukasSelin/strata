@@ -125,7 +125,7 @@ func FuzzTerrain(f *testing.F) {
 		var call terrainCall
 		switch kind {
 		case 0:
-			o := GradientOptions{cs, csy, z}
+			o := GradientOptions{CellSize: cs, CellSizeY: csy, ZFactor: z}
 			call = terrainCall{"gradient", 2,
 				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Gradient(outs[0], outs[1], dem, o) },
 				func(ctx context.Context, outs []raster.Float32Raster, dem raster.Float32Raster, e engine.Options) error {
@@ -138,7 +138,7 @@ func FuzzTerrain(f *testing.F) {
 				func([9]float64) bool { return true },
 			}
 		case 1:
-			o := SlopeOptions{cs, csy, z, units}
+			o := SlopeOptions{CellSize: cs, CellSizeY: csy, ZFactor: z, Units: units}
 			optionsOK = optionsOK && units >= SlopeDegrees && units <= SlopeRadians
 			top := float32(90)
 			switch units {
@@ -159,7 +159,7 @@ func FuzzTerrain(f *testing.F) {
 				func([9]float64) bool { return true },
 			}
 		case 2:
-			o := AspectOptions{cs, csy, z, zeroFlat, trig}
+			o := AspectOptions{CellSize: cs, CellSizeY: csy, ZFactor: z, ZeroForFlat: zeroFlat, Trigonometric: trig}
 			call = terrainCall{"aspect", 1,
 				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Aspect(outs[0], dem, o) },
 				func(ctx context.Context, outs []raster.Float32Raster, dem raster.Float32Raster, e engine.Options) error {
@@ -172,7 +172,7 @@ func FuzzTerrain(f *testing.F) {
 				func([9]float64) bool { return true },
 			}
 		case 3:
-			o := HillshadeOptions{cs, csy, z, az, alt}
+			o := HillshadeOptions{CellSize: cs, CellSizeY: csy, ZFactor: z, Azimuth: az, Altitude: alt}
 			optionsOK = optionsOK && finiteF(az) && alt0 > 0 && alt0 <= 90
 			call = terrainCall{"hillshade", 1,
 				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Hillshade(outs[0], dem, o) },
@@ -191,7 +191,7 @@ func FuzzTerrain(f *testing.F) {
 				},
 			}
 		case 4:
-			o := CurvatureOptions{cs, csy, z, curv}
+			o := CurvatureOptions{CellSize: cs, CellSizeY: csy, ZFactor: z, Type: curv}
 			optionsOK = cellsOK && curv >= CurvatureProfile && curv <= CurvatureMean
 			for _, k := range ztK {
 				optionsOK = optionsOK && scaleOK(k)
@@ -220,7 +220,7 @@ func FuzzTerrain(f *testing.F) {
 			}
 		case 5:
 			// Ruggedness takes no cell size, so none of those rules apply.
-			o := RuggednessOptions{rug}
+			o := RuggednessOptions{Type: rug}
 			optionsOK = rug >= RuggednessTRI && rug <= RuggednessRoughness
 			call = terrainCall{"ruggedness", 1,
 				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Ruggedness(outs[0], dem, o) },

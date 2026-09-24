@@ -17,6 +17,12 @@ type GradientOptions struct {
 	CellSizeY float64
 	// ZFactor multiplies elevations. 0 means 1.
 	ZFactor float64
+	// FitRadius selects how the derivatives are estimated: 0 is Horn's
+	// 3×3 kernel, as gdaldem uses; 1 to MaxRadius fits Wood's quadratic
+	// by least squares to the (2·FitRadius+1)² window around each cell,
+	// for the same measure at a coarser scale (see the package
+	// documentation). At 1 the fit is not Horn's kernel.
+	FitRadius int
 }
 
 // Gradient computes Horn's 3×3 estimate of the elevation gradient of dem:
@@ -31,7 +37,7 @@ type GradientOptions struct {
 // edges and validity. dx, dy and dem must have the same dimensions and
 // must not overlap; their strides may differ.
 func Gradient(dx, dy, dem raster.Float32Raster, opts GradientOptions) {
-	run(newGradientKernel(opts), dem, dx, dy)
+	run(gradientOp(opts), dem, dx, dy)
 }
 
 // GradientTiled is Gradient run by the engine: it takes the same operands, applies
@@ -39,7 +45,7 @@ func Gradient(dx, dy, dem raster.Float32Raster, opts GradientOptions) {
 // returns ctx.Err() if ctx is done before every cell is written. See
 // package engine for tiling and cancellation.
 func GradientTiled(ctx context.Context, dx, dy, dem raster.Float32Raster, opts GradientOptions, eopts engine.Options) error {
-	return runTiled(ctx, eopts, newGradientKernel(opts), dem, dx, dy)
+	return runTiled(ctx, eopts, gradientOp(opts), dem, dx, dy)
 }
 
 // GradientChunked is Gradient run by the engine over a source and sinks with
@@ -48,7 +54,7 @@ func GradientTiled(ctx context.Context, dx, dy, dem raster.Float32Raster, opts G
 // Gradient would write into in-memory rasters, for every engine.Options.
 // See package engine for sources, sinks, memory, cancellation and errors.
 func GradientChunked(ctx context.Context, dx, dy engine.RasterSink, dem engine.RasterSource, opts GradientOptions, eopts engine.Options) error {
-	return runChunked(ctx, eopts, newGradientKernel(opts), dem, dx, dy)
+	return runChunked(ctx, eopts, gradientOp(opts), dem, dx, dy)
 }
 
 // newGradientKernel resolves and checks opts for Gradient's kernel.

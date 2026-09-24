@@ -230,7 +230,7 @@ func (pl *planner) shareGradients() {
 		if pl.consumers[dx] != 1 || pl.consumers[dy] != 1 || roots[dx] || roots[dy] {
 			if grad := g.values[dx]; !shared[grad] {
 				shared[grad] = true
-				pl.notes = append(pl.notes, fmt.Sprintf("the Horn gradient %s, %s is computed once for every product that reads it",
+				pl.notes = append(pl.notes, fmt.Sprintf("the gradient %s, %s is computed once for every product that reads it",
 					pl.label(dx), pl.label(dy)))
 			}
 			continue

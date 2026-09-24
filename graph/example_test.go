@@ -35,7 +35,7 @@ func ExamplePlan_terrainStack() {
 	//   write %4 → output "aspect"
 	//   write %5 → output "hillshade"
 	//   write %6 → output "tri"
-	// note: the Horn gradient %1, %2 is computed once for every product that reads it
+	// note: the gradient %1, %2 is computed once for every product that reads it
 }
 
 // A canopy height chain: DSM − DTM, smoothed, classed into height bands,

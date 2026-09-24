@@ -21,6 +21,12 @@ type AspectOptions struct {
 	CellSizeY float64
 	// ZFactor multiplies elevations. 0 means 1.
 	ZFactor float64
+	// FitRadius selects how the derivatives are estimated: 0 is Horn's
+	// 3×3 kernel, as gdaldem uses; 1 to MaxRadius fits Wood's quadratic
+	// by least squares to the (2·FitRadius+1)² window around each cell,
+	// for the same measure at a coarser scale (see the package
+	// documentation). At 1 the fit is not Horn's kernel.
+	FitRadius int
 	// ZeroForFlat writes 0 instead of AspectFlat (-1) for flat cells, like
 	// gdaldem aspect -zero_for_flat.
 	ZeroForFlat bool
@@ -61,7 +67,7 @@ type AspectOptions struct {
 // degrees more; against a float64 evaluation of the same gradients the
 // largest difference seen in tests is 2.4e-5 degrees.
 func Aspect(dst, dem raster.Float32Raster, opts AspectOptions) {
-	run(newAspectKernel(opts), dem, dst)
+	run(aspectOp(opts), dem, dst)
 }
 
 // AspectTiled is Aspect run by the engine: it takes the same operands, applies
@@ -69,7 +75,7 @@ func Aspect(dst, dem raster.Float32Raster, opts AspectOptions) {
 // returns ctx.Err() if ctx is done before every cell is written. See
 // package engine for tiling and cancellation.
 func AspectTiled(ctx context.Context, dst, dem raster.Float32Raster, opts AspectOptions, eopts engine.Options) error {
-	return runTiled(ctx, eopts, newAspectKernel(opts), dem, dst)
+	return runTiled(ctx, eopts, aspectOp(opts), dem, dst)
 }
 
 // AspectChunked is Aspect run by the engine over a source and sinks with
@@ -78,17 +84,21 @@ func AspectTiled(ctx context.Context, dst, dem raster.Float32Raster, opts Aspect
 // Aspect would write into in-memory rasters, for every engine.Options.
 // See package engine for sources, sinks, memory, cancellation and errors.
 func AspectChunked(ctx context.Context, dst engine.RasterSink, dem engine.RasterSource, opts AspectOptions, eopts engine.Options) error {
-	return runChunked(ctx, eopts, newAspectKernel(opts), dem, dst)
+	return runChunked(ctx, eopts, aspectOp(opts), dem, dst)
 }
 
 // newAspectKernel resolves and checks opts for Aspect's kernel.
 func newAspectKernel(opts AspectOptions) aspectKernel {
 	kx, ky := cellSizes(opts.CellSize, opts.CellSizeY, opts.ZFactor)
-	flat := float32(AspectFlat)
-	if opts.ZeroForFlat {
-		flat = 0
+	return aspectKernel{horn{kx: kx, ky: ky}, aspectFlat(opts.ZeroForFlat), opts.Trigonometric}
+}
+
+// aspectFlat is the value a flat cell gets.
+func aspectFlat(zeroForFlat bool) float32 {
+	if zeroForFlat {
+		return 0
 	}
-	return aspectKernel{horn{kx: kx, ky: ky}, flat, opts.Trigonometric}
+	return AspectFlat
 }
 
 type aspectKernel struct {

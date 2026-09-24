@@ -28,14 +28,17 @@ turned into a factor or a class, and the `focal` package adds
 convolution and focal statistics for any radius up to 8. The engine also counts the bytes each
 call moves (`engine.Stats`), and it can run a chain of pointwise kernels
 as a single pass over each tile. That chain (the `Pipeline`) is internal
-for now. Two things judge the library from outside: an acceptance
+for now. The `array` package opens v0.3: N-dimensional arrays with
+views, broadcasting and axis reductions, run on one goroutine for now.
+Two things judge the library from outside: an acceptance
 harness checks it against numpy and `gdaldem`, and a benchmark times it
 against `gdaldem`.
 
 The status table at the top of [DESIGN.md](DESIGN.md) summarizes where
 everything stands. In DESIGN.md, §42 has the milestone checklist, §49
 covers reductions, §50 transfer functions, §51 the traffic counter, §52
-pipelines, §53 focal operations, and §45 the roadmap.
+pipelines, §53 focal operations, §10 N-dimensional arrays, and §45 the
+roadmap.
 
 ## Installation
 
@@ -125,6 +128,7 @@ bit-for-bit identical results for every tile size and worker count.
 | `transfer` | Turns a computed surface into a factor or a class: `Reclass` over breakpoints, `Lookup` along a bounded piecewise-linear curve, `Rescale` and `RescaleRange`. |
 | `resample` | Resamples between grids in the same CRS, gdalwarp's conventions: `Nearest`, `Bilinear`, `Cubic`, `Lanczos`, `Average`, with NoData renormalised as gdalwarp does. |
 | `reduce`  | Folds a raster to numbers over its valid cells: `Count`, `MinMax`. The same bits for every tile size, worker count and backend. |
+| `array`   | N-dimensional arrays of any fixed-width numeric type (`Array[T]`) with the raster's validity bitmap: zero-copy views (`Slice`, `Window`, `Select`, `Transpose`, `Reshape`, `BroadcastTo`), numpy-broadcasting `Add`, `Sub`, `Mul`, `Min`, `Max`, `Convert`, and reductions along any axes (`SumOver`, `MeanOver`, `MinOver`, `MaxOver`, `CountOver`), exact and independent of layout. A 2-D float32 slice is a raster (`ToRaster`). |
 | `graph`   | A workflow as a lazy graph of the operations above, and a planner that runs it in as few passes as it can: products of one input share a read (and a Horn gradient), statistics fold into the pass that computes their value, and a global step such as `Normalize` ends a pass, with its input recomputed or stored. `Plan.String` says what each pass reads, runs and writes, and why. The same bits as the separate calls. |
 | `engine`  | Execution options, the `Stats` traffic counter, and the `RasterSource` / `RasterSink` interfaces with memory and raw float32 file implementations. |
 | `cog`     | A separate module: GeoTIFF and COG files as a `RasterSource`. Classic and BigTIFF, tiles and strips, integer and float samples, LZW/Deflate/PackBits/ZSTD, overviews, NoData as validity, geotransform and EPSG code. Pure Go, and bit-identical to GDAL's reading of 98 test files. |

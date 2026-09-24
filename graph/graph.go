@@ -65,7 +65,7 @@ type node struct {
 	kernel exec.Kernel
 	// alone is a kernel that computes the node from its gradient's DEM
 	// directly: the standalone terrain kernel, for a product that reads
-	// a Horn gradient. The planner uses it when nothing else reads that
+	// a gradient. The planner uses it when nothing else reads that
 	// gradient, so a lone Slope runs the kernel SlopeTiled runs.
 	alone exec.Kernel
 }
@@ -240,10 +240,11 @@ func RescaleRange(src Node, inLo, inHi, outLo, outHi float32) Node {
 }
 
 // The terrain operations. Slope, Aspect and Hillshade of one DEM with the
-// same cell geometry share one Horn gradient, as terrain.Surface does, and
-// write the bits of the standalone functions (DESIGN.md §52).
+// same cell geometry and FitRadius share one gradient, Horn's or the
+// quadratic fit's, as terrain.Surface does, and write the bits of the
+// standalone functions (DESIGN.md §52).
 
-// Gradient is terrain.Gradient: the Horn gradient, dx and dy.
+// Gradient is terrain.Gradient: the gradient, dx and dy.
 func Gradient(dem Node, opts terrain.GradientOptions) (dx, dy Node) {
 	dx = kernelNode("terrain.Gradient", opts, brief(opts), dem)
 	return dx, Node{dx.g, dx.v + 1}
@@ -251,17 +252,20 @@ func Gradient(dem Node, opts terrain.GradientOptions) (dx, dy Node) {
 
 // Slope is terrain.Slope.
 func Slope(dem Node, opts terrain.SlopeOptions) Node {
-	return product("terrain.Slope", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor})
+	return product("terrain.Slope", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
+		FitRadius: opts.FitRadius})
 }
 
 // Aspect is terrain.Aspect.
 func Aspect(dem Node, opts terrain.AspectOptions) Node {
-	return product("terrain.Aspect", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor})
+	return product("terrain.Aspect", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
+		FitRadius: opts.FitRadius})
 }
 
 // Hillshade is terrain.Hillshade.
 func Hillshade(dem Node, opts terrain.HillshadeOptions) Node {
-	return product("terrain.Hillshade", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor})
+	return product("terrain.Hillshade", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
+		FitRadius: opts.FitRadius})
 }
 
 // product adds a terrain product as a pointwise stage over the shared

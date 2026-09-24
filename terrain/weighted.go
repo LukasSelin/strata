@@ -46,7 +46,7 @@ func WeightedSlopeChunked(ctx context.Context, dst engine.RasterSink, dem, weigh
 // values 0 and 1 are the inputs, 2 the slope and 3 the product.
 func newWeightedSlope(opts SlopeOptions) *exec.Pipeline {
 	return exec.NewPipeline(2, []exec.Stage{
-		{Kernel: newSlopeKernel(opts), In: []int{0}},
+		{Kernel: slopeOp(opts), In: []int{0}},
 		{Kernel: mulKernel{}, In: []int{2, 1}},
 	}, []int{3})
 }

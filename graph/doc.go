@@ -12,7 +12,7 @@
 //     one pass at no cost.
 //   - Neighbourhood operations (terrain, Correlate, Convolve) fuse too,
 //     at the price of a wider halo around each tile. Slope, Aspect and
-//     Hillshade of one DEM share one Horn gradient.
+//     Hillshade of one DEM share one gradient.
 //   - Statistics fold into the pass that computes their value, as a side
 //     output: asking only for statistics writes no raster.
 //   - A global operation (Normalize, which needs the range of its whole

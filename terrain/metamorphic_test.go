@@ -119,7 +119,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 	var err error
 	switch o.kind {
 	case 0:
-		opts := GradientOptions{o.cs, o.csy, o.z}
+		opts := GradientOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z}
 		switch path {
 		case 0:
 			Gradient(outs[0], outs[1], dem, opts)
@@ -129,7 +129,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = GradientChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySink(outs[1]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 1:
-		opts := SlopeOptions{o.cs, o.csy, o.z, o.units}
+		opts := SlopeOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Units: o.units}
 		switch path {
 		case 0:
 			Slope(outs[0], dem, opts)
@@ -139,7 +139,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = SlopeChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 2:
-		opts := AspectOptions{o.cs, o.csy, o.z, o.zeroFlat, o.trig}
+		opts := AspectOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, ZeroForFlat: o.zeroFlat, Trigonometric: o.trig}
 		switch path {
 		case 0:
 			Aspect(outs[0], dem, opts)
@@ -149,7 +149,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = AspectChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 3:
-		opts := HillshadeOptions{o.cs, o.csy, o.z, o.azimuth, o.altitude}
+		opts := HillshadeOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Azimuth: o.azimuth, Altitude: o.altitude}
 		switch path {
 		case 0:
 			Hillshade(outs[0], dem, opts)
@@ -159,7 +159,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = HillshadeChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 4:
-		opts := CurvatureOptions{o.cs, o.csy, o.z, o.curv}
+		opts := CurvatureOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Type: o.curv}
 		switch path {
 		case 0:
 			Curvature(outs[0], dem, opts)
@@ -169,7 +169,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = CurvatureChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 5:
-		opts := RuggednessOptions{o.rug}
+		opts := RuggednessOptions{Type: o.rug}
 		switch path {
 		case 0:
 			Ruggedness(outs[0], dem, opts)
@@ -624,7 +624,7 @@ func testDerived(t rastertest.TB, id string, o relOp, dem raster.Float32Raster,
 			case 2:
 				want = derivedAspect(gx, gy, o.flat(), o.trig)
 			case 3:
-				k := newHillshadeKernel(HillshadeOptions{o.cs, o.csy, o.z, o.azimuth, o.altitude})
+				k := newHillshadeKernel(HillshadeOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Azimuth: o.azimuth, Altitude: o.altitude})
 				want = derivedHillshade(gx, gy, k.c, k.bx, k.by)
 			}
 			if x == 0 || y == 0 || x == dem.Width-1 || y == dem.Height-1 {
@@ -695,7 +695,7 @@ func testDerivedWindow(t rastertest.TB, id string, o relOp, dem raster.Float32Ra
 	out := run(o, dem)[0]
 	derive := func(z [9]float32) float32 { return derivedRuggedness(o.rug, z) }
 	if o.kind == 4 {
-		k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+		k := newCurvatureKernel(CurvatureOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Type: o.curv})
 		derive = func(z [9]float32) float32 { return derivedCurvature(o.curv, z, k.kp, k.kq, k.kr, k.kt, k.ks) }
 	}
 	for y := range dem.Height {
@@ -733,7 +733,7 @@ func testDerivedWindow(t rastertest.TB, id string, o relOp, dem raster.Float32Ra
 // derivs32 is the float32 Zevenbergen–Thorne derivatives of the window
 // centred on (x, y), as Curvature computes them, widened to float64.
 func derivs32(o relOp, dem raster.Float32Raster, x, y int) [5]float64 {
-	k := newCurvatureKernel(CurvatureOptions{o.cs, o.csy, o.z, o.curv})
+	k := newCurvatureKernel(CurvatureOptions{CellSize: o.cs, CellSizeY: o.csy, ZFactor: o.z, Type: o.curv})
 	at := func(dx, dy int) float32 { return dem.Data[dem.Index(x+dx, y+dy)] }
 	p, q, r, s, t := ztDerivs32(at(-1, -1), at(0, -1), at(1, -1), at(-1, 0), at(0, 0), at(1, 0), at(-1, 1), at(0, 1), at(1, 1),
 		k.kp, k.kq, k.kr, k.kt, k.ks)

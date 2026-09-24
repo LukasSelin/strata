@@ -8,7 +8,9 @@
 // It builds three small DEMs, runs the terrain, focal, algebra and
 // reduce operations on each in all three forms (plain, Tiled, Chunked),
 // resamples windows of two of them (resample.go, judged by
-// check_resample.py and gdalwarp_resample.py), and writes:
+// check_resample.py and gdalwarp_resample.py), puts N-dimensional arrays
+// through broadcasting arithmetic and axis reductions (array.go, judged
+// by check_array.py), and writes:
 //
 //	<dem>.f32              the elevation, raw little-endian float32
 //	<dem>.mask.u8          1 per valid cell, 0 per NoData cell (masked DEMs)
@@ -72,6 +74,7 @@ type rasterCase struct {
 	// taps exactly as passed (float32 values, which JSON carries
 	// exactly).
 	Radius  int       `json:"radius,omitempty"`
+	Fit     int       `json:"fit,omitempty"` // a fitted derivative's FitRadius
 	Weights []float32 `json:"weights,omitempty"`
 	Row     []float32 `json:"row,omitempty"`
 	Col     []float32 `json:"col,omitempty"`
@@ -163,6 +166,9 @@ func run() error {
 	if err := runMosaic(); err != nil {
 		return err
 	}
+	if err := runArray(); err != nil {
+		return err
+	}
 
 	f, err := os.Create(filepath.Join(*dir, "manifest.json"))
 	if err != nil {
@@ -187,6 +193,7 @@ type op struct {
 	azimuth  float64
 	altitude float64
 	radius   int
+	fit      int
 	weights  []float32
 	row, col []float32
 	plain    func(dst, dem raster.Float32Raster)
@@ -260,11 +267,21 @@ func (d dem) ops() []op {
 		}
 	}
 
-	ruggedness := func(rt terrain.RuggednessType, name string) op {
-		o := terrain.RuggednessOptions{Type: rt}
+	// ruggedness is one measure over the (2r+1)² window. The 3×3 cases
+	// keep their names, which gdalcompare.py matches to gdaldem's; larger
+	// windows get an _r suffix and a radius in the manifest.
+	ruggedness := func(rt terrain.RuggednessType, name string, r int) op {
+		o := terrain.RuggednessOptions{Type: rt, Radius: r}
+		name = "ruggedness_" + name
+		if r > 1 {
+			name += fmt.Sprintf("_r%d", r)
+		} else {
+			r = 0
+		}
 		return op{
-			name:  "ruggedness_" + name,
-			plain: func(dst, dm raster.Float32Raster) { terrain.Ruggedness(dst, dm, o) },
+			name:   name,
+			radius: r,
+			plain:  func(dst, dm raster.Float32Raster) { terrain.Ruggedness(dst, dm, o) },
 			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
 				return terrain.RuggednessTiled(ctx, dst, dm, o, eo)
 			},
@@ -313,7 +330,56 @@ func (d dem) ops() []op {
 		}
 	}
 
-	return []op{
+	// features runs terrain.Features for a stack of 3×3 derivatives and
+	// ruggedness at three radii, and emits one output: check 13 requires
+	// each to be the standalone case's file bit for bit, as check 12 does
+	// for Surface. The largest radius, 8, sets the pipeline's window,
+	// so the 3×3 outputs are the ones whose edge ring and validity
+	// depend on the engine keeping each output's own.
+	stack := []struct {
+		alone  string
+		radius int
+		op     terrain.FeatureOp
+	}{
+		{"slope_deg", 0, terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees}},
+		{"curvature_plan", 0, terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: terrain.CurvaturePlan}},
+		{"ruggedness_tpi", 0, terrain.RuggednessOptions{Type: terrain.RuggednessTPI}},
+		{"ruggedness_tpi_r3", 3, terrain.RuggednessOptions{Type: terrain.RuggednessTPI, Radius: 3}},
+		{"ruggedness_tpi_r8", 8, terrain.RuggednessOptions{Type: terrain.RuggednessTPI, Radius: 8}},
+		{"ruggedness_tri_r3", 3, terrain.RuggednessOptions{Type: terrain.RuggednessTRI, Radius: 3}},
+		{"ruggedness_roughness_r8", 8, terrain.RuggednessOptions{Type: terrain.RuggednessRoughness, Radius: 8}},
+		{"slope_deg_fit4", 4, terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees, FitRadius: 4}},
+		{"curvature_mean_fit1", 1, terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: terrain.CurvatureMean, FitRadius: 1}},
+	}
+	features := func(which int) op {
+		outs := func(dst, dm raster.Float32Raster) []terrain.Feature {
+			out := make([]terrain.Feature, len(stack))
+			for k, s := range stack {
+				out[k] = terrain.Feature{Op: s.op, Dst: raster.NewFloat32Like(dm)}
+			}
+			out[which].Dst = dst
+			return out
+		}
+		return op{
+			name:   "features_" + stack[which].alone,
+			radius: stack[which].radius,
+			plain:  func(dst, dm raster.Float32Raster) { terrain.Features(outs(dst, dm), dm) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.FeaturesTiled(ctx, outs(dst, dm), dm, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				w, h := src.Size()
+				sinks := make([]terrain.FeatureSink, len(stack))
+				for k, s := range stack {
+					sinks[k] = terrain.FeatureSink{Op: s.op, Dst: engine.NewMemorySink(maskedLike(src.Masked(), w, h))}
+				}
+				sinks[which].Dst = dst
+				return terrain.FeaturesChunked(ctx, sinks, src, eo)
+			},
+		}
+	}
+
+	ops := []op{
 		surface("gradient_dx", 0),
 		surface("gradient_dy", 1),
 		surface("slope_deg", 2),
@@ -363,11 +429,86 @@ func (d dem) ops() []op {
 		curvature(terrain.CurvatureProfile, "profile"),
 		curvature(terrain.CurvaturePlan, "plan"),
 		curvature(terrain.CurvatureMean, "mean"),
-		ruggedness(terrain.RuggednessTRI, "tri"),
-		ruggedness(terrain.RuggednessTRIWilson, "triwilson"),
-		ruggedness(terrain.RuggednessTPI, "tpi"),
-		ruggedness(terrain.RuggednessRoughness, "roughness"),
 	}
+	for _, r := range []int{1, 3, terrain.MaxRadius} {
+		ops = append(ops,
+			ruggedness(terrain.RuggednessTRI, "tri", r),
+			ruggedness(terrain.RuggednessTRIWilson, "triwilson", r),
+			ruggedness(terrain.RuggednessTPI, "tpi", r),
+			ruggedness(terrain.RuggednessRoughness, "roughness", r),
+		)
+	}
+	for _, r := range []int{1, 4} {
+		ops = append(ops, d.fitted(r, ao, ho)...)
+	}
+	for k := range stack {
+		ops = append(ops, features(k))
+	}
+	return ops
+}
+
+// fitted is slope, aspect, hillshade and the three curvatures from
+// Wood's quadratic fitted over the (2r+1)² window, as the standalone
+// functions compute them with FitRadius r. check.py judges them against
+// its own least-squares solution.
+func (d dem) fitted(r int, ao terrain.AspectOptions, ho terrain.HillshadeOptions) []op {
+	sfx := fmt.Sprintf("_fit%d", r)
+	so := terrain.SlopeOptions{CellSize: d.cellX, CellSizeY: d.cellY, Units: terrain.SlopeDegrees, FitRadius: r}
+	ao.FitRadius, ho.FitRadius = r, r
+	ops := []op{
+		{
+			name:  "slope_deg" + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Slope(dst, dm, so) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.SlopeTiled(ctx, dst, dm, so, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.SlopeChunked(ctx, dst, src, so, eo)
+			},
+		},
+		{
+			name:  "aspect" + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Aspect(dst, dm, ao) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.AspectTiled(ctx, dst, dm, ao, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.AspectChunked(ctx, dst, src, ao, eo)
+			},
+		},
+		{
+			name:     "hillshade" + sfx,
+			azimuth:  ho.Azimuth,
+			altitude: ho.Altitude,
+			plain:    func(dst, dm raster.Float32Raster) { terrain.Hillshade(dst, dm, ho) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.HillshadeTiled(ctx, dst, dm, ho, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
+			},
+		},
+	}
+	for _, c := range []struct {
+		t    terrain.CurvatureType
+		name string
+	}{{terrain.CurvatureProfile, "profile"}, {terrain.CurvaturePlan, "plan"}, {terrain.CurvatureMean, "mean"}} {
+		co := terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: c.t, FitRadius: r}
+		ops = append(ops, op{
+			name:  "curvature_" + c.name + sfx,
+			plain: func(dst, dm raster.Float32Raster) { terrain.Curvature(dst, dm, co) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.CurvatureTiled(ctx, dst, dm, co, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.CurvatureChunked(ctx, dst, src, co, eo)
+			},
+		})
+	}
+	for i := range ops {
+		ops[i].radius, ops[i].fit = r, r
+	}
+	return ops
 }
 
 // focalOps are the focal operations, with weights and taps that are
@@ -533,6 +674,7 @@ func (d dem) emit(m *manifest, o op, form string, r raster.Float32Raster) error 
 		Azimuth:   o.azimuth,
 		Altitude:  o.altitude,
 		Radius:    o.radius,
+		Fit:       o.fit,
 		Weights:   o.weights,
 		Row:       o.row,
 		Col:       o.col,
