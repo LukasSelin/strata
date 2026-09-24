@@ -10,7 +10,12 @@ import (
 // per-cell loop of the row kernels, in the build configuration the test
 // runs in (DESIGN.md §39). The scalar kernels loop over terms outside and
 // cells inside, each cell loop over slices resliced to its length once
-// per term, so they carry none.
+// per term, so they carry none. The cell loops of the weighted sums, sums
+// and means are in helpers (mulRow, mulAddRow, addRow, divRow) that are
+// kept out of line, so they are checked here on their own; the five
+// kernels that call them are exempt, because their term loops, holding
+// no loop of their own in the source, would otherwise be taken for cell
+// loops, and the reslicing there runs once per term.
 //
 // The SIMD lane functions are the exception, by construction rather than
 // by measurement: their innermost loop is over a cell's terms, and each
@@ -26,7 +31,8 @@ import (
 // cells and group of rows, and slice src once for each.
 func TestNoBoundsChecksInLoops(t *testing.T) {
 	inLoops, total, err := bcecheck.Check("github.com/LukasSelin/strata/internal/focalrow",
-		"weightedLanes", "correlate2DLanes", "sumLanes", "extremeLanes", "foldColumn")
+		"weightedLanes", "correlate2DLanes", "sumLanes", "extremeLanes", "foldColumn",
+		"scalarCorrelateRow", "scalarColumnCorrelate", "scalarColumnSum", "scalarRowCorrelate", "scalarRowMean")
 	if err != nil {
 		t.Fatal(err)
 	}

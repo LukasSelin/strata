@@ -3430,8 +3430,12 @@ and the masks:
 
 - **Scalar** kernels loop over terms outside and cells inside,
   accumulating in `dst` — the same per-cell order as a register
-  accumulator, with every cell loop indexed by its loop variable alone,
-  so they carry no bounds checks (§39).
+  accumulator — so they carry no bounds checks (§39). The cell loops of
+  the weighted sums, sums and means take eight cells a step, by
+  reslicing: a one-cell loop ran at half speed whenever it spanned two
+  64-byte lines of code, which with Go's 32-byte function alignment was
+  up to the rest of the binary (`benchmarks/focal/RESULTS.md`, "Loop
+  placement").
 - **AVX2 and NEON** kernels keep one output cell's accumulator per lane.
   A block is four vectors (32 cells on AVX2, 16 on NEON) with an
   accumulator each, so four add chains hide one's latency, and each term
@@ -3522,24 +3526,27 @@ rows of the neighbourhood come from cache.
 core) as on NEON (Apple M4), benchmarks/focal/RESULTS.md, at every
 radius and size. Figures are AVX2 at 4096², unmasked.
 
-- Correlate costs what its products cost: 0.96, 1.92, 3.44 and 7.98 ns
-  per cell at r = 1, 2, 3 and 5, a flat 0.066–0.077 ns per product from
+- Correlate costs what its products cost: 0.92, 1.83, 3.27 and 7.65 ns
+  per cell at r = 1, 2, 3 and 5, a flat 0.063–0.073 ns per product from
   r = 2 (0.053–0.064 on NEON), so its throughput falls as (2r+1)² and its
-  memory demand with it, from 8.3 GB/s at r = 1 to 1.0 at r = 5.
-- The separable forms grow linearly: Gaussian 0.75 → 1.65 ns per cell
-  from r = 1 to 5, Mean 0.71 → 1.58, Min 0.82 → 2.45. At r = 5 separable
+  memory demand with it, from 8.7 GB/s at r = 1 to 1.0 at r = 5.
+- The separable forms grow linearly: Gaussian 0.69 → 1.60 ns per cell
+  from r = 1 to 5, Mean 0.67 → 1.51, Min 0.78 → 2.33. At r = 5 separable
   is 4.8× cheaper than the full kernel (6× on NEON).
-- The highest demand in the suite is 15.1 GB/s (Mean at r = 1, 1024²),
+- The highest demand in the suite is 15.4 GB/s (Mean at r = 1, 1024²),
   under a core's 22.
-- AVX2 is worth 2.9–5.5× over scalar where the scalar numbers are
-  stable, NEON 3.3–6.0×: more than the lanes alone would give, because
+- AVX2 is worth 2.6–4.9× over scalar, NEON 3.3–6.0×: more than the lanes alone would give, because
   the scalar kernels accumulate through memory a term at a time (the
   canonical order, bounds-check free) where the lanes hold several
   accumulators in registers. Eight lanes give no more than four; the
-  M4's core is 1.2–2.6× faster in absolute terms. Scalar Correlate and
-  Mean are not stable: the same source ran 11–43% slower after
+  M4's core is 1.1–2.4× faster in absolute terms. Scalar Correlate and
+  Mean were not stable: the same source ran 11–43% slower after
   unrelated commits moved `internal/focalrow`'s functions by 32 bytes,
-  which puts their ratios up to 7.5× in the current run.
+  which put their ratios up to 7.5×. Their one-cell loops spanned two
+  64-byte lines of code at one placement and one at the other; eight
+  cells a step removed the difference, every non-NaN output bit the
+  same, and made scalar Correlate 1.3–1.9× and Gaussian 1.4–1.6× faster
+  than in the run before it.
 - **A 64 KiB row stride, fixed.** At 16384², and not at 8192², 12288²,
   16320² or 16448², Gaussian, Mean and Min at r = 5 ran at 42–56% of
   their 4096² speed (Gaussian 602 → 252 M cells/s). Timing the column

@@ -26,48 +26,48 @@ uses. The Apple M4 NEON run that came first is kept below, under
   six did not: Gaussian, Mean and Min at r = 5 ran at 42–56% of their
   4096² speed at 16384², because rows 64 KiB apart collided in one set
   of Zen 2's L2. The column pass now folds such rows in groups, and those
-  rows run at 86–93% of their 4096² speed, without a bit of output
+  rows run at 92–97% of their 4096² speed, without a bit of output
   changing.
 - **Correlate costs what its products cost.** At 4096² without masks,
-  AVX2 Correlate takes 0.96, 1.92, 3.44 and 7.98 ns per cell at r = 1, 2,
-  3 and 5: 0.066–0.077 ns per product from r = 2 on (0.11 at r = 1, where
+  AVX2 Correlate takes 0.92, 1.83, 3.27 and 7.65 ns per cell at r = 1, 2,
+  3 and 5: 0.063–0.073 ns per product from r = 2 on (0.10 at r = 1, where
   the per-row fixed cost still shows), so its throughput falls as
-  (2r+1)². That is about 14 billion products and sums a second on one
+  (2r+1)². That is about 16 billion products and sums a second on one
   core, without FMA (§15).
-- **The separable forms grow linearly in r.** Gaussian takes 0.75 ns per
-  cell at r = 1 and 1.65 at r = 5; Mean, 0.71 and 1.58; Min, 0.82 and
-  2.45. At r = 5 Gaussian is 4.8× faster than Correlate with the same
+- **The separable forms grow linearly in r.** Gaussian takes 0.69 ns per
+  cell at r = 1 and 1.60 at r = 5; Mean, 0.67 and 1.51; Min, 0.78 and
+  2.33. At r = 5 Gaussian is 4.8× faster than Correlate with the same
   footprint, and at r = 1 still 1.3×.
-- **Memory is not the limit.** The highest demand in the suite is 15.1
+- **Memory is not the limit.** The highest demand in the suite is 15.4
   GB/s (Mean at r = 1, 1024², in cache), under a core's 22 GB/s, and from
   r = 2 the demand falls with the radius, to 1.0 GB/s for Correlate at
   r = 5.
-- **AVX2 is worth 2.9–7.5× over scalar** at 4096², rising with the
-  radius, but read the upper half with care: the scalar Correlate and
-  Mean kernels run 20–43% slower in this binary than in the previous run
-  (`testdata/bench-prefold.txt`) for a reason that has nothing to do with
-  them (see [Machine and method](#machine-and-method)), which inflates
-  their ratios. Gaussian and Min, whose scalar speed did not move, give
-  2.9–5.5×. As on NEON, this is lanes plus register blocking, not lanes
-  alone: the scalar kernels, which are the canonical order and must stay
-  bounds-check free (§39), accumulate through `dst` a term at a time,
-  while the SIMD ones hold several accumulators per block in registers.
-  The M4's faster core is 1.2–2.6× ahead of AVX2 in absolute terms:
-  least on Correlate at large radii, most on Min.
+- **AVX2 is worth 2.6–4.9× over scalar** at 4096², rising with the
+  radius. Until the change under [Loop placement](#loop-placement), the
+  scalar Correlate and Mean kernels ran at one of two speeds depending
+  on where the linker put them, which put their ratios as high as 7.5×
+  in the previous run (`testdata/bench-preloop.txt`); they are now 1.3–1.9×
+  faster than there and no longer depend on placement. As on NEON, this
+  is lanes plus register blocking, not lanes alone: the scalar kernels,
+  which are the canonical order and must stay bounds-check free (§39),
+  accumulate through `dst` a term at a time, while the SIMD ones hold
+  several accumulators per block in registers. The M4's faster core is
+  1.1–2.4× ahead of AVX2 in absolute terms: least on Correlate at large
+  radii, most on Min.
 
 | 4096², no mask | products/cell | scalar M cells/s | AVX2 M cells/s | AVX2/scalar | AVX2 ns/cell | AVX2 GB/s | NEON M cells/s |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| CorrelateR1 | 9 | 222 | 1040 | 4.68× | 0.962 | 8.32 | 1724 |
-| CorrelateR2 | 25 | 80.3 | 520 | 6.48× | 1.92 | 4.16 | 741 |
-| CorrelateR3 | 49 | 41.2 | 291 | 7.06× | 3.44 | 2.33 | 386 |
-| CorrelateR5 | 121 | 16.7 | 125 | 7.52× | 7.98 | 1.00 | 148 |
-| GaussianR1 | 6 | 381 | 1343 | 3.52× | 0.745 | 10.8 | 2501 |
-| GaussianR3 | 14 | 171 | 904 | 5.28× | 1.11 | 7.23 | 1329 |
-| GaussianR5 | 22 | 110 | 605 | 5.49× | 1.65 | 4.84 | 892 |
-| MeanR1 | — | 314 | 1412 | 4.50× | 0.708 | 11.3 | 2900 |
-| MeanR5 | — | 90.5 | 632 | 6.99× | 1.58 | 5.06 | 1037 |
-| MinR1 | — | 426 | 1218 | 2.86× | 0.821 | 9.74 | 2946 |
-| MinR5 | — | 96.9 | 408 | 4.21× | 2.45 | 3.27 | 1039 |
+| CorrelateR1 | 9 | 296 | 1092 | 3.69× | 0.916 | 8.73 | 1724 |
+| CorrelateR2 | 25 | 131 | 545 | 4.17× | 1.83 | 4.36 | 741 |
+| CorrelateR3 | 49 | 69.5 | 306 | 4.41× | 3.27 | 2.45 | 386 |
+| CorrelateR5 | 121 | 28.7 | 131 | 4.56× | 7.65 | 1.05 | 148 |
+| GaussianR1 | 6 | 564 | 1454 | 2.58× | 0.688 | 11.6 | 2501 |
+| GaussianR3 | 14 | 255 | 952 | 3.73× | 1.05 | 7.61 | 1329 |
+| GaussianR5 | 22 | 164 | 624 | 3.80× | 1.60 | 4.99 | 892 |
+| MeanR1 | — | 455 | 1489 | 3.28× | 0.671 | 11.9 | 2900 |
+| MeanR5 | — | 158 | 663 | 4.21× | 1.51 | 5.30 | 1037 |
+| MinR1 | — | 446 | 1277 | 2.86× | 0.783 | 10.2 | 2946 |
+| MinR5 | — | 102 | 429 | 4.21× | 2.33 | 3.43 | 1039 |
 
 ## 16384² and the row stride
 
@@ -157,6 +157,111 @@ What is left:
 - Beyond the suite, Gaussian at r = 8 (17 rows) at 16384² went from
   148–152 to 268–342 M cells/s, against 341–367 at 16320².
 
+## Loop placement
+
+The scalar weighted-sum, sum and mean kernels used to run at one of two
+speeds, depending on where the linker put them: scalar Mean at r = 5 ran
+at 147–160 M cells/s in one binary and 87–92 in another built from the
+same kernel source (see [Machine and method](#machine-and-method)). On
+2026-09-23 their cell loops were changed to take eight cells a step,
+without a bit of output changing. They now run at the same speed wherever
+they land, and faster than before at either placement.
+
+### The cause: a 25-byte loop across a 64-byte line
+
+Each of those kernels spends its time in a one-cell loop of 23–35 bytes:
+a load, an add (or a multiply and an add) and a store per iteration. Go
+aligns functions to 32 bytes, so relative to a 64-byte line of code each
+function has two possible positions, and unrelated code elsewhere in the
+binary decides which. From `go tool objdump` of the two binaries, the
+hot loops' first and last byte within their 64-byte line:
+
+| loop | `a81fb65` (fast) | `5746c71` (slow) |
+|---|---|---|
+| ColumnSum, `dst[i] += v[i]` | 11–36, one line | 43–4, two lines |
+| RowMean, the sum | 16–38, one line | 48–6, two lines |
+| CorrelateRow, the later terms | 2–36, one line | 34–4, two lines |
+| ColumnCorrelate, the later terms | 10–36, one line | 42–4, two lines |
+| RowCorrelate, the later terms | 24–50, one line | 56–18, two lines |
+
+Every hot loop that fits in one line in the fast binary spans two in the
+slow one. Both binaries cross 32-byte boundaries alike. The Min and Max
+loops (41–65 bytes) moved too, and their speed did not change.
+
+Two experiments separate the cause from everything else that differs
+between the two commits:
+
+- **The loop alone.** ColumnSum's loop, byte for byte as the compiler
+  emits it, in assembly at a chosen offset from a 64-byte boundary, over
+  1024 cells in L1, took 0.28–0.38 ns per cell starting at offsets 2–38
+  and 0.55–0.78 from 39 on, the first offset at which its last byte (the
+  branch back) falls in the next line. Offsets 11–38 cross a 32-byte
+  boundary and cost nothing extra.
+- **The same source at both placements.** A 32-byte function added
+  ahead of the kernels in a scratch build moves them all by 32 bytes and
+  swaps fast and slow: scalar Mean r = 5 at 1024², 88 M cells/s at the
+  current placement and 136 moved (medians of 6, interleaved).
+
+That a loop spanning two lines costs a second cycle an iteration fits a
+front end that fetches one 64-byte line of code a cycle; no performance
+counter confirms the mechanism (none are available on this machine
+without an elevated shell, see [the cause](#the-cause-l2-sets-from-the-stride-alone)
+of the stride effect).
+
+### The change
+
+The cell loops of the five kernels moved into four helpers (`mulRow`,
+`mulAddRow`, `addRow`, `divRow` in `internal/focalrow/focalrow.go`)
+that take eight cells a step while more than eight remain, then the rest
+one at a time. An iteration then makes eight stores, which take eight
+cycles, more than fetching the three or four lines it spans. The same
+experiment as above, with the plain sum's stepped loop written out in
+assembly at every third start offset from 2 to 65, fastest of 6, ns per
+cell (the one-cell loop, for comparison, took 0.28–0.38 at offsets 2–38
+and 0.55–0.78 from 39):
+
+| step | offsets 2–50 | offsets 53–62 |
+|---|---:|---:|
+| four cells | 0.257–0.276 | 0.313–0.360 |
+| **eight cells** | 0.254–0.276 | 0.256–0.265 |
+
+Four cells a step was not enough: the plain sum still lost up to 39%
+when its loop started in the last 11 bytes of a line.
+
+Every cell gets the same operations in the same order as before. The
+focal and `internal/focalrow` tests, the fuzzers
+(`FuzzFocalRows`, `FuzzFocal`, `FuzzFocalRelations`) and
+`TestNoBoundsChecksInLoops` pass. A comparison against the previous
+kernels (every length to 130, every odd neighbourhood to 11, 6.1 million
+cells per setting, NaN, ±Inf, ±0 and subnormals among the inputs) found
+every non-NaN output bit identical. Where two NaNs meet, the NaN's sign
+or payload differed in 0.08% of those cells: x86 keeps the first
+operand's NaN, and Go orders a float addition's operands as it likes, so
+the previous kernels' NaN payloads were never fixed either; the package
+promises any NaN for any NaN.
+
+Both placements of the new kernels, built as above and measured
+interleaved with the old at theirs, scalar at 1024², medians of 6, M
+cells/s. The desktop was in use, and single samples spread 20–30%, so
+read these to the nearest 10%:
+
+| scalar, 1024² | old, slow placement | old, fast placement | new, placement A | new, placement B |
+|---|---:|---:|---:|---:|
+| MeanR5 | 88 | 136 | 151 | 155 |
+| CorrelateR2 | 75 | 95 | 128 | 121 |
+| GaussianR3 | 171 | 155 | 223 | 218 |
+| MinR3 (unchanged) | 152 | 152 | 138 | 149 |
+
+In the suite run (quiet, 5 samples a case), against
+`bench-preloop.txt`, where their loops sat at the slow placement,
+the scalar rows went, per operation across sizes and masks:
+Correlate 1.31–1.88× faster (median 1.72×), Mean 1.42–1.92× (1.67×),
+Gaussian 1.44–1.56× (1.48×); Min and Max, whose loops did not change,
+1.01–1.07×. Against `bench-prefold.txt`, taken when the old loops sat at
+the fast placement, Mean is 1.04–1.11× faster, so for the plain sum the
+change mostly removes the loss rather than adding speed; Correlate is
+1.04–1.46× and Gaussian 1.43–1.57× faster.
+
 ## Machine and method
 
 | | |
@@ -169,30 +274,36 @@ What is left:
 | Raw output | [`testdata/bench.txt`](testdata/bench.txt) |
 | Stats | median of 5 runs, each ≥1 s (`b.Loop`) |
 
-This run was taken on the morning of 2026-09-23, after the column-pass
-change, after a short pinned probe showed the core quiet (10 samples
-within 6%). Two runs before it, taken while the desktop was in use, were
-discarded: their worst per-operation spreads were 66% and
-56% against 15% here. The previous published run, from the night of
-2026-09-22 and before the change, is kept as
-[`testdata/bench-prefold.txt`](testdata/bench-prefold.txt), and the busy
-run that preceded it as [`testdata/bench-busy.txt`](testdata/bench-busy.txt).
+This run was taken in the early hours of 2026-09-24, after the
+loop-placement change, when a short pinned probe showed the core quiet
+(10 samples within 1.4%); its worst per-operation spread is 12%. The
+previous published run, from the morning of 2026-09-23 with the same
+code apart from that change, is kept as
+[`testdata/bench-preloop.txt`](testdata/bench-preloop.txt); the one
+before it, from the night of 2026-09-22 and before the column-pass
+change, as [`testdata/bench-prefold.txt`](testdata/bench-prefold.txt),
+and the busy run that preceded that as
+[`testdata/bench-busy.txt`](testdata/bench-busy.txt).
 
-**The scalar Correlate and Mean rows moved for a reason outside the focal
-code.** Against `bench-prefold.txt`, scalar Correlate runs 11–29%
-slower and scalar Mean 25–43% slower, at every size and steadily (their
-spreads are a few percent), while scalar Gaussian, Min and Max are
-within 6%, and the SIMD rows other than r ≥ 3 at 16384² within 12%.
-The scalar kernels' source is unchanged, and the column-pass
-change is not the cause: a binary of the commit just before it measures
-the same as this one, pinned and interleaved (scalar Mean r = 5 at 1024²:
-87–91 against 89–92 M cells/s), while a binary of the commit the previous
-run measured, `a81fb65`, runs it at 147–160. In between, master's
-unrelated commits moved every function of `internal/focalrow` by 32 bytes
+Against `bench-preloop.txt`, the rows this change does not touch moved
+little: SIMD within −12% to +17% (median +3–4% per operation), scalar
+Min and Max +1–7%, so the machine ran a few percent faster overall. The
+scalar rows it does touch moved far more; see
+[Loop placement](#loop-placement).
+
+**Why `bench-preloop.txt`'s scalar Correlate and Mean rows were slow.**
+Against `bench-prefold.txt`, its scalar Correlate ran 11–29% slower and
+scalar Mean 25–43% slower, at every size and steadily, while scalar
+Gaussian, Min and Max were within 6%. Their source had not changed, and
+the column-pass change was not the cause: a binary of the commit just
+before it measured the same (scalar Mean r = 5 at 1024²: 87–91 against
+89–92 M cells/s), while a binary of the commit `bench-prefold.txt`
+measured, `a81fb65`, ran it at 147–160. In between, master's unrelated
+commits moved every function of `internal/focalrow` by 32 bytes
 (`scalarColumnSum` from 0 to 32 mod 64, `scalarRowMean` from 32 to 0),
-and Go aligns functions only to 32 bytes. Scalar Mean and Correlate are
-that sensitive to where their loops fall; exactly which boundary their
-inner loops cross is not established here.
+and Go aligns functions only to 32 bytes. The cause, a one-cell loop
+spanning two 64-byte lines of code, and the change that removed it are
+under [Loop placement](#loop-placement).
 
 ## Reproducing
 
@@ -232,330 +343,330 @@ the markers is what stratabench renders from `testdata/bench.txt`.
 
 ```text
             scalar      SIMD  SIMD/scalar   SIMD + workers
-CorrelateR1       222      1040        4.68×   not measured yet (tile engine, STRATA-8/9)
-CorrelateR2      80.3       520        6.48×   not measured yet (tile engine, STRATA-8/9)
-CorrelateR3      41.2       291        7.06×   not measured yet (tile engine, STRATA-8/9)
-CorrelateR5      16.7       125        7.52×   not measured yet (tile engine, STRATA-8/9)
-GaussianR1       381      1343        3.52×   not measured yet (tile engine, STRATA-8/9)
-GaussianR2       239      1105        4.62×   not measured yet (tile engine, STRATA-8/9)
-GaussianR3       171       904        5.28×   not measured yet (tile engine, STRATA-8/9)
-GaussianR5       110       605        5.49×   not measured yet (tile engine, STRATA-8/9)
-MeanR1         314      1412        4.50×   not measured yet (tile engine, STRATA-8/9)
-MeanR2         195      1198        6.16×   not measured yet (tile engine, STRATA-8/9)
-MeanR3         140      1000        7.16×   not measured yet (tile engine, STRATA-8/9)
-MeanR5        90.5       632        6.99×   not measured yet (tile engine, STRATA-8/9)
-MinR1          426      1218        2.86×   not measured yet (tile engine, STRATA-8/9)
-MinR2          230       831        3.61×   not measured yet (tile engine, STRATA-8/9)
-MinR3          159       614        3.86×   not measured yet (tile engine, STRATA-8/9)
-MinR5         96.9       408        4.21×   not measured yet (tile engine, STRATA-8/9)
-MaxR3          102       500        4.90×   not measured yet (tile engine, STRATA-8/9)
+CorrelateR1       296      1092        3.69×   not measured yet (tile engine, STRATA-8/9)
+CorrelateR2       131       545        4.17×   not measured yet (tile engine, STRATA-8/9)
+CorrelateR3      69.5       306        4.41×   not measured yet (tile engine, STRATA-8/9)
+CorrelateR5      28.7       131        4.56×   not measured yet (tile engine, STRATA-8/9)
+GaussianR1       564      1454        2.58×   not measured yet (tile engine, STRATA-8/9)
+GaussianR2       347      1170        3.37×   not measured yet (tile engine, STRATA-8/9)
+GaussianR3       255       952        3.73×   not measured yet (tile engine, STRATA-8/9)
+GaussianR5       164       624        3.80×   not measured yet (tile engine, STRATA-8/9)
+MeanR1         455      1489        3.28×   not measured yet (tile engine, STRATA-8/9)
+MeanR2         310      1290        4.16×   not measured yet (tile engine, STRATA-8/9)
+MeanR3         233      1068        4.58×   not measured yet (tile engine, STRATA-8/9)
+MeanR5         158       663        4.21×   not measured yet (tile engine, STRATA-8/9)
+MinR1          446      1277        2.86×   not measured yet (tile engine, STRATA-8/9)
+MinR2          240       871        3.62×   not measured yet (tile engine, STRATA-8/9)
+MinR3          166       647        3.91×   not measured yet (tile engine, STRATA-8/9)
+MinR5          102       429        4.21×   not measured yet (tile engine, STRATA-8/9)
+MaxR3          105       518        4.93×   not measured yet (tile engine, STRATA-8/9)
 ```
 
 ### CorrelateR1
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 214 | 776 | 3.62× | 1.29 | 1.72 | 6.21 | 9 |
-| 1024 × 1024 | off | 229 | 1047 | 4.58× | 0.956 | 1.83 | 8.37 | 9 |
-| 4096 × 4096 | off | 222 | 1040 | 4.68× | 0.962 | 1.78 | 8.32 | 9 |
-| 16384 × 16384 | off | 207 | 1002 | 4.84× | 0.998 | 1.66 | 8.02 | 9 |
-| 256 × 256 | on | 212 | 685 | 3.23× | 1.46 | 1.75 | 5.65 | 12 |
-| 1024 × 1024 | on | 224 | 984 | 4.38× | 1.02 | 1.85 | 8.12 | 12 |
-| 4096 × 4096 | on | 222 | 972 | 4.37× | 1.03 | 1.83 | 8.02 | 12 |
-| 16384 × 16384 | on | 204 | 947 | 4.64× | 1.06 | 1.68 | 7.82 | 12 |
+| 256 × 256 | off | 379 | 739 | 1.95× | 1.35 | 3.03 | 5.91 | 9 |
+| 1024 × 1024 | off | 393 | 1089 | 2.77× | 0.918 | 3.15 | 8.71 | 9 |
+| 4096 × 4096 | off | 296 | 1092 | 3.69× | 0.916 | 2.37 | 8.73 | 9 |
+| 16384 × 16384 | off | 275 | 1069 | 3.88× | 0.935 | 2.20 | 8.55 | 9 |
+| 256 × 256 | on | 357 | 661 | 1.85× | 1.51 | 2.95 | 5.45 | 12 |
+| 1024 × 1024 | on | 381 | 1012 | 2.66× | 0.988 | 3.14 | 8.35 | 12 |
+| 4096 × 4096 | on | 292 | 1035 | 3.54× | 0.966 | 2.41 | 8.54 | 12 |
+| 16384 × 16384 | on | 272 | 1011 | 3.72× | 0.989 | 2.24 | 8.34 | 12 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 7%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (776 → 1002 M cells/s), SIMD/scalar 3.62× → 4.84×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (685 → 947 M cells/s), SIMD/scalar 3.23× → 4.64×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (739 → 1069 M cells/s), SIMD/scalar 1.95× → 3.88×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (661 → 1011 M cells/s), SIMD/scalar 1.85× → 3.72×.
 
 ### CorrelateR2
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 78.6 | 379 | 4.83× | 2.64 | 0.63 | 3.03 | 9 |
-| 1024 × 1024 | off | 80.3 | 490 | 6.11× | 2.04 | 0.64 | 3.92 | 9 |
-| 4096 × 4096 | off | 80.3 | 520 | 6.48× | 1.92 | 0.64 | 4.16 | 9 |
-| 16384 × 16384 | off | 76.0 | 514 | 6.76× | 1.95 | 0.61 | 4.11 | 9 |
-| 256 × 256 | on | 77.5 | 346 | 4.46× | 2.89 | 0.64 | 2.85 | 12 |
-| 1024 × 1024 | on | 79.5 | 471 | 5.92× | 2.12 | 0.66 | 3.88 | 12 |
-| 4096 × 4096 | on | 79.8 | 505 | 6.33× | 1.98 | 0.66 | 4.17 | 12 |
-| 16384 × 16384 | on | 75.6 | 498 | 6.59× | 2.01 | 0.62 | 4.11 | 12 |
+| 256 × 256 | off | 143 | 361 | 2.52× | 2.77 | 1.14 | 2.88 | 9 |
+| 1024 × 1024 | off | 143 | 501 | 3.50× | 1.99 | 1.15 | 4.01 | 9 |
+| 4096 × 4096 | off | 131 | 545 | 4.17× | 1.83 | 1.04 | 4.36 | 9 |
+| 16384 × 16384 | off | 120 | 542 | 4.53× | 1.84 | 0.96 | 4.33 | 9 |
+| 256 × 256 | on | 138 | 332 | 2.40× | 3.01 | 1.14 | 2.74 | 12 |
+| 1024 × 1024 | on | 141 | 474 | 3.35× | 2.11 | 1.17 | 3.91 | 12 |
+| 4096 × 4096 | on | 128 | 523 | 4.07× | 1.91 | 1.06 | 4.32 | 12 |
+| 16384 × 16384 | on | 118 | 519 | 4.40× | 1.93 | 0.97 | 4.28 | 12 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 10%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (379 → 514 M cells/s), SIMD/scalar 4.83× → 6.76×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (346 → 498 M cells/s), SIMD/scalar 4.46× → 6.59×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (361 → 542 M cells/s), SIMD/scalar 2.52× → 4.53×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (332 → 519 M cells/s), SIMD/scalar 2.40× → 4.40×.
 
 ### CorrelateR3
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 40.7 | 229 | 5.63× | 4.37 | 0.33 | 1.83 | 9 |
-| 1024 × 1024 | off | 41.0 | 278 | 6.77× | 3.60 | 0.33 | 2.22 | 9 |
-| 4096 × 4096 | off | 41.2 | 291 | 7.06× | 3.44 | 0.33 | 2.33 | 9 |
-| 16384 × 16384 | off | 39.6 | 278 | 7.02× | 3.59 | 0.32 | 2.23 | 9 |
-| 256 × 256 | on | 40.1 | 213 | 5.30× | 4.70 | 0.33 | 1.76 | 12 |
-| 1024 × 1024 | on | 40.8 | 267 | 6.55× | 3.74 | 0.34 | 2.21 | 12 |
-| 4096 × 4096 | on | 41.0 | 287 | 7.00× | 3.49 | 0.34 | 2.37 | 12 |
-| 16384 × 16384 | on | 39.3 | 270 | 6.89× | 3.70 | 0.32 | 2.23 | 12 |
+| 256 × 256 | off | 75.7 | 221 | 2.92× | 4.52 | 0.61 | 1.77 | 9 |
+| 1024 × 1024 | off | 74.6 | 284 | 3.81× | 3.52 | 0.60 | 2.28 | 9 |
+| 4096 × 4096 | off | 69.5 | 306 | 4.41× | 3.27 | 0.56 | 2.45 | 9 |
+| 16384 × 16384 | off | 66.0 | 303 | 4.59× | 3.30 | 0.53 | 2.42 | 9 |
+| 256 × 256 | on | 74.1 | 207 | 2.79× | 4.84 | 0.61 | 1.71 | 12 |
+| 1024 × 1024 | on | 73.7 | 272 | 3.69× | 3.68 | 0.61 | 2.24 | 12 |
+| 4096 × 4096 | on | 68.9 | 297 | 4.31× | 3.37 | 0.57 | 2.45 | 12 |
+| 16384 × 16384 | on | 65.6 | 294 | 4.47× | 3.41 | 0.54 | 2.42 | 12 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 5%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (229 → 278 M cells/s), SIMD/scalar 5.63× → 7.02×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (213 → 270 M cells/s), SIMD/scalar 5.30× → 6.89×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (221 → 303 M cells/s), SIMD/scalar 2.92× → 4.59×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (207 → 294 M cells/s), SIMD/scalar 2.79× → 4.47×.
 
 ### CorrelateR5
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 16.9 | 97.6 | 5.78× | 10.2 | 0.14 | 0.78 | 9 |
-| 1024 × 1024 | off | 16.7 | 118 | 7.06× | 8.47 | 0.13 | 0.94 | 9 |
-| 4096 × 4096 | off | 16.7 | 125 | 7.52× | 7.98 | 0.13 | 1.00 | 9 |
-| 16384 × 16384 | off | 16.3 | 120 | 7.38× | 8.30 | 0.13 | 0.96 | 9 |
-| 256 × 256 | on | 16.8 | 93.4 | 5.56× | 10.7 | 0.14 | 0.77 | 12 |
-| 1024 × 1024 | on | 16.8 | 115 | 6.85× | 8.66 | 0.14 | 0.95 | 12 |
-| 4096 × 4096 | on | 16.7 | 124 | 7.44× | 8.06 | 0.14 | 1.02 | 12 |
-| 16384 × 16384 | on | 16.3 | 119 | 7.28× | 8.43 | 0.13 | 0.98 | 12 |
+| 256 × 256 | off | 31.7 | 89.6 | 2.83× | 11.2 | 0.25 | 0.72 | 9 |
+| 1024 × 1024 | off | 30.5 | 119 | 3.90× | 8.40 | 0.24 | 0.95 | 9 |
+| 4096 × 4096 | off | 28.7 | 131 | 4.56× | 7.65 | 0.23 | 1.05 | 9 |
+| 16384 × 16384 | off | 28.7 | 132 | 4.61× | 7.55 | 0.23 | 1.06 | 9 |
+| 256 × 256 | on | 31.2 | 85.7 | 2.74× | 11.7 | 0.26 | 0.71 | 12 |
+| 1024 × 1024 | on | 30.4 | 116 | 3.83× | 8.58 | 0.25 | 0.96 | 12 |
+| 4096 × 4096 | on | 28.5 | 128 | 4.47× | 7.84 | 0.24 | 1.05 | 12 |
+| 16384 × 16384 | on | 28.6 | 130 | 4.55× | 7.71 | 0.24 | 1.07 | 12 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 7%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (97.6 → 120 M cells/s), SIMD/scalar 5.78× → 7.38×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (93.4 → 119 M cells/s), SIMD/scalar 5.56× → 7.28×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (89.6 → 132 M cells/s), SIMD/scalar 2.83× → 4.61×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (85.7 → 130 M cells/s), SIMD/scalar 2.74× → 4.55×.
 
 ### GaussianR1
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 375 | 1352 | 3.60× | 0.740 | 3.00 | 10.8 | 10 |
-| 1024 × 1024 | off | 400 | 1722 | 4.30× | 0.581 | 3.20 | 13.8 | 10 |
-| 4096 × 4096 | off | 381 | 1343 | 3.52× | 0.745 | 3.05 | 10.8 | 10 |
-| 16384 × 16384 | off | 365 | 1289 | 3.54× | 0.776 | 2.92 | 10.3 | 12 |
-| 256 × 256 | on | 353 | 1092 | 3.09× | 0.915 | 2.91 | 9.01 | 13 |
-| 1024 × 1024 | on | 395 | 1492 | 3.78× | 0.670 | 3.26 | 12.3 | 13 |
-| 4096 × 4096 | on | 372 | 1152 | 3.09× | 0.868 | 3.07 | 9.51 | 13 |
-| 16384 × 16384 | on | 374 | 1224 | 3.27× | 0.817 | 3.09 | 10.1 | 15 |
+| 256 × 256 | off | 586 | 1217 | 2.08× | 0.822 | 4.69 | 9.74 | 10 |
+| 1024 × 1024 | off | 600 | 1738 | 2.89× | 0.575 | 4.80 | 13.9 | 10 |
+| 4096 × 4096 | off | 564 | 1454 | 2.58× | 0.688 | 4.51 | 11.6 | 10 |
+| 16384 × 16384 | off | 569 | 1419 | 2.49× | 0.705 | 4.55 | 11.3 | 11 |
+| 256 × 256 | on | 532 | 1013 | 1.90× | 0.987 | 4.39 | 8.36 | 13 |
+| 1024 × 1024 | on | 567 | 1536 | 2.71× | 0.651 | 4.68 | 12.7 | 13 |
+| 4096 × 4096 | on | 545 | 1347 | 2.47× | 0.742 | 4.50 | 11.1 | 13 |
+| 16384 × 16384 | on | 553 | 1322 | 2.39× | 0.756 | 4.57 | 10.9 | 14 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 13%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 4%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1352 → 1289 M cells/s), SIMD/scalar 3.60× → 3.54×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1092 → 1224 M cells/s), SIMD/scalar 3.09× → 3.27×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1217 → 1419 M cells/s), SIMD/scalar 2.08× → 2.49×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1013 → 1322 M cells/s), SIMD/scalar 1.90× → 2.39×.
 
 ### GaussianR2
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 233 | 998 | 4.28× | 1.00 | 1.87 | 7.99 | 10 |
-| 1024 × 1024 | off | 247 | 1215 | 4.93× | 0.823 | 1.97 | 9.72 | 10 |
-| 4096 × 4096 | off | 239 | 1105 | 4.62× | 0.905 | 1.91 | 8.84 | 10 |
-| 16384 × 16384 | off | 236 | 1079 | 4.57× | 0.926 | 1.89 | 8.64 | 14 |
-| 256 × 256 | on | 219 | 804 | 3.67× | 1.24 | 1.81 | 6.63 | 13 |
-| 1024 × 1024 | on | 240 | 1062 | 4.42× | 0.942 | 1.98 | 8.76 | 13 |
-| 4096 × 4096 | on | 234 | 1024 | 4.37× | 0.977 | 1.94 | 8.45 | 13 |
-| 16384 × 16384 | on | 234 | 989 | 4.22× | 1.01 | 1.93 | 8.16 | 17 |
+| 256 × 256 | off | 355 | 909 | 2.56× | 1.10 | 2.84 | 7.27 | 10 |
+| 1024 × 1024 | off | 363 | 1238 | 3.41× | 0.808 | 2.90 | 9.90 | 10 |
+| 4096 × 4096 | off | 347 | 1170 | 3.37× | 0.855 | 2.78 | 9.36 | 10 |
+| 16384 × 16384 | off | 355 | 1168 | 3.29× | 0.856 | 2.84 | 9.34 | 12 |
+| 256 × 256 | on | 328 | 748 | 2.28× | 1.34 | 2.71 | 6.17 | 13 |
+| 1024 × 1024 | on | 349 | 1082 | 3.10× | 0.924 | 2.88 | 8.93 | 13 |
+| 4096 × 4096 | on | 339 | 1079 | 3.19× | 0.927 | 2.79 | 8.90 | 13 |
+| 16384 × 16384 | on | 345 | 1060 | 3.07× | 0.943 | 2.85 | 8.74 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 4%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (998 → 1079 M cells/s), SIMD/scalar 4.28× → 4.57×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (804 → 989 M cells/s), SIMD/scalar 3.67× → 4.22×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (909 → 1168 M cells/s), SIMD/scalar 2.56× → 3.29×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (748 → 1060 M cells/s), SIMD/scalar 2.28× → 3.07×.
 
 ### GaussianR3
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 172 | 806 | 4.68× | 1.24 | 1.38 | 6.45 | 10 |
-| 1024 × 1024 | off | 175 | 947 | 5.42× | 1.06 | 1.40 | 7.57 | 10 |
-| 4096 × 4096 | off | 171 | 904 | 5.28× | 1.11 | 1.37 | 7.23 | 10 |
-| 16384 × 16384 | off | 172 | 764 | 4.44× | 1.31 | 1.38 | 6.11 | 14 |
-| 256 × 256 | on | 161 | 644 | 3.99× | 1.55 | 1.33 | 5.32 | 13 |
-| 1024 × 1024 | on | 169 | 820 | 4.86× | 1.22 | 1.39 | 6.76 | 13 |
-| 4096 × 4096 | on | 170 | 814 | 4.79× | 1.23 | 1.40 | 6.72 | 13 |
-| 16384 × 16384 | on | 169 | 701 | 4.14× | 1.43 | 1.40 | 5.78 | 17 |
+| 256 × 256 | off | 259 | 736 | 2.85× | 1.36 | 2.07 | 5.89 | 10 |
+| 1024 × 1024 | off | 260 | 948 | 3.64× | 1.05 | 2.08 | 7.58 | 10 |
+| 4096 × 4096 | off | 255 | 952 | 3.73× | 1.05 | 2.04 | 7.61 | 10 |
+| 16384 × 16384 | off | 257 | 803 | 3.12× | 1.25 | 2.06 | 6.43 | 14 |
+| 256 × 256 | on | 240 | 603 | 2.51× | 1.66 | 1.98 | 4.97 | 13 |
+| 1024 × 1024 | on | 250 | 823 | 3.29× | 1.22 | 2.07 | 6.79 | 13 |
+| 4096 × 4096 | on | 247 | 850 | 3.45× | 1.18 | 2.04 | 7.02 | 13 |
+| 16384 × 16384 | on | 250 | 718 | 2.87× | 1.39 | 2.06 | 5.92 | 17 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 1%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (806 → 764 M cells/s), SIMD/scalar 4.68× → 4.44×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (644 → 701 M cells/s), SIMD/scalar 3.99× → 4.14×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (736 → 803 M cells/s), SIMD/scalar 2.85× → 3.12×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (603 → 718 M cells/s), SIMD/scalar 2.51× → 2.87×.
 
 ### GaussianR5
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 112 | 538 | 4.80× | 1.86 | 0.90 | 4.30 | 10 |
-| 1024 × 1024 | off | 112 | 601 | 5.35× | 1.66 | 0.90 | 4.81 | 10 |
-| 4096 × 4096 | off | 110 | 605 | 5.49× | 1.65 | 0.88 | 4.84 | 10 |
-| 16384 × 16384 | off | 109 | 520 | 4.78× | 1.92 | 0.87 | 4.16 | 14 |
-| 256 × 256 | on | 107 | 433 | 4.03× | 2.31 | 0.89 | 3.57 | 13 |
-| 1024 × 1024 | on | 109 | 522 | 4.78× | 1.91 | 0.90 | 4.31 | 13 |
-| 4096 × 4096 | on | 108 | 534 | 4.94× | 1.87 | 0.89 | 4.41 | 13 |
-| 16384 × 16384 | on | 109 | 490 | 4.51× | 2.04 | 0.90 | 4.04 | 17 |
+| 256 × 256 | off | 169 | 492 | 2.91× | 2.03 | 1.35 | 3.94 | 10 |
+| 1024 × 1024 | off | 167 | 607 | 3.64× | 1.65 | 1.33 | 4.86 | 10 |
+| 4096 × 4096 | off | 164 | 624 | 3.80× | 1.60 | 1.31 | 4.99 | 10 |
+| 16384 × 16384 | off | 166 | 577 | 3.48× | 1.73 | 1.33 | 4.62 | 14 |
+| 256 × 256 | on | 158 | 401 | 2.55× | 2.49 | 1.30 | 3.31 | 13 |
+| 1024 × 1024 | on | 160 | 526 | 3.28× | 1.90 | 1.32 | 4.34 | 13 |
+| 4096 × 4096 | on | 159 | 562 | 3.53× | 1.78 | 1.31 | 4.64 | 13 |
+| 16384 × 16384 | on | 161 | 524 | 3.25× | 1.91 | 1.33 | 4.32 | 17 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 6%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (538 → 520 M cells/s), SIMD/scalar 4.80× → 4.78×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (433 → 490 M cells/s), SIMD/scalar 4.03× → 4.51×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (492 → 577 M cells/s), SIMD/scalar 2.91× → 3.48×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (401 → 524 M cells/s), SIMD/scalar 2.55× → 3.25×.
 
 ### MeanR1
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 313 | 1453 | 4.65× | 0.688 | 2.50 | 11.6 | 8 |
-| 1024 × 1024 | off | 333 | 1885 | 5.67× | 0.530 | 2.66 | 15.1 | 8 |
-| 4096 × 4096 | off | 314 | 1412 | 4.50× | 0.708 | 2.51 | 11.3 | 8 |
-| 16384 × 16384 | off | 310 | 1378 | 4.45× | 0.726 | 2.48 | 11.0 | 10 |
-| 256 × 256 | on | 295 | 1161 | 3.94× | 0.861 | 2.43 | 9.58 | 11 |
-| 1024 × 1024 | on | 316 | 1664 | 5.27× | 0.601 | 2.60 | 13.7 | 11 |
-| 4096 × 4096 | on | 309 | 1299 | 4.21× | 0.770 | 2.55 | 10.7 | 11 |
-| 16384 × 16384 | on | 305 | 1283 | 4.20× | 0.779 | 2.52 | 10.6 | 13 |
+| 256 × 256 | off | 504 | 1301 | 2.58× | 0.769 | 4.03 | 10.4 | 8 |
+| 1024 × 1024 | off | 515 | 1920 | 3.73× | 0.521 | 4.12 | 15.4 | 8 |
+| 4096 × 4096 | off | 455 | 1489 | 3.28× | 0.671 | 3.64 | 11.9 | 8 |
+| 16384 × 16384 | off | 443 | 1453 | 3.28× | 0.688 | 3.54 | 11.6 | 10 |
+| 256 × 256 | on | 464 | 1072 | 2.31× | 0.933 | 3.83 | 8.85 | 11 |
+| 1024 × 1024 | on | 495 | 1671 | 3.37× | 0.598 | 4.09 | 13.8 | 11 |
+| 4096 × 4096 | on | 444 | 1385 | 3.12× | 0.722 | 3.66 | 11.4 | 11 |
+| 16384 × 16384 | on | 434 | 1354 | 3.12× | 0.738 | 3.58 | 11.2 | 13 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 7%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 4%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1453 → 1378 M cells/s), SIMD/scalar 4.65× → 4.45×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1161 → 1283 M cells/s), SIMD/scalar 3.94× → 4.20×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1301 → 1453 M cells/s), SIMD/scalar 2.58× → 3.28×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1072 → 1354 M cells/s), SIMD/scalar 2.31× → 3.12×.
 
 ### MeanR2
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 193 | 1120 | 5.79× | 0.893 | 1.55 | 8.96 | 8 |
-| 1024 × 1024 | off | 198 | 1389 | 7.01× | 0.720 | 1.58 | 11.1 | 8 |
-| 4096 × 4096 | off | 195 | 1198 | 6.16× | 0.835 | 1.56 | 9.58 | 8 |
-| 16384 × 16384 | off | 192 | 1171 | 6.09× | 0.854 | 1.54 | 9.37 | 12 |
-| 256 × 256 | on | 185 | 885 | 4.79× | 1.13 | 1.52 | 7.30 | 11 |
-| 1024 × 1024 | on | 195 | 1205 | 6.19× | 0.830 | 1.61 | 9.94 | 11 |
-| 4096 × 4096 | on | 191 | 1087 | 5.70× | 0.920 | 1.57 | 8.97 | 11 |
-| 16384 × 16384 | on | 188 | 1056 | 5.62× | 0.947 | 1.55 | 8.71 | 15 |
+| 256 × 256 | off | 334 | 981 | 2.93× | 1.02 | 2.68 | 7.85 | 8 |
+| 1024 × 1024 | off | 339 | 1398 | 4.13× | 0.715 | 2.71 | 11.2 | 8 |
+| 4096 × 4096 | off | 310 | 1290 | 4.16× | 0.775 | 2.48 | 10.3 | 8 |
+| 16384 × 16384 | off | 304 | 1212 | 3.99× | 0.825 | 2.43 | 9.70 | 10 |
+| 256 × 256 | on | 310 | 800 | 2.58× | 1.25 | 2.56 | 6.60 | 11 |
+| 1024 × 1024 | on | 326 | 1208 | 3.71× | 0.828 | 2.69 | 9.96 | 11 |
+| 4096 × 4096 | on | 301 | 1154 | 3.83× | 0.867 | 2.49 | 9.52 | 11 |
+| 16384 × 16384 | on | 297 | 1103 | 3.72× | 0.906 | 2.45 | 9.10 | 13 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 7%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1120 → 1171 M cells/s), SIMD/scalar 5.79× → 6.09×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (885 → 1056 M cells/s), SIMD/scalar 4.79× → 5.62×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (981 → 1212 M cells/s), SIMD/scalar 2.93× → 3.99×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (800 → 1103 M cells/s), SIMD/scalar 2.58× → 3.72×.
 
 ### MeanR3
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 141 | 875 | 6.22× | 1.14 | 1.13 | 7.00 | 8 |
-| 1024 × 1024 | off | 142 | 1086 | 7.62× | 0.921 | 1.14 | 8.69 | 8 |
-| 4096 × 4096 | off | 140 | 1000 | 7.16× | 1.00 | 1.12 | 8.00 | 8 |
-| 16384 × 16384 | off | 139 | 792 | 5.69× | 1.26 | 1.11 | 6.33 | 12 |
-| 256 × 256 | on | 135 | 706 | 5.22× | 1.42 | 1.12 | 5.83 | 11 |
-| 1024 × 1024 | on | 136 | 933 | 6.85× | 1.07 | 1.12 | 7.70 | 11 |
-| 4096 × 4096 | on | 137 | 903 | 6.60× | 1.11 | 1.13 | 7.45 | 11 |
-| 16384 × 16384 | on | 137 | 733 | 5.36× | 1.36 | 1.13 | 6.05 | 15 |
+| 256 × 256 | off | 256 | 802 | 3.14× | 1.25 | 2.04 | 6.41 | 8 |
+| 1024 × 1024 | off | 254 | 1086 | 4.27× | 0.920 | 2.03 | 8.69 | 8 |
+| 4096 × 4096 | off | 233 | 1068 | 4.58× | 0.936 | 1.86 | 8.54 | 8 |
+| 16384 × 16384 | off | 231 | 849 | 3.68× | 1.18 | 1.85 | 6.79 | 12 |
+| 256 × 256 | on | 237 | 644 | 2.71× | 1.55 | 1.96 | 5.31 | 11 |
+| 1024 × 1024 | on | 244 | 915 | 3.75× | 1.09 | 2.01 | 7.54 | 11 |
+| 4096 × 4096 | on | 227 | 942 | 4.15× | 1.06 | 1.87 | 7.77 | 11 |
+| 16384 × 16384 | on | 224 | 763 | 3.41× | 1.31 | 1.85 | 6.30 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 8%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 8%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (875 → 792 M cells/s), SIMD/scalar 6.22× → 5.69×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (706 → 733 M cells/s), SIMD/scalar 5.22× → 5.36×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (802 → 849 M cells/s), SIMD/scalar 3.14× → 3.68×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (644 → 763 M cells/s), SIMD/scalar 2.71× → 3.41×.
 
 ### MeanR5
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 91.4 | 553 | 6.05× | 1.81 | 0.73 | 4.43 | 8 |
-| 1024 × 1024 | off | 91.1 | 680 | 7.47× | 1.47 | 0.73 | 5.44 | 8 |
-| 4096 × 4096 | off | 90.5 | 632 | 6.99× | 1.58 | 0.72 | 5.06 | 8 |
-| 16384 × 16384 | off | 89.7 | 558 | 6.23× | 1.79 | 0.72 | 4.47 | 12 |
-| 256 × 256 | on | 88.0 | 481 | 5.46× | 2.08 | 0.73 | 3.97 | 11 |
-| 1024 × 1024 | on | 88.8 | 578 | 6.50× | 1.73 | 0.73 | 4.76 | 11 |
-| 4096 × 4096 | on | 88.9 | 560 | 6.30× | 1.79 | 0.73 | 4.62 | 11 |
-| 16384 × 16384 | on | 87.5 | 517 | 5.90× | 1.94 | 0.72 | 4.26 | 15 |
+| 256 × 256 | off | 175 | 583 | 3.33× | 1.72 | 1.40 | 4.66 | 8 |
+| 1024 × 1024 | off | 171 | 686 | 4.01× | 1.46 | 1.37 | 5.49 | 8 |
+| 4096 × 4096 | off | 158 | 663 | 4.21× | 1.51 | 1.26 | 5.30 | 8 |
+| 16384 × 16384 | off | 156 | 627 | 4.03× | 1.60 | 1.25 | 5.01 | 12 |
+| 256 × 256 | on | 163 | 464 | 2.85× | 2.16 | 1.34 | 3.83 | 11 |
+| 1024 × 1024 | on | 164 | 590 | 3.60× | 1.70 | 1.35 | 4.87 | 11 |
+| 4096 × 4096 | on | 151 | 588 | 3.90× | 1.70 | 1.25 | 4.85 | 11 |
+| 16384 × 16384 | on | 152 | 572 | 3.77× | 1.75 | 1.25 | 4.72 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (553 → 558 M cells/s), SIMD/scalar 6.05× → 6.23×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (481 → 517 M cells/s), SIMD/scalar 5.46× → 5.90×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (583 → 627 M cells/s), SIMD/scalar 3.33× → 4.03×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (464 → 572 M cells/s), SIMD/scalar 2.85× → 3.77×.
 
 ### MinR1
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 420 | 1122 | 2.67× | 0.891 | 3.36 | 8.98 | 8 |
-| 1024 × 1024 | off | 462 | 1369 | 2.96× | 0.731 | 3.69 | 10.9 | 8 |
-| 4096 × 4096 | off | 426 | 1218 | 2.86× | 0.821 | 3.41 | 9.74 | 8 |
-| 16384 × 16384 | off | 419 | 1215 | 2.90× | 0.823 | 3.35 | 9.72 | 10 |
-| 256 × 256 | on | 392 | 939 | 2.40× | 1.06 | 3.23 | 7.74 | 11 |
-| 1024 × 1024 | on | 440 | 1236 | 2.81× | 0.809 | 3.63 | 10.2 | 11 |
-| 4096 × 4096 | on | 418 | 1131 | 2.71× | 0.884 | 3.45 | 9.33 | 11 |
-| 16384 × 16384 | on | 410 | 1138 | 2.77× | 0.879 | 3.38 | 9.39 | 13 |
+| 256 × 256 | off | 451 | 1192 | 2.64× | 0.839 | 3.61 | 9.54 | 8 |
+| 1024 × 1024 | off | 487 | 1428 | 2.93× | 0.701 | 3.90 | 11.4 | 8 |
+| 4096 × 4096 | off | 446 | 1277 | 2.86× | 0.783 | 3.57 | 10.2 | 8 |
+| 16384 × 16384 | off | 439 | 1282 | 2.92× | 0.780 | 3.51 | 10.3 | 10 |
+| 256 × 256 | on | 419 | 995 | 2.38× | 1.00 | 3.46 | 8.21 | 11 |
+| 1024 × 1024 | on | 468 | 1297 | 2.77× | 0.771 | 3.86 | 10.7 | 11 |
+| 4096 × 4096 | on | 435 | 1195 | 2.75× | 0.837 | 3.59 | 9.86 | 11 |
+| 16384 × 16384 | on | 429 | 1204 | 2.81× | 0.830 | 3.54 | 9.94 | 13 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 2%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1122 → 1215 M cells/s), SIMD/scalar 2.67× → 2.90×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (939 → 1138 M cells/s), SIMD/scalar 2.40× → 2.77×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (1192 → 1282 M cells/s), SIMD/scalar 2.64× → 2.92×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (995 → 1204 M cells/s), SIMD/scalar 2.38× → 2.81×.
 
 ### MinR2
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 226 | 749 | 3.31× | 1.34 | 1.81 | 5.99 | 8 |
-| 1024 × 1024 | off | 239 | 852 | 3.57× | 1.17 | 1.91 | 6.82 | 8 |
-| 4096 × 4096 | off | 230 | 831 | 3.61× | 1.20 | 1.84 | 6.65 | 8 |
-| 16384 × 16384 | off | 228 | 830 | 3.64× | 1.21 | 1.82 | 6.64 | 12 |
-| 256 × 256 | on | 215 | 626 | 2.91× | 1.60 | 1.77 | 5.16 | 11 |
-| 1024 × 1024 | on | 232 | 765 | 3.30× | 1.31 | 1.92 | 6.31 | 11 |
-| 4096 × 4096 | on | 225 | 769 | 3.43× | 1.30 | 1.85 | 6.35 | 11 |
-| 16384 × 16384 | on | 225 | 769 | 3.42× | 1.30 | 1.85 | 6.35 | 15 |
+| 256 × 256 | off | 241 | 795 | 3.30× | 1.26 | 1.93 | 6.36 | 8 |
+| 1024 × 1024 | off | 252 | 898 | 3.57× | 1.11 | 2.01 | 7.18 | 8 |
+| 4096 × 4096 | off | 240 | 871 | 3.62× | 1.15 | 1.92 | 6.97 | 8 |
+| 16384 × 16384 | off | 239 | 857 | 3.59× | 1.17 | 1.91 | 6.86 | 12 |
+| 256 × 256 | on | 228 | 669 | 2.93× | 1.49 | 1.89 | 5.52 | 11 |
+| 1024 × 1024 | on | 244 | 805 | 3.30× | 1.24 | 2.01 | 6.64 | 11 |
+| 4096 × 4096 | on | 236 | 811 | 3.44× | 1.23 | 1.95 | 6.69 | 11 |
+| 16384 × 16384 | on | 234 | 799 | 3.42× | 1.25 | 1.93 | 6.59 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 7%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 4%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (749 → 830 M cells/s), SIMD/scalar 3.31× → 3.64×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (626 → 769 M cells/s), SIMD/scalar 2.91× → 3.42×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (795 → 857 M cells/s), SIMD/scalar 3.30× → 3.59×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (669 → 799 M cells/s), SIMD/scalar 2.93× → 3.42×.
 
 ### MinR3
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 156 | 552 | 3.55× | 1.81 | 1.24 | 4.42 | 8 |
-| 1024 × 1024 | off | 160 | 631 | 3.94× | 1.58 | 1.28 | 5.05 | 8 |
-| 4096 × 4096 | off | 159 | 614 | 3.86× | 1.63 | 1.27 | 4.91 | 8 |
-| 16384 × 16384 | off | 157 | 558 | 3.55× | 1.79 | 1.26 | 4.46 | 12 |
-| 256 × 256 | on | 150 | 474 | 3.15× | 2.11 | 1.24 | 3.91 | 11 |
-| 1024 × 1024 | on | 157 | 571 | 3.63× | 1.75 | 1.30 | 4.71 | 11 |
-| 4096 × 4096 | on | 155 | 569 | 3.67× | 1.76 | 1.28 | 4.69 | 11 |
-| 16384 × 16384 | on | 154 | 533 | 3.47× | 1.88 | 1.27 | 4.40 | 15 |
+| 256 × 256 | off | 166 | 583 | 3.52× | 1.72 | 1.33 | 4.66 | 8 |
+| 1024 × 1024 | off | 170 | 658 | 3.87× | 1.52 | 1.36 | 5.26 | 8 |
+| 4096 × 4096 | off | 166 | 647 | 3.91× | 1.55 | 1.32 | 5.17 | 8 |
+| 16384 × 16384 | off | 164 | 591 | 3.60× | 1.69 | 1.31 | 4.73 | 12 |
+| 256 × 256 | on | 158 | 496 | 3.13× | 2.02 | 1.30 | 4.09 | 11 |
+| 1024 × 1024 | on | 165 | 599 | 3.63× | 1.67 | 1.36 | 4.94 | 11 |
+| 4096 × 4096 | on | 162 | 601 | 3.71× | 1.67 | 1.34 | 4.96 | 11 |
+| 16384 × 16384 | on | 161 | 557 | 3.45× | 1.80 | 1.33 | 4.59 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 3%, worst 6%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 1%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (552 → 558 M cells/s), SIMD/scalar 3.55× → 3.55×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (474 → 533 M cells/s), SIMD/scalar 3.15× → 3.47×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (583 → 591 M cells/s), SIMD/scalar 3.52× → 3.60×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (496 → 557 M cells/s), SIMD/scalar 3.13× → 3.45×.
 
 ### MinR5
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 98.2 | 361 | 3.67× | 2.77 | 0.79 | 2.89 | 8 |
-| 1024 × 1024 | off | 98.5 | 406 | 4.12× | 2.46 | 0.79 | 3.25 | 8 |
-| 4096 × 4096 | off | 96.9 | 408 | 4.21× | 2.45 | 0.77 | 3.27 | 8 |
-| 16384 × 16384 | off | 96.6 | 379 | 3.92× | 2.64 | 0.77 | 3.03 | 12 |
-| 256 × 256 | on | 93.7 | 306 | 3.27× | 3.27 | 0.77 | 2.53 | 11 |
-| 1024 × 1024 | on | 96.3 | 366 | 3.79× | 2.74 | 0.79 | 3.02 | 11 |
-| 4096 × 4096 | on | 95.2 | 378 | 3.97× | 2.64 | 0.79 | 3.12 | 11 |
-| 16384 × 16384 | on | 95.1 | 351 | 3.69× | 2.85 | 0.78 | 2.89 | 15 |
+| 256 × 256 | off | 104 | 381 | 3.67× | 2.62 | 0.83 | 3.05 | 8 |
+| 1024 × 1024 | off | 104 | 426 | 4.11× | 2.35 | 0.83 | 3.40 | 8 |
+| 4096 × 4096 | off | 102 | 429 | 4.21× | 2.33 | 0.81 | 3.43 | 8 |
+| 16384 × 16384 | off | 101 | 398 | 3.94× | 2.51 | 0.81 | 3.18 | 12 |
+| 256 × 256 | on | 99.1 | 327 | 3.30× | 3.06 | 0.82 | 2.70 | 11 |
+| 1024 × 1024 | on | 101 | 386 | 3.83× | 2.59 | 0.83 | 3.18 | 11 |
+| 4096 × 4096 | on | 99.9 | 397 | 3.98× | 2.52 | 0.82 | 3.28 | 11 |
+| 16384 × 16384 | on | 99.2 | 372 | 3.75× | 2.69 | 0.82 | 3.07 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 5%.
+Run-to-run spread of M cells/s, (max − min)/median: median 0%, worst 1%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (361 → 379 M cells/s), SIMD/scalar 3.67× → 3.92×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (306 → 351 M cells/s), SIMD/scalar 3.27× → 3.69×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (381 → 398 M cells/s), SIMD/scalar 3.67× → 3.94×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (327 → 372 M cells/s), SIMD/scalar 3.30× → 3.75×.
 
 ### MaxR3
 
 | raster | mask | scalar M cells/s | SIMD M cells/s | SIMD/scalar | SIMD ns/cell | scalar GB/s | SIMD GB/s | allocs/op |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 256 × 256 | off | 105 | 459 | 4.36× | 2.18 | 0.84 | 3.67 | 8 |
-| 1024 × 1024 | off | 102 | 502 | 4.91× | 1.99 | 0.82 | 4.01 | 8 |
-| 4096 × 4096 | off | 102 | 500 | 4.90× | 2.00 | 0.82 | 4.00 | 8 |
-| 16384 × 16384 | off | 102 | 465 | 4.56× | 2.15 | 0.82 | 3.72 | 12 |
-| 256 × 256 | on | 102 | 402 | 3.96× | 2.49 | 0.84 | 3.32 | 11 |
-| 1024 × 1024 | on | 101 | 466 | 4.62× | 2.15 | 0.83 | 3.85 | 11 |
-| 4096 × 4096 | on | 101 | 468 | 4.62× | 2.13 | 0.84 | 3.87 | 11 |
-| 16384 × 16384 | on | 101 | 449 | 4.45× | 2.23 | 0.83 | 3.71 | 15 |
+| 256 × 256 | off | 110 | 495 | 4.51× | 2.02 | 0.88 | 3.96 | 8 |
+| 1024 × 1024 | off | 109 | 523 | 4.80× | 1.91 | 0.87 | 4.19 | 8 |
+| 4096 × 4096 | off | 105 | 518 | 4.93× | 1.93 | 0.84 | 4.14 | 8 |
+| 16384 × 16384 | off | 106 | 484 | 4.54× | 2.07 | 0.85 | 3.87 | 12 |
+| 256 × 256 | on | 106 | 430 | 4.07× | 2.32 | 0.87 | 3.55 | 11 |
+| 1024 × 1024 | on | 102 | 465 | 4.56× | 2.15 | 0.84 | 3.83 | 11 |
+| 4096 × 4096 | on | 106 | 488 | 4.62× | 2.05 | 0.87 | 4.03 | 11 |
+| 16384 × 16384 | on | 105 | 462 | 4.39× | 2.17 | 0.87 | 3.81 | 15 |
 
-Run-to-run spread of M cells/s, (max − min)/median: median 2%, worst 5%.
+Run-to-run spread of M cells/s, (max − min)/median: median 1%, worst 12%.
 
-- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (459 → 465 M cells/s), SIMD/scalar 4.36× → 4.56×.
-- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (402 → 449 M cells/s), SIMD/scalar 3.96× → 4.45×.
+- mask=off: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (495 → 484 M cells/s), SIMD/scalar 4.51× → 4.54×.
+- mask=on: compute-bound: SIMD throughput stays within 20% of 256²'s up to 16384² (430 → 462 M cells/s), SIMD/scalar 4.07× → 4.39×.
 <!-- stratabench output end -->
 
 ## arm64 (NEON)
