@@ -31,7 +31,7 @@ Decisions recorded elsewhere and summarized here:
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
 - [tools/herbie/RESULTS.md](tools/herbie/RESULTS.md): Herbie's rewrites of the kernel formulas, triaged (§39).
 
-Where things stand, as of 2026-09-23. Each section's own **Status** line is
+Where things stand, as of 2026-09-24. Each section's own **Status** line is
 the detailed record; this table only points at it.
 
 | Area | § | Status |
@@ -54,7 +54,7 @@ the detailed record; this table only points at it.
 | `Pipeline`, radius 0, internal | §52 | done |
 | `Pipeline`: radius > 0, several outputs, public `Kernel` | §52 | radius > 0 and several outputs done; public `Kernel` decided against for now |
 | Register-level operation fusion | §29 | done for left-deep chains, all three backends; Zen 2 run and generator open |
-| N-dimensional arrays | §10 | not started (v0.3) |
+| N-dimensional arrays: `Array[T]`, views, broadcasting, axis reductions | §10 | done; tiled and chunked execution, vector reductions and Zarr-shaped chunking open |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
@@ -230,9 +230,10 @@ type Float32Raster struct {
   `Validate` checks a hand-built raster without panicking.
 - **Other data types.** Storage may keep integer or float64 data, but
   source adapters convert it to `float32` plus a validity mask at the IO
-  boundary. A generic element type is deferred to the Array work (v0.3,
-  §10). At that point, decide whether `Float32Raster` becomes a 2D
-  specialization of `Array`.
+  boundary. **Decided in §10:** `Float32Raster` stays the concrete compute
+  type and does not become a specialization of `Array`; integer and
+  float64 grids are rank-2 `Array[T]`s, and `array.FromRaster` and
+  `array.ToRaster` convert between the two without a copy.
 
 Spatial metadata stays separate from the numbers, so kernels never see it:
 
@@ -256,24 +257,110 @@ type Dataset struct {
 ## 10. Multidimensional Arrays
 
 Environmental data is often not purely two-dimensional: `[time,y,x]`,
-`[level,time,y,x]`, `[scenario,time,y,x]`. A future core array may look
-like:
+`[level,time,y,x]`, `[scenario,time,y,x]`. Package `array` holds them:
 
 ```go
 type Array[T Number] struct {
     Data   []T
-    Shape  []int
-    Stride []int
+    Shape  []int // outermost first; every length positive
+    Stride []int // elements, per dimension, never negative
+
+    Valid       []uint64 // as Float32Raster's, nil = every element valid (§31)
+    ValidOffset int
 }
 ```
 
-This aligns with chunked storage such as Zarr. Arrays need the same
-validity bitmap as rasters (§31). `Stride` here is per dimension, while
-`Float32Raster.Stride` is the row stride in elements. The element-type
-decision made here also decides integer and float64 rasters (§9), which
-importing modules need for counts and labels (§7).
+Element (i0, …, iN-1) is `Data[Σ ik·Stride[k]]`. `Stride` here is per
+dimension, while `Float32Raster.Stride` is the row stride in elements.
+This aligns with chunked storage such as Zarr (§34).
 
-Status: not started (v0.3).
+**Decisions.**
+
+- **Element type.** `Number` is the fixed-width integers and both float
+  widths. `int` and `uint` are left out, since a stored array's width
+  does not depend on the platform. The element type is generic because
+  storage is: importing modules need integer labels and counts and
+  float64 model output (§7). The compute type stays float32. The SIMD
+  kernels, and every package that takes a raster, are unchanged.
+  Elementwise operations on `Array[float32]` call the same `internal/vec`
+  kernels as `algebra` for each contiguous run. Other types use scalar
+  loops. `Convert` moves data between types at the boundary.
+- **Rasters stay rasters.** `Float32Raster` does not become a 2-D
+  specialization of `Array` (§9). The two share the validity bit layout,
+  so `FromRaster` and `ToRaster` convert between them with no copy.
+  `ToRaster(stack.Select(0, t))` hands a time step to terrain, focal,
+  reduce or the engine. `ToRaster` needs unit steps along x and rows that
+  do not overlap; a transposed or broadcast view is copied first.
+- **Views.** `Slice`, `Window`, `Select`, `Transpose`, `Reshape`
+  (compact arrays only), `BroadcastTo` and `ExpandDims` share `Data` and
+  `Valid`, as raster windows do (§21). A view's `Data` starts at its first
+  element and `ValidOffset` moves with it, so the mask bits follow the
+  strides with no copy. Strides are never negative. A reversed axis would
+  need a `Data` that starts before the first element, and nothing yet
+  needs one. A stride of 0 repeats an element, which is how
+  `BroadcastTo` works. Such a view can be read but never written.
+- **Broadcasting** is numpy's. Shapes are aligned at their last axis, and
+  each input's length must equal dst's or be 1. `dst` fixes the shape,
+  and inputs are broadcast to it, so `BroadcastShape` is how a caller
+  sizes `dst`.
+- **Operands** follow `algebra` (§18). `dst` is written in place over
+  the same elements in the same layout, or shares no memory with an
+  input. The overlap test is conservative (spans), like
+  `internal/overlap`'s for different strides. A `dst` that repeats an
+  element fails a sufficient no-self-overlap test: sorted by stride,
+  each axis steps past the span of the smaller ones.
+- **Loops.** One run is one kernel call (§19). Length-1 dimensions are
+  dropped. Neighbouring dimensions merge wherever every operand steps
+  through them as one, so compact operands make a single run whatever
+  their rank. Elementwise loops visit dimensions in dst's memory order.
+- **Axis reductions** extend §49. `CountOver`, `SumOver`, `MeanOver`,
+  `MinOver` and `MaxOver` take any set of axes. `dst` has those axes
+  removed, or kept at length 1. No result depends on the layout of `src`
+  or on the order elements are visited. `internal/accum` keeps about
+  10 KB of bins per accumulator, which suits one sum over a raster but
+  not one accumulator per output element. So `SumOver` keeps Shewchuk's
+  non-overlapping partials (Python's `math.fsum`) and rounds once.
+  `MeanOver` divides exactly: it steps the rounded quotient to the
+  correctly rounded one, comparing the exact sum with `mid·n` on the
+  partials. Both are correctly rounded, so on float32 data they equal
+  `reduce.Sum` and `reduce.Stats`' `Mean` bit for bit
+  (`TestAgreesWithReduce`). Outputs are fed in blocks of 256, one slab of
+  `src` at a time, so a reduction over a leading axis reads memory in
+  runs.
+
+**Evidence.** The tests check every operation against a reference that
+reads by logical index with `At`. They draw random shapes, views
+(padded, windowed, transposed, rank 0), broadcasts, masks and element
+types, and use `math/big` for exact sums and means. Mutating the fsum
+tie-break, the mean correction, the dimension merge, the mask AND, NaN
+canonicalisation or the writability check turns them red. From outside,
+`acceptance/check_array.py` judges 34 cases on a masked [5, 23, 300]
+float32 stack and an int16 stack. Every case is exact. numpy broadcasts,
+and the sums are Python integers in units of 2⁻¹⁴⁹, divided once. The
+data include non-finite values, a signed-zero series and views. The
+checker catches all 11 of its injected defects, among them a mean from
+the rounded sum and a float64 running sum.
+
+**Measured** (`array/bench_test.go`, one run on the desktop, not a
+published quiet run): `Add` on a compact [16, 512, 512] float32 stack
+ran at 19–21 GB/s against `algebra.Add`'s 24 GB/s on the same cells.
+Broadcasting a [512, 512] layer cost nothing, and a transposed operand
+fell to the scalar loop at 5 GB/s. The reductions are scalar and
+generic: `SumOver` about 0.45 GB/s, `MeanOver` 0.3–0.47 GB/s, `MinOver`
+1.2 GB/s.
+
+**Open.**
+
+- Tiled and chunked forms. The operations run on the calling goroutine.
+  A chunked N-D source belongs with the Zarr adapter (v0.5).
+- Vector reductions. Min and Max over a leading axis could fold slabs
+  with `vec.Min`, and float32 sums could skip the partials while they
+  stay exact.
+- Negative strides; `Div` (integer division by zero panics in Go);
+  whole-array `Stats` in one call (today `reduce` over `ToRaster` of a
+  `Reshape`).
+
+Status: done for v0.3's list (§45), serial.
 
 ## 11. Point-Cloud Model
 
@@ -2306,6 +2393,18 @@ strata/
 │   ├── algebra.go
 │   └── tiled.go               tiled entry points and their kernels
 │
+├── array/                     implemented (§10)
+│   ├── doc.go
+│   ├── array.go               Array, Number, New, Wrap, accessors, Validate
+│   ├── view.go                Slice, Window, Select, Transpose, Reshape,
+│   │                           BroadcastTo, ExpandDims, BroadcastShape
+│   ├── raster.go              FromRaster, ToRaster
+│   ├── ops.go                 Add, Sub, Mul, Min, Max, Copy, Convert, Fill
+│   ├── reduce.go              CountOver, SumOver, MeanOver, MinOver, MaxOver
+│   ├── exact.go               exact sums and correctly rounded means
+│   ├── loop.go                runs over merged dimensions
+│   └── check.go               operand, overlap and broadcast checks
+│
 ├── reduce/                    implemented (STRATA-12, §49)
 │   ├── doc.go
 │   └── reduce.go              Count, MinMax, their engine entry
@@ -2414,7 +2513,7 @@ strata/
 └── docs/adr/
 ```
 
-Later: `array/` (v0.3) and `pointcloud/` (v0.7), and more format
+Later: `pointcloud/` (v0.7), and more format
 adapters (§34). Domain packages other than `terrain` live in other modules (§7).
 
 ## 41. Explicit Non-Goals for v0.1
@@ -2610,14 +2709,15 @@ something to act on. `Normalize` was to write through `Rescale`, and
 does not: its endpoints need a subtraction and a division, not a
 multiply-add (§18).
 
-**v0.3: Array foundation**
+**v0.3: Array foundation** (§10)
 
 ```text
-N-dimensional arrays (generic element type decided here, §9)
-strides
-views
-axis reductions (§49 extended to N-D)
-broadcast-style operations
+N-dimensional arrays (generic element type decided here, §9)   done: array.Array[T]
+strides                                                         done
+views                                                           done
+axis reductions (§49 extended to N-D)                           done, serial and scalar
+broadcast-style operations                                      done
+tiled and chunked N-D execution                                 open
 ```
 
 **v0.4: Streaming and pipelines**

@@ -21,6 +21,8 @@ go run .                        # strata produces results into out/
 python check.py out             # numpy judges them
 python check.py out --png       # ... and writes pictures to out/png
 python sabotage.py out          # check the checker (see below)
+python check_array.py out       # N-dimensional arrays against numpy and exact integers
+python check_array.py out --sabotage   # ... which must catch every injected defect
 python3 check_resample.py out   # resampling against its definitions (no numpy needed)
 python3 check_resample.py out --sabotage   # ... which must fail on a half-cell shift
 python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's Python bindings)
@@ -71,6 +73,27 @@ the three curvatures also run with the quadratic fit (`FitRadius` 1 and
 | 13 | Every `Features` output (3×3 derivatives next to ruggedness at radius 1, 3 and 8, all in one call) is the standalone function's file bit for bit, Data and validity, in every form | A fused pass that gives every output the largest window's border or erosion, an output wired to the wrong operation. The standalone files are judged by checks 1–5 and 14 |
 | 14 | Ruggedness over a larger window against its definition in float64, taken with numpy's `sliding_window_view` rather than check 1's shifted sums, within derived bounds; roughness exactly | A misreading of the window that check 1's transcription could share: the centre counted, the wrong n, a shifted window |
 | 11 | `WeightedSlope` against the float64 Horn slope times the weight, and its validity against the DEM's mask eroded 3×3 AND the weight's mask not eroded; and that the case tells the two readings apart | A weight's NoData wiping out its neighbours (one erosion over every input, the engine's rule before per-input reach, DESIGN.md §52), a weight's NoData ignored, a weight read from the wrong cell |
+
+N-dimensional arrays are judged by `check_array.py` (DESIGN.md §10).
+`array.go` builds a masked [time, y, x] = [5, 23, 300] float32 stack. Its
+time steps span 13 orders of magnitude, and it holds a NaN, both
+infinities, whole NoData series and a series of zeros with one −0. An
+int16 stack sits near the type's limits. The two go through broadcasting
+`Sub`, `Mul`, `Max` and `Min` (a [T,1,1] weight, a [Y,X] layer, a
+transposed view against an expanded column, a slice into a window), int16
+`Add` that wraps, `Convert`, and `Sum`, `Mean`, `Min`, `Max` and `Count`
+over time, x, space, everything, and a sliced and transposed view: 34
+cases. Every check is exact. numpy does the broadcasting and the IEEE
+arithmetic. Sums and means are Python integers in units of 2⁻¹⁴⁹, divided
+once, which Python rounds correctly, so no floating-point sum is involved.
+Go's `min(−0, +0) = −0` is set explicitly, because numpy does not promise
+it. `--sabotage` injects 11 plausible defects: a mean from the rounded sum,
+a float64 running sum, a min that reads NoData, weights broadcast along
+the wrong axis, a leaked NoData bit, one ulp, int16 saturation, +0 for a
+−0 minimum, and a transposed view read as compact. Each one must fail. A
+double-rounded mean and a float64 running sum are only visible where the
+data can tell them apart, over time, so those mutants run on the
+time-axis cases.
 
 Resampling is judged separately, by `check_resample.py`: a float64
 reference in plain Python (80×60 sources, so no numpy is needed) written
