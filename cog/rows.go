@@ -4,7 +4,6 @@ import (
 	"math"
 
 	"github.com/LukasSelin/strata/cog/internal/kern"
-	"github.com/LukasSelin/strata/raster"
 )
 
 // A block of one band is decoded a row at a time: the row's samples are
@@ -77,7 +76,7 @@ type validator struct {
 func newValidator(t nodataTest, n int) validator {
 	v := validator{t: t, all: true}
 	if t.mode != testNone {
-		v.valid = make([]uint64, raster.MaskWords(n))
+		v.valid = getValid(n)
 	}
 	return v
 }
@@ -96,7 +95,7 @@ func (v *validator) upto(vals []float32, n int) {
 }
 
 // finish works out the rest of vals, a last partial word, and returns the
-// validity bits, or nil if every cell is valid.
+// validity bits, or nil if every cell is valid, giving the buffer back.
 func (v *validator) finish(vals []float32) []uint64 {
 	v.upto(vals, len(vals))
 	if v.valid == nil {
@@ -108,6 +107,7 @@ func (v *validator) finish(vals []float32) []uint64 {
 		v.all = v.all && w == ^uint64(0)>>(64-uint(len(rest)))
 	}
 	if v.all {
+		putValid(v.valid)
 		return nil
 	}
 	return v.valid
