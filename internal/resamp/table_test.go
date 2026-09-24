@@ -223,3 +223,79 @@ func TestCoverageIsContiguous(t *testing.T) {
 		}
 	}
 }
+
+// TestWindowIsSlice: an axis built with an Offset is the window of the
+// full axis it names, entry for entry and weight for weight, including
+// the coverage at its ends. A mosaic relies on this to build each
+// source's tables over the output cells it reaches and still write the
+// bits a full-width Resample would.
+func TestWindowIsSlice(t *testing.T) {
+	rng := rand.New(rand.NewPCG(8, 9))
+	for range 400 {
+		srcN := 1 + rng.IntN(60)
+		n := 1 + rng.IntN(80)
+		srcRes := math.Pow(2, rng.Float64()*6-3)
+		if rng.IntN(2) == 0 {
+			srcRes = -srcRes
+		}
+		res := srcRes * math.Pow(2, rng.Float64()*6-3)
+		if rng.IntN(2) == 0 {
+			res = -res
+		}
+		origin := rng.Float64()*40 - 20
+		off := rng.IntN(n)
+		wn := 1 + rng.IntN(n-off)
+		for _, m := range methods {
+			full := NewAxis(m, Spec{N: n, Origin: origin, Res: res, SrcN: srcN, SrcOrigin: 3, SrcRes: srcRes})
+			win := NewAxis(m, Spec{N: wn, Offset: off, Origin: origin, Res: res, SrcN: srcN, SrcOrigin: 3, SrcRes: srcRes})
+			for c := range wn {
+				g := off + c
+				if (g >= full.Lo && g < full.Hi) != (c >= win.Lo && c < win.Hi) {
+					t.Fatalf("%v offset %d: cell %d coverage differs from the full axis's", m, off, c)
+				}
+				if full.First[g] != win.First[c] || full.Taps[g] != win.Taps[c] || full.Centre[g] != win.Centre[c] ||
+					full.Clipped[g] != win.Clipped[c] || full.Exact[g] != win.Exact[c] ||
+					full.WinFirst[g] != win.WinFirst[c] || full.WinN[g] != win.WinN[c] {
+					t.Fatalf("%v offset %d: cell %d entries differ from the full axis's", m, off, c)
+				}
+				for k := range int(win.Taps[c]) {
+					if math.Float32bits(full.W[int(full.Off[g])+k]) != math.Float32bits(win.W[int(win.Off[c])+k]) {
+						t.Fatalf("%v offset %d: cell %d tap %d weight differs", m, off, c, k)
+					}
+				}
+			}
+			if full.Widened != win.Widened {
+				t.Fatalf("%v offset %d: widening differs", m, off)
+			}
+		}
+	}
+}
+
+// TestReachHoldsCoverage: every cell the full axis covers lies in Reach,
+// over random axes, sources off either end of the output and sources
+// whose cells are far larger or smaller than the output's.
+func TestReachHoldsCoverage(t *testing.T) {
+	rng := rand.New(rand.NewPCG(10, 11))
+	for range 2000 {
+		srcN := 1 + rng.IntN(40)
+		n := 1 + rng.IntN(120)
+		res := math.Pow(10, rng.Float64()*4-2)
+		if rng.IntN(2) == 0 {
+			res = -res
+		}
+		srcRes := res * math.Pow(10, rng.Float64()*8-4)
+		if rng.IntN(2) == 0 {
+			srcRes = -srcRes
+		}
+		origin := rng.Float64()*200 - 100
+		srcOrigin := origin + (rng.Float64()*1.4-0.2)*float64(n)*res
+		sp := Spec{N: n, Origin: origin, Res: res, SrcN: srcN, SrcOrigin: srcOrigin, SrcRes: srcRes}
+		lo, hi := Reach(sp)
+		for _, m := range methods {
+			a := NewAxis(m, sp)
+			if a.Lo < a.Hi && (a.Lo < lo || a.Hi > hi) {
+				t.Fatalf("%v %+v: covered [%d, %d) outside reach [%d, %d)", m, sp, a.Lo, a.Hi, lo, hi)
+			}
+		}
+	}
+}

@@ -59,7 +59,7 @@ the detailed record; this table only points at it.
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
-| `resample`: same-CRS grid resampling, Nearest to Average | §54 | done; Mode and mosaics open |
+| `resample`: same-CRS grid resampling, Nearest to Average; mosaics | §54 | done: resampling and mosaics, both against gdalwarp, and both nodes of `graph` (§55); Mode and alignment helpers open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
 
@@ -2060,9 +2060,10 @@ format adapter), not part of execution.
    `engine.RasterSource`s, never grids (§9), so for them the contract
    is the caller's to keep. They require equal dimensions, not equal grids.
 
-Today `resample` is the one operation that takes grids, and it checks
-(§54). Mosaics, alignment helpers (v0.8) and point rasterization (v0.7)
-will take grids too, and must check the same way.
+Today `resample`'s Resample and Mosaic are the operations that take
+grids, and they check (§54): a mosaic checks every source against dst
+and against each other. Alignment helpers (v0.8) and point
+rasterization (v0.7) will take grids too, and must check the same way.
 
 ### If transformation is ever needed
 
@@ -2729,7 +2730,7 @@ workspace reuse
 pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
                             radius > 0 and several outputs remain
 deciding whether to publish Kernel (§22, §52)
-workflow graph and planner  done: package graph, over strata's own operations, grids and Resample as a grid change (§55)
+workflow graph and planner  done: package graph, over strata's own operations, grids, and Resample and Mosaic as grid changes (§55)
 ```
 
 **Later milestones**
@@ -4292,8 +4293,11 @@ Status: done for grids in one CRS: `resample.Resample`, `ResampleTiled` and
 `ResampleChunked` with Nearest, Bilinear, Cubic, Lanczos and Average,
 scalar-canonical passes with AVX2 and NEON kernels that match them bit for
 bit, checked against a float64 reference and against gdalwarp
-(`acceptance/`), measured in `benchmarks/resample`. Open: Mode, mosaics
-and alignment helpers, and the AVX2 numbers from the Zen 2 machine.
+(`acceptance/`), measured in `benchmarks/resample`. Mosaics of sources at
+mixed resolutions and origins (`Mosaic`, `MosaicTiled`, `MosaicChunked`,
+below) are done and checked the same way, and both are nodes of `graph`
+(§55). Open: Mode, alignment helpers, a mosaic benchmark, and the AVX2
+numbers from the Zen 2 machine.
 Reprojection is not planned; it is the caller's preprocessing (§36).
 
 ### Scope
@@ -4385,9 +4389,18 @@ inverted for the weights. What it does, and strata now does:
   overlaps no source cell).
 - Cubic has two modes. With neither axis stretched it is gdalwarp's
   four-sample formula, which falls back to unstretched Bilinear for a
-  cell whose 4×4 taps of non-zero weight lose one to the edge or, with a
-  mask, include an invalid cell. With either axis stretched it is the
-  general kernel, which renormalises. strata reproduces both: the fallback
+  cell whose 4×4 window reaches past the edge or, with a mask, includes
+  an invalid cell. The window is the cells from floor(u − 0.5) − 1 on
+  each axis, zero weights included: on a source centre, where the
+  neighbours' weights are zero, it still runs from the cell before to
+  two cells after. Until the mosaic cases put output centres on source
+  centres, strata and both references read the taps of non-zero weight
+  instead, which differs exactly there; gdalwarp settled it, the window
+  rule matching it on every probed layout (edge rows, an invalid column,
+  scattered NoData) where the taps rule was off by 42 to 196 cells. The
+  window is not symmetric, so under mirroring these cells may fall back
+  on one side only. With either axis stretched it is the general kernel,
+  which renormalises. strata reproduces both: the fallback
   cells are few (a band two to three cells wide along edges and NoData)
   and are recomputed by a scalar bilinear after the passes.
 
@@ -4462,6 +4475,15 @@ since they were measured:
 - a source one cell wide or high, where gdalwarp's Bilinear degrades to
   Nearest;
 - Average on output cells that extend past the source's edge, by about 1%;
+- Average on output cells that only touch a source's edge, with no area
+  in common: when the source's resolution differs from the output's,
+  gdalwarp makes the source valid there with its edge cell's value
+  (GDAL 3.12.2 to 3.14.0dev). In a mosaic a later source then wins a
+  cell lying wholly inside an earlier one: two 2 m tiles abutting at
+  x = 8, onto 1 m cells, give the cell [7, 8) the second tile's value.
+  Average is defined by area of overlap, which is zero there, so strata
+  leaves the source out; `acceptance/gdalwarp_mosaic.py` excludes and
+  counts the cells touching or straddling a source's edge;
 - Bilinear and Cubic downsampling by less than 2, from GDAL 3.13.0: the
   same commit keeps the four-sample, unwidened formula until an axis's
   scale 1/s falls to 0.5, where it had widened below 0.95, to blur less.
@@ -4491,6 +4513,83 @@ since they were measured:
 
 Values otherwise agree with gdalwarp to within float32 rounding, and
 validity exactly (`acceptance/gdalwarp_resample.py`).
+
+### Mosaics
+
+`Mosaic`, `MosaicTiled` and `MosaicChunked` lay several sources onto one
+grid. Sources may differ in resolution, origin and orientation, and may
+overlap, leave gaps, or lie off the grid; they may not differ in CRS
+(§36).
+
+**The rule is gdalwarp's with several inputs:** each source is resampled
+as `Resample` would, and a cell takes its value from the last source
+whose resampling makes it valid, invalid if none does. This was probed
+before it was built, not assumed, because gdalwarp's kernel has a
+density blend for partly valid cells that could have applied at seams.
+Check (a) of `acceptance/gdalwarp_mosaic.py` settles it for every
+method: gdalwarp given all four sources equals, bit for bit on all 2700
+cells, gdalwarp given each alone and overlaid last-valid-wins. There is
+no blending: a cell renormalised over part of a later source's taps
+replaces the earlier value outright, and a NoData hole in a later source
+shows the earlier ones through it.
+
+So the reference is the separate calls, as it is elsewhere in strata:
+`TestMosaicIsOverlaidResamples` requires the bits of `Resample` of each
+source overlaid in order, Data and validity, in every form, tiling and
+worker count.
+
+**Tables cost the footprint, not the grid.** A `resamp.Axis` is sized to
+its output axis, so a thousand tiles onto a country-wide grid would build
+a thousand full-width tables. `resamp.Spec.Offset` builds an axis over a
+window of a longer one, computing each cell from its index on the long
+axis, so its entries are the full axis's bit for bit
+(`TestWindowIsSlice`). `resamp.Reach` bounds the cells a source can
+cover, padded for rounding and snapping (`TestReachHoldsCoverage`), and
+each source's plan covers only that window.
+
+**A hidden source is neither computed nor read.** A tile visits the
+sources from the last down and stops once every cell is valid, and
+MosaicChunked reads a source's window for a tile only when it gets
+there, so a source wholly under an unmasked later one is never read
+(`TestMosaicChunkedSkipsHidden`). The order of the sources therefore
+matters for cost as well as values: the source that covers most goes
+last.
+
+**Validity.** dst needs a mask unless no source has one and the sources
+together cover every cell, which a sweep over their covered rectangles
+decides before anything runs. Cells no source covers get NaN and a
+cleared bit.
+
+**Evidence** (`acceptance/`): four sources onto a 60×45 grid at 10 m:
+
+- 10 m, offset by 0.3 of a cell;
+- 20 m, through the noisy surface's NoData stripe;
+- 4 m, through its NoData disc;
+- 10 m south-up, offset by half a cell.
+
+They overlap one another and run off the grid's edges. Each method is
+judged four ways: gdalwarp's own rule (a), strata against gdalwarp (b),
+strata against the float64 reference overlaid the same way (c), and
+plain, Tiled and Chunked bit for bit (d). On GDAL 3.12.2, 3.13.0 and
+3.14.0dev all 25 checks pass. Excluded from (b) and counted:
+
+- Average cells touching or straddling a source's edge (above);
+- before 3.13.0, the cells of the 4 m source, whose stretch gdalwarp took
+  from pixel counts.
+
+`--sabotage` overlays first-valid-on-top instead, and every
+order-dependent check fails. The mosaic cases are also what exposed the
+four-sample window rule above: 40 Cubic cells of the 20 m source, whose
+first row's centres lie on output centres, differed from gdalwarp until
+it was fixed.
+
+Open:
+
+- a mosaic benchmark: many sources onto a large grid, against `gdalwarp`
+  with the same inputs;
+- alignment helpers that derive a common grid from the sources.
+
+`graph.Mosaic` is the node (§55, "Grids").
 
 ### Execution
 
@@ -4584,8 +4683,9 @@ asked for.
   output. The exact accumulator (§49) makes that free of any ordering
   question: tiles fold in whatever order the workers write them, and the
   summary is the one `reduce.Stats` gives over the whole raster.
-- **Grid changes** (resample; later mosaics and reprojection) end one
-  fused stage and start the next: see "Grids" below. Resample is built.
+- **Grid changes** (resample and mosaics; later reprojection) end one
+  fused stage and start the next: see "Grids" below. Resample and Mosaic
+  are built.
 - **Global steps** (Normalize today; later hydrology, distance
   transforms, viewsheds) force a pass boundary. Their input is either
   computed again in the next pass or stored by its own pass and read
@@ -4823,11 +4923,42 @@ Four deliberate breakages each fail the suite:
 The last was not caught until an unmasked second date was added: with
 a masked one, the mask came from the source anyway.
 
-**Open:** a resampled value is stored even when its only reader is one
-per-cell stage that could read the resampling's tiles directly. Fusing
-the grid change into the first pass on its grid is the next step for
-mosaics (a mosaic as a source that composites in `ReadWindow`), and
-would remove that write and read.
+**Mosaics** are the second grid change. `graph.Mosaic(srcs, grid, opts)`
+is `resample.Mosaic`, sources laid over one another in order onto one
+grid, as a pass of its own that reads every source stored:
+`MosaicTiled` in memory, `MosaicChunked` over sources and sinks, which
+reads a source for a tile only while some of the tile's cells are still
+invalid. Each source must lie on a declared grid, and the sources may
+lie on different grids or on one. Whether the sources leave a gap is
+decided when the node is built (`resample.MosaicCovers`), so a mosaic
+that covers its grid from unmasked sources can feed outputs without
+masks, and one with a gap makes the chain after it masked.
+`graph/mosaic_test.go` holds to the separate calls:
+
+- three tiles at 10 m, 20 m and 7 m, masked and not, under four methods,
+  with a terrain stack and a summary on the mosaic;
+- a mosaic of computed values, which an earlier pass stores, differenced
+  with an input on its grid and normalised under two boundary choices;
+- covering and gapped tiles;
+- the panics.
+
+Reversing the sources in memory, dropping all but the first in a
+chunked run, and forgetting a gap each fail it.
+
+**A chunked-run fix the mosaic tests found.** Since #60, RunChunked
+decided a value's validity from its sources alone. An unmasked input
+written to a masked output therefore got no validity: a stencil's border
+cells came out valid. Run writes into the output raster and gets them
+right. RunChunked now gives a value validity when a source has it or
+when its first output keeps it, and stores the value that way, which is
+what Run does (`TestMaskedOutputsFromUnmaskedInputs`, on a plain
+one-grid graph).
+
+**Open:** a grid change's value is stored even when its only reader is
+one per-cell stage that could read its tiles directly. Fusing the grid
+change into the first pass on its grid would remove that write and
+read: for a mosaic, a source that composites in `ReadWindow`. It wants a
+workflow benchmark to show the write is worth removing.
 
 ### Testing
 
@@ -4884,7 +5015,7 @@ gdalsuite workflow benchmark against GDAL from a COG, as #59 did for
   - statistics: `reduce.Stats`.
 
   Division, `where` and morphology are roadmap items. Of the grid
-  changes, Resample is built; mosaics and reprojection are not.
+  changes, Resample and Mosaic are built; reprojection is not.
 - **Scratch kernels are passes of their own,** and store their input.
   Lending a stage its own scratch (§52) would let them fuse, and is the
   change a focal-heavy workflow benchmark would ask for.
@@ -4921,7 +5052,8 @@ morphology, local maxima, multi-scale focal (TPI at       open (neighbourhood
 lending pipeline stages scratch, so focal fuses           open
 grids on values, Resample as a grid change between       done
   fused passes
-mosaics as a grid change (resample.Mosaic)                open
+mosaics as a grid change (graph.Mosaic)                   done
+fusing a grid change into the first pass on its grid      open
 reprojection, as a grid change between fused stages       open
 hydrology, distance, per-cell reductions across files     open (new pass kinds)
 batch orchestration: one plan over many files, keeping    open

@@ -205,7 +205,7 @@ func chunk(p *resamp.Plan, ws *workspace, dst raster.Float32Raster, x0, y0 int, 
 		// float32, so the vertical pass with unit weights sums them.
 		csum := ws.csum[:cw]
 		resamp.VRow(csum, ws.cnt[ty*cw:], cw, ws.ones[:ny])
-		if p.HalfValid {
+		if p.Window {
 			// The valid cells of each window, summed like the tap counts.
 			resamp.VRow(ws.wsum[:cw], ws.wcnt[(int(p.Y.WinFirst[y])-fy0)*cw:], cw, ws.ones[:p.Y.WinN[y]])
 		}
@@ -225,7 +225,9 @@ func chunk(p *resamp.Plan, ws *workspace, dst raster.Float32Raster, x0, y0 int, 
 			}
 			full := int(csum[i]) == int(p.X.Taps[c])*ny
 			switch {
-			case p.Cubic4 && (!full || p.X.Clipped[c] || p.Y.Clipped[y]):
+			// The four-sample window holds the taps, so a cell whose window
+			// is valid throughout has every tap valid too.
+			case p.Cubic4 && (p.X.Clipped[c] || p.Y.Clipped[y] || int(ws.wsum[i]) != int(p.X.WinN[c])*int(p.Y.WinN[y])):
 				out[i] = fallback(p, src, c, y, true)
 			case !full:
 				out[i] = ws.nm[i] / ws.d[i]
@@ -246,7 +248,7 @@ func planes(p *resamp.Plan, ws *workspace, src source, fx0, fy0, fpW, fpH, cx0, 
 	ws.xm = grow(ws.xm, fpW*fpH)
 	ws.xf = grow(ws.xf, fpW*fpH)
 	ws.cnt = grow(ws.cnt, fpH*cw)
-	if p.HalfValid {
+	if p.Window {
 		ws.wcnt = grow(ws.wcnt, fpH*cw)
 	}
 	ws.prefix = grow(ws.prefix, fpW+1)
@@ -277,7 +279,7 @@ func planes(p *resamp.Plan, ws *workspace, src source, fx0, fy0, fpW, fpH, cx0, 
 			f := int(p.X.First[c]) - fx0
 			cnt[c-cx0] = float32(prefix[f+int(p.X.Taps[c])] - prefix[f])
 		}
-		if p.HalfValid {
+		if p.Window {
 			wcnt := ws.wcnt[j*cw : (j+1)*cw]
 			for c := cx0; c < cx1; c++ {
 				f := int(p.X.WinFirst[c]) - fx0

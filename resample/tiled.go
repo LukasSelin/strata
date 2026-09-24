@@ -96,11 +96,11 @@ func runChunked(ctx context.Context, p plan, dst engine.RasterSink, src engine.R
 	// so the widest and tallest are found one axis at a time.
 	fpW, fpH := 0, 0
 	for i := range tilesX {
-		f, e := pl.X.Footprint(i*tw, min((i+1)*tw, w), pl.HalfValid)
+		f, e := pl.X.Footprint(i*tw, min((i+1)*tw, w), pl.Window)
 		fpW = max(fpW, e-f)
 	}
 	for i := range tilesY {
-		f, e := pl.Y.Footprint(i*th, min((i+1)*th, h), pl.HalfValid)
+		f, e := pl.Y.Footprint(i*th, min((i+1)*th, h), pl.Window)
 		fpH = max(fpH, e-f)
 	}
 	fpW, fpH = max(fpW, 1), max(fpH, 1)

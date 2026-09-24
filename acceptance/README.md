@@ -26,6 +26,8 @@ python check_array.py out --sabotage   # ... which must catch every injected def
 python3 check_resample.py out   # resampling against its definitions (no numpy needed)
 python3 check_resample.py out --sabotage   # ... which must fail on a half-cell shift
 python3 gdalwarp_resample.py out           # resampling against gdalwarp (GDAL's Python bindings)
+python3 gdalwarp_mosaic.py out             # mosaics against gdalwarp given the same sources
+python3 gdalwarp_mosaic.py out --sabotage  # ... which must fail with the sources in the wrong order
 ./gdalcheck.sh <some.tif>       # difference against gdaldem in Docker
 python gdalsabotage.py out-gdal # ... and check that comparison's checker
 ./cogcheck.sh [some.tif]        # the GeoTIFF/COG reader against GDAL's reading, in Docker
@@ -106,6 +108,28 @@ bit for bit; and by `gdalwarp_resample.py`, which warps the same sources
 with gdalwarp through GDAL's Python bindings and requires the same
 validity and values within twice that tolerance, excluding only the
 departures §54 records.
+
+Mosaics are judged by `gdalwarp_mosaic.py`. It warps four overlapping
+sources, at 10 m, 20 m, 4 m and 10 m south-up with NoData holes and gaps
+between them, onto one 10 m grid with gdalwarp, in order. For each
+method it checks:
+
+- (a) gdalwarp's own rule: all four sources at once equal each source
+  alone overlaid last-valid-wins, bit for bit. This is GDAL judged
+  against itself, the evidence for the rule strata implements;
+- (b) strata against gdalwarp: validity exactly, values within twice the
+  tolerance of the source that wins the cell;
+- (c) strata against `check_resample.py`'s reference overlaid the same
+  way;
+- (d) plain == tiled == chunked, bit for bit.
+
+`--sabotage` puts the first valid source on top instead, and every
+order-dependent check must fail. The Python bindings are not on the
+desktop; the GDAL images are:
+
+```bash
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/osgeo/gdal:ubuntu-small-3.13.0 python3 gdalwarp_mosaic.py out
+```
 
 The reference implementations are derived in `check.py`'s docstring from
 Horn's kernel as gdaldem documents it, from the definition of shaded

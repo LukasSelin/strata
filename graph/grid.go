@@ -51,12 +51,17 @@ func (n Node) Grid() (raster.Grid, bool) {
 	return n.g.grids[id], id != 0
 }
 
-// resampling is a Resample node's operation.
+// resampling is a grid change's operation: a Resample, or a Mosaic of
+// its sources in order.
 type resampling struct {
-	opts     resample.Options
-	src, dst raster.Grid
-	// uncovered reports that some cell of dst lies outside the source,
-	// so the result has invalid cells even from a source without them.
+	opts   resample.Options
+	mosaic bool
+	// srcs are the grids of the node's inputs, in order, and dst the grid
+	// it produces.
+	srcs []raster.Grid
+	dst  raster.Grid
+	// uncovered reports that some cell of dst lies outside every source,
+	// so the result has invalid cells even from sources without them.
 	uncovered bool
 }
 
@@ -92,13 +97,75 @@ func Resample(src Node, dst raster.Grid, opts resample.Options) Node {
 	if i, ok := g.cse[full]; ok {
 		return Node{g, g.nodes[i].first}
 	}
-	rs := &resampling{opts: opts, src: sg, dst: dst}
+	rs := &resampling{opts: opts, srcs: []raster.Grid{sg}, dst: dst}
 	x := resamp.NewAxis(resamp.Method(opts.Method), resamp.Spec{N: dst.Width, Origin: dst.OriginX, Res: dst.ResolutionX,
 		SrcN: sg.Width, SrcOrigin: sg.OriginX, SrcRes: sg.ResolutionX})
 	y := resamp.NewAxis(resamp.Method(opts.Method), resamp.Spec{N: dst.Height, Origin: dst.OriginY, Res: dst.ResolutionY,
 		SrcN: sg.Height, SrcOrigin: sg.OriginY, SrcRes: sg.ResolutionY})
 	rs.uncovered = x.Lo != 0 || x.Hi != dst.Width || y.Lo != 0 || y.Hi != dst.Height
 	g.nodes = append(g.nodes, node{kind: kindResample, label: "resample.Resample(" + key + ")", in: []int{src.v},
+		first: len(g.values), nout: 1, grid: id, rs: rs})
+	g.values = append(g.values, len(g.nodes)-1)
+	g.cse[full] = len(g.nodes) - 1
+	return Node{g, len(g.values) - 1}
+}
+
+// Mosaic is resample.Mosaic: srcs resampled onto grid dst and laid over
+// one another in order, each cell taking the last source that makes it
+// valid. It is a grid change like Resample: its value lies on dst, and
+// it runs as a pass of its own that reads every source stored. Each
+// source must lie on a declared grid (InputOn), and every grid must
+// match dst's CRS. The sources may lie on different grids, or on one.
+//
+// As in resample.MosaicChunked, a chunked run reads a source for a tile
+// only while some of the tile's cells are still invalid, so a source
+// hidden under later ones is not read there.
+func Mosaic(srcs []Node, dst raster.Grid, opts resample.Options) Node {
+	if len(srcs) == 0 {
+		panic("graph: resample.Mosaic of no sources")
+	}
+	if srcs[0].g == nil {
+		panic("graph: resample.Mosaic of a zero Node")
+	}
+	g := srcs[0].g
+	g.check("resample.Mosaic", srcs...)
+	checkGrid("resample.Mosaic's dst", dst)
+	if opts.Method > resample.Average {
+		panic(fmt.Sprintf("graph: resample.Mosaic with unknown %v", opts.Method))
+	}
+	grids := make([]raster.Grid, len(srcs))
+	in := make([]int, len(srcs))
+	keys := make([]string, len(srcs))
+	for i, s := range srcs {
+		sg, ok := s.Grid()
+		if !ok {
+			panic(fmt.Sprintf("graph: resample.Mosaic of a value on the undeclared grid (source %d); declare its input's grid with InputOn", i))
+		}
+		if !sg.CRS.Matches(dst.CRS) {
+			panic(fmt.Sprintf("graph: resample.Mosaic from CRS %s (source %d) to CRS %s; reprojection is not supported",
+				sg.CRS.Describe(), i, dst.CRS.Describe()))
+		}
+		grids[i], in[i], keys[i] = sg, s.v, fmt.Sprint(s.v)
+	}
+	// Every source's CRS must match every other's; resample.Mosaic checks
+	// that too, but here the mistake panics where the node is built.
+	for i := range grids {
+		for j := range i {
+			if !grids[i].CRS.Matches(grids[j].CRS) {
+				panic(fmt.Sprintf("graph: resample.Mosaic of source %d in CRS %s and source %d in CRS %s; reprojection is not supported",
+					j, grids[j].CRS.Describe(), i, grids[i].CRS.Describe()))
+			}
+		}
+	}
+	id := g.gridID(dst)
+	key := fmt.Sprintf("Method=%v", opts.Method)
+	full := fmt.Sprintf("resample.Mosaic|%s|%s|%v", key, gridKey(dst), in)
+	if i, ok := g.cse[full]; ok {
+		return Node{g, g.nodes[i].first}
+	}
+	rs := &resampling{opts: opts, mosaic: true, srcs: grids, dst: dst,
+		uncovered: !resample.MosaicCovers(dst, grids, opts)}
+	g.nodes = append(g.nodes, node{kind: kindResample, label: "resample.Mosaic(" + key + ")", in: in,
 		first: len(g.values), nout: 1, grid: id, rs: rs})
 	g.values = append(g.values, len(g.nodes)-1)
 	g.cse[full] = len(g.nodes) - 1

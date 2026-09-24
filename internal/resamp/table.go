@@ -74,8 +74,15 @@ func (m Method) String() string {
 
 // Spec is one axis of a resampling: n output cells of resolution Res from
 // Origin, over SrcN source cells of resolution SrcRes from SrcOrigin.
+//
+// Offset makes the axis a window of a longer one: its cell c is cell
+// Offset+c of the axis from Origin, computed from that index, so its
+// entries are the longer axis's bit for bit and the tables cost only the
+// window. A mosaic builds each source's tables over the part of the
+// output that source reaches this way.
 type Spec struct {
 	N           int
+	Offset      int
 	Origin, Res float64
 
 	SrcN              int
@@ -103,11 +110,13 @@ type Axis struct {
 	// validity does not depend on a centre cell.
 	Centre []int32
 	// Clipped reports that output cell c lost a tap of non-zero weight
-	// to the edge of the source.
+	// to the edge of the source; for an unwidened Cubic, that its
+	// four-sample window reaches past the edge (see Plan.Cubic4).
 	Clipped []bool
 	// WinFirst and WinN are the source cells the kernel reaches, zero
 	// weights included, clipped to the source: the cells gdalwarp's
-	// half-valid rule for a widened Lanczos counts (see Plan.HalfValid).
+	// half-valid rule for a widened Lanczos counts (see Plan.HalfValid),
+	// and for an unwidened Cubic its four-sample window.
 	WinFirst, WinN []int32
 
 	// Exact reports that output cell c's centre lies exactly on a source
@@ -205,7 +214,8 @@ func newAxis(m Method, sp Spec, noWiden bool) Axis {
 		// Products go through mul, so no compiler fuses them into a
 		// multiply-add and the tables, ties included, are the same bits on
 		// every architecture.
-		x := sp.Origin + mul(float64(c)+0.5, sp.Res)
+		g := sp.Offset + c
+		x := sp.Origin + mul(float64(g)+0.5, sp.Res)
 		u := inv0 + mul(x, inv1)
 		var first, taps int
 		switch m {
@@ -219,8 +229,8 @@ func newAxis(m Method, sp Spec, noWiden bool) Axis {
 			w64 = append(w64[:0], 1)
 		case Average:
 			// The output cell's edges in source pixel coordinates.
-			e0 := inv0 + mul(sp.Origin+mul(float64(c), sp.Res), inv1)
-			e1 := inv0 + mul(sp.Origin+mul(float64(c+1), sp.Res), inv1)
+			e0 := inv0 + mul(sp.Origin+mul(float64(g), sp.Res), inv1)
+			e1 := inv0 + mul(sp.Origin+mul(float64(g+1), sp.Res), inv1)
 			lo, hi := math.Min(e0, e1), math.Max(e0, e1)
 			if sl, sh := snap(lo, 0), snap(hi, 0); sh > sl {
 				lo, hi = sl, sh
@@ -250,6 +260,18 @@ func newAxis(m Method, sp Spec, noWiden bool) Axis {
 			a.Exact[c] = us-0.5 == math.Floor(us)
 			first, taps, w64, a.Clipped[c], win = kernelTaps(kernel, support, s, us, sp.SrcN, w64[:0])
 			a.WinFirst[c], a.WinN[c] = win.first, win.inside
+			if m == Cubic && s == 1 {
+				// gdalwarp's four-sample cubic reads the four cells from
+				// floor(u - 0.5) - 1, zero weights included, and falls back
+				// to bilinear when one lies outside the source or, with a
+				// mask, is invalid. That window differs from the taps only
+				// where u is on a cell centre, whose neighbours have weight
+				// zero (measured, DESIGN.md §54).
+				j := math.Floor(u - 0.5)
+				lo, hi := math.Max(j-1, 0), math.Min(j+3, float64(sp.SrcN))
+				a.Clipped[c] = j-1 < 0 || j+2 >= float64(sp.SrcN)
+				a.WinFirst[c], a.WinN[c] = int32(lo), int32(hi-lo) // #nosec G115 -- 0 <= lo < hi <= SrcN < 2³¹
+			}
 		}
 		if a.Lo < 0 {
 			a.Lo = c
@@ -275,6 +297,9 @@ func checkSpec(sp Spec) {
 	if sp.N <= 0 || sp.SrcN <= 0 || sp.N > math.MaxInt32 || sp.SrcN > math.MaxInt32 {
 		panic(fmt.Sprintf("resamp: axis sizes must be in [1, 2³¹), got %d from %d", sp.N, sp.SrcN))
 	}
+	if sp.Offset < 0 || sp.Offset > math.MaxInt32-sp.N {
+		panic(fmt.Sprintf("resamp: axis offset %d outside [0, 2³¹ - %d]", sp.Offset, sp.N))
+	}
 	for _, v := range []float64{sp.Origin, sp.Res, sp.SrcOrigin, sp.SrcRes} {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			panic(fmt.Sprintf("resamp: axis %+v is not finite", sp))
@@ -291,6 +316,29 @@ func checkSpec(sp Spec) {
 // would give an identity grid of resolution 0.3 a second tap, and moves
 // no weight by more than 1e-9.
 const snapTolerance = 1e-9
+
+// Reach returns the output cells [lo, hi) of the axis sp.Origin, sp.Res
+// with sp.N cells (sp.Offset is ignored) that can be covered by the
+// source: a range holding every cell whose centre lies in the source or
+// that overlaps it, with room for the rounding of the coordinates and for
+// snapping, which moves an edge by up to snapTolerance source cells. It is
+// (0, 0) when no cell can be. A window of the axis built over [lo, hi)
+// with Offset lo therefore covers exactly the cells the full axis covers.
+func Reach(sp Spec) (lo, hi int) {
+	checkSpec(Spec{N: sp.N, Origin: sp.Origin, Res: sp.Res, SrcN: sp.SrcN, SrcOrigin: sp.SrcOrigin, SrcRes: sp.SrcRes})
+	a := (sp.SrcOrigin - sp.Origin) / sp.Res
+	b := (sp.SrcOrigin + float64(sp.SrcN)*sp.SrcRes - sp.Origin) / sp.Res
+	if a > b {
+		a, b = b, a
+	}
+	pad := 2 + math.Ceil(snapTolerance*math.Abs(sp.SrcRes/sp.Res))
+	flo := math.Max(math.Floor(a)-pad, 0)
+	fhi := math.Min(math.Ceil(b)+pad, float64(sp.N))
+	if !(flo < fhi) {
+		return 0, 0
+	}
+	return int(flo), int(fhi)
+}
 
 // snap returns v moved onto the nearest k+frac if it is within
 // snapTolerance of it. Weights use the snapped coordinate; the centre
@@ -447,10 +495,11 @@ type Plan struct {
 	Method Method
 	X, Y   Axis
 	// Cubic4 is gdalwarp's four-sample cubic, used when neither axis
-	// widens: an output cell whose 4×4 taps lose one to the source edge
-	// (Clipped) or, with a mask, include an invalid cell takes bilinear
-	// instead, renormalised over its valid cells. BX and BY are the
-	// bilinear tables for those cells.
+	// widens: an output cell whose 4×4 window (WinFirst, WinN: the cells
+	// from floor(u - 0.5) - 1, zero weights included) reaches past the
+	// source edge (Clipped) or, with a mask, includes an invalid cell
+	// takes bilinear instead, renormalised over its valid cells. BX and
+	// BY are the bilinear tables for those cells.
 	Cubic4 bool
 	BX, BY Axis
 	// ClippedX lists the output columns X.Clipped marks, so a band visits
@@ -463,6 +512,10 @@ type Plan struct {
 	// cell. Cells outside the source do not count (measured, DESIGN.md
 	// §54).
 	HalfValid bool
+	// Window reports that a band counts the valid cells of each cell's
+	// window, and so reads the windows as well as the taps: for
+	// HalfValid and for Cubic4.
+	Window bool
 }
 
 // NewPlan builds the plan of a resampling from its two axes.
@@ -482,6 +535,7 @@ func NewPlan(m Method, x, y Spec) *Plan {
 		}
 	}
 	p.HalfValid = m == Lanczos
+	p.Window = p.HalfValid || p.Cubic4
 	return p
 }
 
@@ -492,7 +546,7 @@ func (p *Plan) Covered(c, r int) bool {
 
 // Footprint returns the source range [first, end) that output indices
 // [lo, hi) of a read, or (0, 0) if none of them is covered. With win, it
-// also covers the cells the half-valid rule counts.
+// also covers their windows (WinFirst, WinN).
 func (a *Axis) Footprint(lo, hi int, win bool) (first, end int) {
 	lo, hi = max(lo, a.Lo), min(hi, a.Hi)
 	if lo >= hi {
@@ -515,8 +569,8 @@ func (a *Axis) Footprint(lo, hi int, win bool) (first, end int) {
 // Footprint returns the source window [fx0, fx1) × [fy0, fy1) that output
 // cells [x0, x1) × [y0, y1) read, empty if none of them is covered.
 func (p *Plan) Footprint(x0, y0, x1, y1 int) (fx0, fy0, fx1, fy1 int) {
-	fx0, fx1 = p.X.Footprint(x0, x1, p.HalfValid)
-	fy0, fy1 = p.Y.Footprint(y0, y1, p.HalfValid)
+	fx0, fx1 = p.X.Footprint(x0, x1, p.Window)
+	fy0, fy1 = p.Y.Footprint(y0, y1, p.Window)
 	if fx0 >= fx1 || fy0 >= fy1 {
 		return 0, 0, 0, 0
 	}
