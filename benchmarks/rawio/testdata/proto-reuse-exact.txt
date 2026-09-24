@@ -1,0 +1,4 @@
+raw tile=256: size 507510784 vs 507510784; identical
+raw tile=64: size 507510784 vs 507510784; identical
+cog tile=256: size 507510784 vs 507510784; identical
+cog tile=64: size 507510784 vs 507510784; identical

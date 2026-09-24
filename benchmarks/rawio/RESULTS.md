@@ -250,6 +250,77 @@ The engine documents that a chunked call with one worker keeps up to two
 cores busy. The overlap cannot be forced from inside the library without
 changing how Go schedules.
 
+## Prototypes: reusing the output, and smaller tiles
+
+These are two ways toward the targets, measured against the build above
+(`pr`). They ran through the same interleaved loop, 7 rounds, in-process
+ms, with variants given as `name:binary:flags`.
+
+- **`reuse`** uses `engine.ReuseRawFile` (stratasuite `-reuse`). It opens
+  an existing output without truncating it, then sets its size, so the
+  pages and blocks of the last run's output are overwritten instead of
+  freed and allocated again.
+- **`t128`, `t64`** use tiles of 128 or 64 rows instead of 256. Smaller
+  tiles mean smaller buffers to fault in and tear down: 12 workers hold
+  about 420 MB at 256 rows, and a quarter of that at 64.
+
+| disk | input | workers | pr | t128 | t64 | reuse | reuse, t64 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| tmpfs | raw | 1 | 738 | 710 (−4%) | 708 (−4%) | 615 (−17%) | **565 (−24%)** |
+| tmpfs | raw | 12 | 288 | 281 (−2%) | 278 (−3%) | 211 (−27%) | **175 (−39%)** |
+| tmpfs | COG | 1 | 1459 | 1464 (0%) | 1433 (−2%) | 1328 (−9%) | **1213 (−17%)** |
+| tmpfs | COG | 12 | 403 | 501 (+25%) | 625 (+55%) | **347 (−14%)** | 545 (+35%) |
+| ext4 | raw | 1 | 717 | 629 (−12%) | 596 (−17%) | 558 (−22%) | **514 (−28%)** |
+| ext4 | raw | 12 | 288 | 356 (+24%) | 369 (+28%) | 239 (−17%) | **203 (−30%)** |
+| ext4 | COG | 1 | 1400 | 1282 (−8%) | 1281 (−9%) | 1217 (−13%) | **1177 (−16%)** |
+| ext4 | COG | 12 | 372 | 503 (+35%) | 647 (+74%) | **345 (−7%)** | 550 (+48%) |
+| NTFS | raw | 1 | 779 | 747 (−4%) | 737 (−5%) | 708 (−9%) | **689 (−12%)** |
+| NTFS | raw | 12 | 277 | 261 (−6%) | 247 (−11%) | 266 (−4%, ±184%) | **233 (−16%, ±181%)** |
+| NTFS | COG | 1 | 1338 | 1328 (−1%) | 1327 (−1%) | 1286 (−4%) | **1266 (−5%)** |
+| NTFS | COG | 12 | **381** | 488 (+28%) | 593 (+55%) | 385 (+1%) | 578 (+52%) |
+
+Raw data: [`testdata/proto-reuse-tile-linux.txt`](testdata/proto-reuse-tile-linux.txt)
+and [`testdata/proto-reuse-tile-windows.txt`](testdata/proto-reuse-tile-windows.txt).
+
+What the table shows:
+
+- **Reusing the output removes the free-and-reallocate cost.** On
+  tmpfs the open phase drops from 82 ms to 0 and the operation from 183
+  to 157 ms. On ext4 the open phase drops by about 30 ms, and on NTFS by
+  35 ms (40 to 6), so the gain is smallest on NTFS. Written over a longer file of random
+  bytes, the output is identical to the `pr` build's, from raw and COG
+  input, with 256- and 64-row tiles
+  ([`testdata/proto-reuse-exact.txt`](testdata/proto-reuse-exact.txt)).
+  The cost is semantic: after a failed or cancelled run, cells never
+  reached keep the previous run's values instead of zeros. That is why
+  it is a separate function and not CreateRawFile's behaviour.
+- **Close costs more when reusing.** On tmpfs it is 52 ms instead of 24
+  with 256-row tiles, but 25–26 with 64-row tiles. I have not explained
+  this.
+- **Smaller tiles help raw input and hurt COG input.**
+  - With reuse on 12 workers, 64-row tiles take raw slope from 211 to
+    175 ms on tmpfs.
+  - From the Deflate COG (512-row blocks), 12 workers slow down by
+    25–74% at 128 or 64 rows. 512-row tiles are 16% slower too, so 256
+    is the best height here.
+  - A bigger block cache does not help: 64-row tiles took 694 ms with
+    a 2 GB cache against 623 with the default, and 986 with no cache
+    ([`testdata/proto-cog-tile-cache.txt`](testdata/proto-cog-tile-cache.txt)).
+    So the cost is not eviction.
+  - Probable cause, not proven: 12 workers on 64-row tiles all read
+    the same 22 blocks of one block row at once and wait for each
+    other's single decode, so decoding loses its parallelism.
+  - The best tile height therefore depends on the input. No single
+    default is right for both.
+- **Against the targets:**
+  - 12-worker raw slope reaches 175 ms in-process on tmpfs with reuse
+    and 64-row tiles (203 on ext4, 233 on NTFS). Whole-process time
+    adds about 50 ms, so ~0.22 s in gdalsuite, against ~0.15.
+  - 12-worker COG slope reaches 345–347 ms with reuse and 256-row tiles
+    (whole process ~0.40 s), against ~0.3. Its operation phase is 293
+    ms, at the decode floor: stats from the same COG, which writes
+    nothing, takes 0.27 s in gdalsuite.
+
 ## What the numbers do not cover
 
 - **One machine** (Ryzen 9 3900X, 64 GB, NVMe). The ext4 numbers come
