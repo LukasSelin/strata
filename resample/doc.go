@@ -11,6 +11,7 @@
 //	resample.Resample(dst, src, resample.Options{Method: resample.Cubic})
 //	err := resample.ResampleTiled(ctx, dst, src, opts, engine.Options{})
 //	err := resample.ResampleChunked(ctx, sink, dstGrid, source, srcGrid, opts, engine.Options{TileHeight: 256})
+//	resample.Mosaic(dst, []raster.Dataset{a, b, c}, opts)
 //
 // # Geometry
 //
@@ -37,9 +38,12 @@
 // invalid, except under Average, which needs only to overlap it.
 //
 // Cubic follows gdalwarp in one more respect: where neither axis
-// downsamples, a cell whose 4×4 neighbourhood loses a cell of non-zero
-// weight to the edge of the source, or includes an invalid cell, is
-// computed with Bilinear instead.
+// downsamples, a cell whose 4×4 window, the source cells from
+// floor(u - 0.5) - 1 and floor(v - 0.5) - 1 including those of weight
+// zero, reaches past the edge of the source or includes an invalid cell,
+// is computed with Bilinear instead. On a source centre the window runs
+// from the cell before to two cells after, so this one rule is not
+// symmetric under mirroring.
 //
 // # Validity
 //
@@ -76,7 +80,29 @@
 //     to Nearest;
 //   - Lanczos for 1 < s < 1.05, where gdalwarp switches between stretched
 //     and unstretched kernels;
-//   - Average on output cells that extend past the source, by about 1%.
+//   - Average on output cells that extend past the source, by about 1%;
+//     and on cells that only touch a source's edge, with no area in
+//     common, which gdalwarp makes valid with the edge cell's value when
+//     the resolutions differ.
+//
+// # Mosaics
+//
+// Mosaic, MosaicTiled and MosaicChunked resample several sources onto
+// one grid, as gdalwarp does given several input files: each source is
+// resampled as Resample would, and a cell takes its value from the last
+// source whose resampling makes it valid, invalid if none does. There is
+// no blending, not even at a cell a source makes valid from part of its
+// taps: a NoData hole in a later source shows the earlier ones through
+// it. gdalwarp was measured to do the same, bit for bit
+// (acceptance/gdalwarp_mosaic.py). The sources may differ in resolution,
+// origin and orientation, but not in CRS.
+//
+// Each source's tables cover only the output cells it can reach, so a
+// mosaic of many small sources onto a large grid costs their footprints,
+// not the grid's size once per source. MosaicChunked reads a source for
+// a tile only while some of the tile's cells are still invalid, working
+// from the last source down, so a source hidden under later ones is not
+// read there.
 //
 // # Tiled and chunked execution
 //

@@ -155,7 +155,7 @@ def unwidened_to_half(case):
             and abs(dg["rx"] / sg["rx"]) < 2 and abs(dg["ry"] / sg["ry"]) < 2)
 
 
-def reference(case, src, valid, shift=0.0, half_valid=True, four_sample_to_half=False):
+def reference(case, src, valid, shift=0.0, half_valid=True, four_sample_to_half=False, window4=True):
     """Per output cell, (value, tolerance) or None where it is invalid.
     half_valid=False leaves out Lanczos's half-valid rule, which gdalwarp
     dropped in GDAL 3.13.1; four_sample_to_half=True widens Bilinear and
@@ -211,6 +211,15 @@ def reference(case, src, valid, shift=0.0, half_valid=True, four_sample_to_half=
 
             N, D, A, B, full = sums(tx, ty)
             n = len(tx) + len(ty)
+            if cubic4 and window4:
+                # gdalwarp's four-sample cubic reads the 4x4 cells from
+                # floor(u - 0.5) - 1, zero weights included, and falls back
+                # when one lies outside the source or is invalid.
+                jx, jy = math.floor(ux[c] - 0.5), math.floor(uy[r] - 0.5)
+                clx = jx - 1 < 0 or jx + 2 >= sw
+                cly = jy - 1 < 0 or jy + 2 >= sg["height"]
+                if not (clx or cly):
+                    full = all(valid[j * sw + i] for j in range(jy - 1, jy + 3) for i in range(jx - 1, jx + 3))
             if cubic4 and (clx or cly or not full):
                 N, D, A, B, _ = sums(bx[c][1], by[r][1])
                 n = len(bx[c][1]) + len(by[r][1])

@@ -163,6 +163,9 @@ func run() error {
 	if err := runResample(); err != nil {
 		return err
 	}
+	if err := runMosaic(); err != nil {
+		return err
+	}
 	if err := runArray(); err != nil {
 		return err
 	}

@@ -169,6 +169,19 @@ func (r *reference) at(c, row int) (float64, bool) {
 	// A centre exactly on a source centre on both axes copies that cell,
 	// and gdalwarp waives the half-valid rule for it.
 	exact := math.Abs(u-0.5-math.Round(u-0.5)) < 1e-9 && math.Abs(v-0.5-math.Round(v-0.5)) < 1e-9
+	if r.cubic4 {
+		// gdalwarp's four-sample window: the 4×4 cells from floor(u -
+		// 0.5) - 1, zero weights included. The taps lie inside it, so it
+		// replaces the taps' own clipped and full.
+		i0, j0 := int(math.Floor(u-0.5))-1, int(math.Floor(v-0.5))-1
+		clipped = i0 < 0 || j0 < 0 || i0+3 >= sw || j0+3 >= sh
+		full = true
+		for j := j0; j < j0+4 && !clipped; j++ {
+			for i := i0; i < i0+4; i++ {
+				full = full && r.valid(i, j)
+			}
+		}
+	}
 	if r.cubic4 && (!full || clipped) {
 		num, den, _, _, _, _ = sum(resample.Bilinear, 1, 1)
 	}
