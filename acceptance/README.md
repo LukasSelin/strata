@@ -48,8 +48,11 @@ and Convolve with 5×5 weights asymmetric in both axes, CorrelateSeparable
 with asymmetric taps and with Gaussian taps at radius 3, Mean at radius
 2, and Min and Max at radii 1 and 3. `WeightedSlope` runs on the noisy
 DEM times a weight raster with NoData of its own, and `Surface` writes all
-five of its products at once on each DEM. 869 checks come out of that
-(863 without scipy):
+five of its products at once on each DEM. Each ruggedness measure also
+runs at radius 3 and 8, and `Features` writes a stack of slope, plan
+curvature, TPI at radius 1, 3 and 8, TRI at 3 and roughness at 8 in one
+call, each output emitted as its own case. 1370 checks come out of that
+(1364 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
@@ -64,6 +67,8 @@ five of its products at once on each DEM. 869 checks come out of that
 | 9 | `Normalize` against `(z - min) / (max - min)` in float32 numpy over the valid cells, with min and max landing on exactly 0 and 1 | A range taken over NoData, a rounding change such as multiplying by a reciprocal, an endpoint off by an ulp |
 | 10 | The focal reference against `scipy.ndimage.correlate` and `convolve`, if scipy is installed | A reference that shares a misreading of the weight layout or the rotation with the library |
 | 12 | Every `Surface` product (dx, dy, slope, aspect, hillshade, all written in one call) is the standalone function's file bit for bit, Data and validity, in every form | A from-gradient kernel that rounds once differently from the fused one, products wired to the wrong output. The standalone files are judged by checks 1–5, so their verdicts carry over |
+| 13 | Every `Features` output (3×3 derivatives next to ruggedness at radius 1, 3 and 8, all in one call) is the standalone function's file bit for bit, Data and validity, in every form | A fused pass that gives every output the largest window's border or erosion, an output wired to the wrong operation. The standalone files are judged by checks 1–5 and 14 |
+| 14 | Ruggedness over a larger window against its definition in float64, taken with numpy's `sliding_window_view` rather than check 1's shifted sums, within derived bounds; roughness exactly | A misreading of the window that check 1's transcription could share: the centre counted, the wrong n, a shifted window |
 | 11 | `WeightedSlope` against the float64 Horn slope times the weight, and its validity against the DEM's mask eroded 3×3 AND the weight's mask not eroded; and that the case tells the two readings apart | A weight's NoData wiping out its neighbours (one erosion over every input, the engine's rule before per-input reach, DESIGN.md §52), a weight's NoData ignored, a weight read from the wrong cell |
 
 Resampling is judged separately, by `check_resample.py`: a float64
@@ -89,7 +94,11 @@ mode, so for curvature this numpy reference is the only outside opinion.
 Ruggedness is the exception to "definitions, not code": strata documents
 that it rounds exactly as gdaldem does, so the reference is the
 arithmetic of gdaldem's source (`apps/gdaldem_lib.cpp`) transcribed into
-numpy, and the check is equality, not a tolerance. The plane's closed
+numpy, and the check is equality, not a tolerance. The larger windows
+are strata's own generalisation (the eight neighbours become the window's
+other n cells, "/ 8" becomes "/ n"), so gdaldem has nothing to say about
+them: check 1 transcribes that documented arithmetic the same way, and
+check 14 judges it against the float64 definition by a separate route. The plane's closed
 forms (check 3) and `gdalcheck.sh` judge the same results against the
 definitions and against gdaldem itself.
 
@@ -137,17 +146,17 @@ weight NoData ignored             yes      4
 weight read one cell over         yes      3
 Surface aspect one ulp off        yes      2
 Surface dx and dy swapped         yes      6
-dx and dy swapped                 yes      18
+dx and dy swapped                 yes      36
 aspect mirrored                   yes      12
-one bad cell on a tile seam       yes      2
-chunked result off by one row     yes      3
-one NoData cell leaking in        yes      3
+one bad cell on a tile seam       yes      3
+chunked result off by one row     yes      5
+one NoData cell leaking in        yes      5
 count one too many                yes      1
 max slightly wrong                yes      1
 normalize by a reciprocal         yes      9
 normalize range from NoData       yes      3
 curvature sign flipped            yes      18
-profile and plan swapped          yes      18
+profile and plan swapped          yes      27
 mean curvature 0.05% too large    yes      3
 correlate with convolve's flip    yes      9
 separable passes swapped          yes      9
@@ -157,10 +166,14 @@ radius-2 validity eroded 3x3      yes      7
 focal NoData leaking in           yes      3
 focal tile seam                   yes      2
 Riley and Wilson TRI swapped      yes      24
-TPI sign flipped                  yes      9
+TPI sign flipped                  yes      18
 roughness without the centre      yes      3
 one TRI cell one ulp off          yes      3
 TRI summed in float32             yes      9
+r=3 TPI counts its centre         yes      24
+r=8 roughness one ring short      yes      30
+Features erodes by the largest r  yes      6
+Features output one ulp off       yes      2
 ```
 
 One plausible focal defect is out of reach: a Mean that multiplies by a

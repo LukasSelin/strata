@@ -321,6 +321,58 @@ def tri_float32_sum(d):
     _rewrite(d, "ruggedness_tri", f)
 
 
+# The larger windows. check.py holds them to their float32 arithmetic
+# exactly and to the float64 definition within a bound, so a window that
+# counts its centre, or is one ring short, must fail both.
+
+
+def _windows(z, r):
+    """Every (2r+1)x(2r+1) window of z, row-major, over the interior."""
+    k = 2 * r + 1
+    return [z[j : j + H - 2 * r, i : i + W - 2 * r] for j in range(k) for i in range(k)]
+
+
+def tpi_counts_centre(d):
+    """Radius-3 TPI with the centre in the mean: divided by 49, not 48."""
+    def f(stem, a):
+        win = _windows(_dem(d, stem), 3)
+        s = win[0]
+        for w in win[1:]:
+            s = s + w
+        out = a.copy()
+        out[3:-3, 3:-3] = win[len(win) // 2] - s / np.float32(len(win))
+        return out
+    _rewrite(d, "ruggedness_tpi_r3", f)
+
+
+def roughness_ring_short(d):
+    """Radius-8 roughness taken over the radius-7 window."""
+    def f(stem, a):
+        win = _windows(_dem(d, stem), 7)
+        out = a.copy()
+        out[8:-8, 8:-8] = (np.max(win, axis=0) - np.min(win, axis=0))[1:-1, 1:-1]
+        return out
+    _rewrite(d, "ruggedness_roughness_r8", f)
+
+
+def features_largest_erosion(d):
+    """Features' 3x3 TPI given the validity of the radius-8 output next
+    to it: one erosion for every output, by the largest window."""
+    dem = np.fromfile(os.path.join(d, "noisy.mask.u8"), dtype=np.uint8).reshape(H, W).astype(bool)
+    eroded = np.zeros((H, W), bool)
+    eroded[8:-8, 8:-8] = np.logical_and.reduce([w for w in _windows(dem, 8)])
+    for form in FORMS:
+        eroded.astype(np.uint8).tofile(os.path.join(d, f"noisy-features_ruggedness_tpi-{form}.mask.u8"))
+
+
+def features_ulp(d):
+    """One Features output cell one ulp off its standalone operation."""
+    name = "hill-features_ruggedness_tri_r3-chunked.f32"
+    a = read(d, name).astype("<f4")
+    a[60, 70] = np.nextafter(a[60, 70], np.float32(np.inf))
+    write(d, name, a)
+
+
 def _weighted(d, f):
     """Apply f(values, mask) -> (values, mask) to every weighted slope."""
     for c in MAN["rasters"]:
@@ -417,6 +469,10 @@ MUTATIONS = [
     ("roughness without the centre", roughness_without_centre),
     ("one TRI cell one ulp off", tri_one_ulp),
     ("TRI summed in float32", tri_float32_sum),
+    ("r=3 TPI counts its centre", tpi_counts_centre),
+    ("r=8 roughness one ring short", roughness_ring_short),
+    ("Features erodes by the largest r", features_largest_erosion),
+    ("Features output one ulp off", features_ulp),
 ]
 
 

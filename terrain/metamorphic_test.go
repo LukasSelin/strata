@@ -169,7 +169,7 @@ func (o relOp) run(d fuzzdata.Source, path int, eopts engine.Options, dem raster
 			err = CurvatureChunked(ctx, engine.NewMemorySink(outs[0]), engine.NewMemorySource(dem), opts, eopts)
 		}
 	case 5:
-		opts := RuggednessOptions{o.rug}
+		opts := RuggednessOptions{Type: o.rug}
 		switch path {
 		case 0:
 			Ruggedness(outs[0], dem, opts)

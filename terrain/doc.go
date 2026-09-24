@@ -3,10 +3,14 @@
 // profile, plan and mean Curvature from the Zevenbergen–Thorne quadratic
 // fitted to the same 3×3 window, and Ruggedness (the terrain ruggedness
 // index, topographic position index and roughness) from the window's
-// differences, bit-identical to GDAL gdaldem's. WeightedSlope is Slope
-// multiplied cell by cell by a weight raster, in one pass. Surface writes
-// any of Gradient, Slope, Aspect and Hillshade at once from one gradient,
-// each bit for bit what the standalone function writes.
+// differences, bit-identical to GDAL gdaldem's on the 3×3 window and
+// defined the same way over larger ones (RuggednessOptions.Radius), for
+// the same measure at several scales. WeightedSlope is Slope multiplied
+// cell by cell by a weight raster, in one pass. Surface writes any of
+// Gradient, Slope, Aspect and Hillshade at once from one gradient, and
+// Features any mix of Slope, Aspect, Hillshade, Curvature and
+// Ruggedness at any radii from one reading of the DEM, each bit for bit
+// what the standalone function writes.
 //
 // # Conventions
 //
@@ -35,7 +39,8 @@
 // Every operation needs all eight neighbours, which the one-cell border
 // of the raster does not have. Border cells of every output get NaN in Data
 // and, if the output has a validity mask, a cleared validity bit. A
-// raster narrower or shorter than three cells is all border.
+// raster narrower or shorter than three cells is all border. Ruggedness
+// over a (2r+1)² window needs all of it, so its border is r cells wide.
 //
 // The edge is the edge of the rasters passed in, even when they are
 // windows whose parent has data beyond them.
@@ -43,7 +48,7 @@
 // # Tiled execution
 //
 // SlopeTiled, AspectTiled, HillshadeTiled, GradientTiled, CurvatureTiled,
-// RuggednessTiled, WeightedSlopeTiled and SurfaceTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
+// RuggednessTiled, WeightedSlopeTiled, SurfaceTiled and FeaturesTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
 // from the DEM, so the result is bit-for-bit the plain function's for
@@ -51,8 +56,8 @@
 // as one tile with one worker, on the calling goroutine.
 //
 // SlopeChunked, AspectChunked, HillshadeChunked, GradientChunked,
-// CurvatureChunked, RuggednessChunked, WeightedSlopeChunked and
-// SurfaceChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
+// CurvatureChunked, RuggednessChunked, WeightedSlopeChunked,
+// SurfaceChunked and FeaturesChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
 // files, run in Workers × tile buffers (DESIGN.md §27). They give the
 // same bits as the plain functions on the same data, for every tiling and
@@ -66,7 +71,8 @@
 // such as the aspect of a flat cell, are ordinary valid values too. If the DEM has a mask, an output cell is
 // valid iff it is interior and all nine cells of its 3×3 neighbourhood are
 // valid (the centre too, which Curvature and Ruggedness read although
-// Horn gives it zero weight). WeightedSlope's weight is read at the
+// Horn gives it zero weight), or for Ruggedness at radius r all (2r+1)²
+// cells of its window. WeightedSlope's weight is read at the
 // cell alone, so it narrows validity by that cell only. Data under
 // an invalid output cell is unspecified. The output masks are computed
 // with word-level operations, separately from the arithmetic.

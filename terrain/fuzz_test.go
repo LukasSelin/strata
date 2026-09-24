@@ -220,7 +220,7 @@ func FuzzTerrain(f *testing.F) {
 			}
 		case 5:
 			// Ruggedness takes no cell size, so none of those rules apply.
-			o := RuggednessOptions{rug}
+			o := RuggednessOptions{Type: rug}
 			optionsOK = rug >= RuggednessTRI && rug <= RuggednessRoughness
 			call = terrainCall{"ruggedness", 1,
 				func(outs []raster.Float32Raster, dem raster.Float32Raster) { Ruggedness(outs[0], dem, o) },
