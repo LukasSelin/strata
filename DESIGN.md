@@ -20,6 +20,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
+- [benchmarks/rawio/RESULTS.md](benchmarks/rawio/RESULTS.md): writing a chunked call's output file in parallel (a shared mapping) and behind the computation (write-behind), §24, §27.
 - [benchmarks/engine/RESULTS.md](benchmarks/engine/RESULTS.md): worker scaling and tile shape (STRATA-9).
 - [benchmarks/terrain/RESULTS.md](benchmarks/terrain/RESULTS.md): the terrain kernels on one worker.
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
@@ -890,6 +891,24 @@ type RasterSink interface {
   (17–21% faster than a call per row) and other windows a row per call;
   joining short rows across the gaps between them costs more than the
   calls it saves.
+- **Writing one file in parallel.** Handles do not make writes to one
+  file parallel: Linux takes the file's lock for every `write`, so 12
+  writers into one file on tmpfs were no faster than one (0.32 s against
+  0.26 s for 508 MB) while 12 separate files took 0.09 s, and on ext4 12
+  writers took as long as one. Much of the cost is the kernel allocating
+  the file's pages, not the system call. `engine.CreateRawFile` gives an
+  output its final size up front (fallocate on Linux disks, where it is
+  cheap and reports a full disk at once, but not on tmpfs, where it
+  means zeroing every page on one core first: 0.19 s) and, with more
+  than one handle, maps it shared into memory on Linux and Windows.
+  Workers' `WriteAt`s become copies into the mapping, whose page faults
+  run in parallel. One writer is faster through system calls (a fault
+  per 4 KiB page cost 0.40 s against 0.26 s on tmpfs), so one handle
+  maps nothing. A page the system cannot back (a full tmpfs, a file
+  truncated underneath) raises SIGBUS, or EXCEPTION_IN_PAGE_ERROR on
+  Windows, inside the copy; `debug.SetPanicOnFault` turns it into a
+  panic the copy recovers and returns as `ErrMappedFault`, so a full
+  disk is an error and not a crash. Measured in benchmarks/rawio.
 
 **Sparse data uses streams**, from v0.7 on:
 
@@ -1053,7 +1072,9 @@ validity and never write it, so the mask lock below has nothing to guard.
 
 **Implementation (STRATA-9).** `internal/exec` starts `Workers − 1`
 goroutines per call and uses the calling goroutine as the last worker;
-there is no global pool of goroutines. Workers take bands from the plan
+there is no global pool of goroutines. Chunked calls also start one
+writer goroutine per worker (§27, write-behind), joined before the call
+returns like the workers. Workers take bands from the plan
 in order with an atomic counter, each with its own views and erosion
 scratch, and the call joins them before it returns. Kernels run
 concurrently on disjoint bands.
@@ -1101,11 +1122,20 @@ report measured peak memory against it (§43).
 
 **Implementation.** `exec.ProcessChunked` gives each worker, once per
 call, one buffer per input of at most (TileWidth+2r)×(TileHeight+2r)
-cells (clipped to the raster), one per output of TileWidth×TileHeight,
+cells (clipped to the raster), two per output of TileWidth×TileHeight,
 and a mask per operand with validity. A worker reads a tile and its halo
 from every source, runs the tile's bands in order through the in-memory
-band code on its buffers (no mask lock: nothing is shared), and writes
-the tile to every sink. The unit of parallelism is the tile: there are
+band code on its buffers (no mask lock: nothing is shared), and hands
+the tile to its writer goroutine, which writes it to every sink while
+the worker reads and computes the next into its other output buffers
+(write-behind). The bound above therefore counts outputs twice. A write
+waiting in a system call holds no P, so the writer overlaps the worker
+on a second core even under `GOMAXPROCS=1`, though there it needs the
+one P between calls and the overlap is partial; a Workers=1 call keeps
+up to two cores busy. A failed write stops the workers claiming tiles
+through the context the scheduler checks, so failures and cancellation
+keep their whole-tile, plan-order contract, with at most one more tile
+per worker finished behind a failed write. The unit of parallelism is the tile: there are
 never more workers than tiles, so the zero `Options` (one tile) runs one
 worker with the whole raster in memory. Set `TileHeight`.
 
@@ -1665,15 +1695,25 @@ every file but one costs exactly one prefetch plus one request per stored
 block past it, pixel-interleaved ones included: 8,344 requests and
 165.7 MiB for 165.7 MiB of files, where one fetch per band had cost
 10,814 and 217.0 MiB (`acceptance/coghttpcheck.sh`). Its speed against
-GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md):
-on one core GDAL reads a float32 COG 1.4–2.1× faster (libdeflate, against
-Go's inflate, is most of the gap), yet slope over a COG still beats
-`gdaldem slope` on the same file by 1.8–2.6×, and by 4.3–5.6× on 12
-workers. Since then the default block cache holds 8 rows of blocks
-(64 MiB to 1 GiB), decoded blocks' buffers are reused once released, so a
-read allocates about its cache rather than its size, and 8- and 16-bit
-integers convert without a float64 detour (UInt16 reads 1.4–1.9×
-faster). Open: writing (a COG sink), internal masks.
+GDAL is measured in [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md).
+The default block cache holds 8 rows of blocks (64 MiB to 1 GiB), decoded
+blocks' buffers are reused once released, so a read allocates about its
+cache rather than its size, and 8- and 16-bit integers convert without a
+float64 detour (UInt16 reads 1.4–1.9× faster). Deflate is inflated a
+block at a time by the module's own inflater, and the per-row work
+(undoing the predictors, converting rows to float32, the NoData test) is
+in `cog/internal/kern`: kernels with a scalar form in every build and
+AVX2 and NEON forms in `GOEXPERIMENT=simd` builds, held bit for bit to
+the scalar ones, as in `internal/vec` (§14; the cog module cannot import
+strata's internal packages, so it has its own). The floating-point
+predictor sums a float32 row's four byte planes side by side in one pass
+and interleaves them into samples, and costs about 96 ms of a 127M-cell
+one-core read (it was 37–54% of the first reader's). With them, on one
+core, strata reads a predictor-3 float32 COG about as fast as GDAL (ZSTD
+a tie, Deflate 1.17× behind; LZW, whose decoder is a dependency, 1.5×
+behind; uncompressed 1.37× ahead), and slope over a COG beats `gdaldem
+slope` on the same file by 1.9–3.1×, and by 6.0–7.9× on 12 workers.
+Open: writing (a COG sink), internal masks.
 
 ## 35. Use Existing Format Libraries Where Possible
 
@@ -1783,6 +1823,7 @@ benchmarks/
 ├── algebra/            implemented, RESULTS.md
 ├── engine/             implemented (STRATA-9): Slope, Hillshade, Clamp by workers and tiles, RESULTS.md
 ├── chunked/            implemented: the same over raw files with bounded memory; RESULTS.md with the §43 demo
+├── rawio/              implemented: writing one output file from many workers (mapping, write-behind), RESULTS.md
 ├── terrain/            implemented: Gradient, Slope, Aspect, Hillshade plain, RESULTS.md
 ├── focal/              implemented: Correlate, Gaussian, Mean, Min, Max by radius, RESULTS.md (§53)
 ├── resample/           implemented: every method at 2×, 4×, ½, 1/1.37, against
@@ -2089,7 +2130,9 @@ strata/
 │   ├── engine.go              Options (STRATA-8)
 │   ├── source.go              RasterSource / RasterSink, memory source and sink
 │   ├── raw.go                 raw float32 file source and sink, RawOptions
-│   ├── rawfile.go             RawFile: one file, several handles
+│   ├── rawfile.go             RawFile: one file, several handles;
+│   │                           CreateRawFile sizes and maps an output
+│   ├── rawmap_*.go            preallocation and mapping per system
 │   └── stats.go               Stats, the traffic counter (§51)
 │
 ├── internal/
@@ -2139,7 +2182,9 @@ strata/
 │   ├── geo.go                 GeoKeys: geotransform, PixelIsPoint, EPSG code
 │   ├── decode.go              decompression, predictors, float32 and validity
 │   ├── cache.go               byte-bounded LRU of decoded blocks
-│   └── source.go              Open, File, Source (an engine.RasterSource)
+│   ├── source.go              Open, File, Source (an engine.RasterSource)
+│   └── internal/kern/         row kernels: predictors, conversion, NoData test
+│                              (scalar; AVX2 and NEON in GOEXPERIMENT=simd)
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)

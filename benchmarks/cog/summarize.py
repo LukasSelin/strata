@@ -189,7 +189,7 @@ if cache:
     head = " | ".join(f"{threads(n)}: s | decodes/block" for n in ns)
     print(f"| tile rows | CacheBytes | {head} |")
     print("| ---: | --- |" + " ---: | ---: |" * len(ns))
-    CN = {"-1": "-1 (no cache)", "0": "0 (default, 64 MiB)"}
+    CN = {"-1": "-1 (no cache)", "0": "0 (default, 8 block rows)"}
     for tile in dict.fromkeys(k[4] for k in cache):
         for cb in dict.fromkeys(k[5] for k in cache if k[4] == tile):
             label = CN.get(cb, f"{int(cb) >> 20} MiB")

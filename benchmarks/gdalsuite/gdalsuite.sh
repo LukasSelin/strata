@@ -21,6 +21,11 @@
 #   TIERS="compute raw cog"  which tiers
 #   BASELINE=<timings>   an earlier run's timings.txt, for a "since" column
 #   TMPFS=20g            size of the in-container working filesystem
+#   WORKVOL=<volume>     work in this Docker volume instead of the tmpfs:
+#                        a real disk (ext4 in Docker Desktop's VM), which
+#                        tmpfs flatters; runsuite.sh then syncs before
+#                        every run, so no run pays for an earlier one's
+#                        writeback
 #   GDAL_IMAGE=...       the container image
 set -euo pipefail
 
@@ -36,6 +41,9 @@ N=${N:-12}
 OPS=${OPS:-}
 TIERS=${TIERS:-"compute raw cog"}
 TMPFS=${TMPFS:-20g}
+WORKVOL=${WORKVOL:-}
+WORKMOUNT=(--tmpfs "/work:size=$TMPFS,exec")
+[[ -n $WORKVOL ]] && WORKMOUNT=(-v "$WORKVOL:/work" -e SYNC=1)
 IMAGE=${GDAL_IMAGE:-ghcr.io/osgeo/gdal:ubuntu-small-latest}
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +67,7 @@ echo "== timing ${WIDTH}x${HEIGHT} at ($XOFF, $YOFF), $REPEATS runs per case =="
   echo "# go: $(go version | cut -d' ' -f3)"
   echo "# date: $(date -u +%Y-%m-%dT%H:%MZ)"
   MSYS_NO_PATHCONV=1 docker run --rm \
-    --tmpfs "/work:size=$TMPFS,exec" \
+    "${WORKMOUNT[@]}" \
     -v "$SRC_DIR:/in:ro" \
     -v "$(win "$OUT"):/out" \
     -v "$(win "$HERE")/runsuite.sh:/runsuite.sh:ro" \

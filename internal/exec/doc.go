@@ -188,15 +188,20 @@
 // radius of the raster's edge get the edge policy. Cells on a tile's edge
 // read their neighbours from the halo in the buffer. So the kernel sees
 // the same neighbourhoods, computes the same Data and the engine the same
-// validity as in a whole-raster ProcessN call, and the worker writes the
-// finished tile to every sink. The buffers belong to one worker, so its
-// bands take no mask lock.
+// validity as in a whole-raster ProcessN call, and the worker hands the
+// finished tile to its writer goroutine, which writes it to every sink
+// while the worker goes on (write-behind; see RunUnitsBehind). Each
+// worker has two sets of output buffers, one computed while the other is
+// written. The buffers belong to one worker, so its bands take no mask
+// lock.
 //
 // Workers claim tiles through the same scheduler as bands: they check ctx
 // before each tile and always finish a tile they have claimed, so reads
 // and writes get context.WithoutCancel(ctx). A read or write error stops
 // the workers claiming tiles and is returned, wrapped with the operand
-// and position; see package engine for what the sinks then hold. Only
+// and position; a write error, which happens on a writer, stops them
+// through the context the scheduler checks. See package engine for what
+// the sinks then hold. Only
 // memory sources and sinks can be checked for shared memory: a memory
 // sink must not share Data or validity words with another memory sink or
 // with a memory source, because other tiles would read or rewrite them
@@ -209,8 +214,9 @@
 // one row of scratch words per worker, in one backing array each) and
 // its goroutines, and nothing per tile, band, row or cell, and pools
 // nothing (DESIGN.md §37). ProcessChunked also allocates each worker's
-// tile buffers, one Data and one mask array per worker, and about ten
-// small slices per worker; nothing per tile. Kernels should not allocate in Process
+// tile buffers, one Data and one mask array per worker, about ten small
+// slices per worker, and a writer per worker (a goroutine, two channels
+// and its views); nothing per tile. Kernels should not allocate in Process
 // either, since it runs once per band. Callers that cannot afford even
 // per-call allocations, such as package algebra's plain functions, call
 // their vector kernels directly instead.

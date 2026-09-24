@@ -200,7 +200,7 @@ func resampleRaw(name string, masked bool, sg, dg raster.Grid, opts resample.Opt
 	}
 	defer in.Close()
 	tmp := filepath.Join(*dir, name+".resample.tmp")
-	out, err := engine.OpenRawFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644, 4)
+	out, err := engine.CreateRawFile(tmp, 4*int64(dg.Width)*int64(dg.Height), 0o644, 4)
 	if err != nil {
 		return zero, err
 	}
