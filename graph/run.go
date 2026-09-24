@@ -100,7 +100,17 @@ func (p *Plan) Run(ctx context.Context, in, out map[string]raster.Float32Raster,
 			dsts = append(dsts, dst())
 		}
 		if rs := ps.stages[0].rs; rs != nil {
-			err := resample.ResampleTiled(ctx, raster.NewDataset(rs.dst, dsts[0]), raster.NewDataset(rs.src, store[ps.sources[0]]), rs.opts, opts)
+			dst := raster.NewDataset(rs.dst, dsts[0])
+			var err error
+			if rs.mosaic {
+				srcs := make([]raster.Dataset, len(ps.sources))
+				for j, v := range ps.sources {
+					srcs[j] = raster.NewDataset(rs.srcs[j], store[v])
+				}
+				err = resample.MosaicTiled(ctx, dst, srcs, rs.opts, opts)
+			} else {
+				err = resample.ResampleTiled(ctx, dst, raster.NewDataset(rs.srcs[0], store[ps.sources[0]]), rs.opts, opts)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -216,10 +226,15 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 		tees := make([]*teeSink, len(ps.outs))
 		for j, v := range ps.outs {
 			d := ps.dests[j]
-			t := &teeSink{w: w, h: h, masked: masked}
+			// The value has validity when a source has, or when its first
+			// output keeps it: Run writes the value into that output's
+			// raster and stores it there, so a stencil's border is invalid
+			// in the output, in the summary and in the stored value alike.
+			vm := masked || len(d.outputs) > 0 && out[d.outputs[0]].Masked()
+			t := &teeSink{w: w, h: h, masked: vm}
 			for _, name := range d.outputs {
 				s := out[name]
-				if masked && !s.Masked() {
+				if vm && !s.Masked() {
 					panic(fmt.Sprintf("graph: output %q is not Masked, but the value it receives has validity", name))
 				}
 				t.sinks = append(t.sinks, s)
@@ -230,7 +245,7 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 						return nil, err
 					}
 				}
-				s, err := newSpill(dir, fmt.Sprintf("v%d", v), w, h, masked)
+				s, err := newSpill(dir, fmt.Sprintf("v%d", v), w, h, vm)
 				if err != nil {
 					return nil, err
 				}
@@ -244,7 +259,13 @@ func (p *Plan) RunChunked(ctx context.Context, in map[string]engine.RasterSource
 			sinks[j], tees[j] = t, t
 		}
 		if rs != nil {
-			if err := resample.ResampleChunked(ctx, sinks[0], rs.dst, sources[0], rs.src, rs.opts, opts.Engine); err != nil {
+			var err error
+			if rs.mosaic {
+				err = resample.MosaicChunked(ctx, sinks[0], rs.dst, sources, rs.srcs, rs.opts, opts.Engine)
+			} else {
+				err = resample.ResampleChunked(ctx, sinks[0], rs.dst, sources[0], rs.srcs[0], rs.opts, opts.Engine)
+			}
+			if err != nil {
 				return nil, err
 			}
 		} else if err := exec.ProcessChunked(ctx, sinks, sources, k, opts.Engine); err != nil {

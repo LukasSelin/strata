@@ -227,3 +227,31 @@ func TestMosaicPanics(t *testing.T) {
 		}()
 	}
 }
+
+// TestMosaicCovers: MosaicCovers reports exactly whether the mosaic of
+// unmasked sources leaves every cell valid.
+func TestMosaicCovers(t *testing.T) {
+	rng := rand.New(rand.NewPCG(29, 30))
+	seen := map[bool]int{}
+	for range 300 {
+		dg, sgs := mosaicGrids(rng)
+		srcs := make([]raster.Dataset, len(sgs))
+		for i, sg := range sgs {
+			srcs[i] = raster.NewDataset(sg, randomRaster(rng, sg.Width, sg.Height, false))
+		}
+		for _, m := range methods {
+			want := wantMosaic(dg, srcs, m)
+			all := true
+			for i := range want.Data {
+				all = all && raster.MaskGet(want.Valid, i)
+			}
+			if got := resample.MosaicCovers(dg, sgs, resample.Options{Method: m}); got != all {
+				t.Fatalf("%v dst %+v srcs %+v: MosaicCovers = %v, every cell valid = %v", m, dg, sgs, got, all)
+			}
+			seen[all]++
+		}
+	}
+	if seen[true] == 0 || seen[false] == 0 {
+		t.Fatalf("cases covered %d times and not %d times: want both", seen[true], seen[false])
+	}
+}

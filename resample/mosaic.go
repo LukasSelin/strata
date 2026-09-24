@@ -193,6 +193,14 @@ func MosaicChunked(ctx context.Context, dst engine.RasterSink, dstGrid raster.Gr
 	return err
 }
 
+// MosaicCovers reports whether a mosaic of sources laid out on srcGrids
+// onto dst, none of them with a mask, makes every cell of dst valid: the
+// condition under which Mosaic accepts a dst without a mask. It panics
+// on the grids and options Mosaic panics on.
+func MosaicCovers(dst raster.Grid, srcGrids []raster.Grid, opts Options) bool {
+	return newMosaic(dst, srcGrids, make([]bool, len(srcGrids)), opts, engine.Options{}).covers()
+}
+
 // mosaic is one call's plan: a layer for every source that reaches dst,
 // in source order.
 type mosaic struct {

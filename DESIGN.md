@@ -59,7 +59,7 @@ the detailed record; this table only points at it.
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
 | Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
-| `resample`: same-CRS grid resampling, Nearest to Average; mosaics | §54 | done: resampling and mosaics, both against gdalwarp; Mode, alignment helpers and mosaics in `graph` open |
+| `resample`: same-CRS grid resampling, Nearest to Average; mosaics | §54 | done: resampling and mosaics, both against gdalwarp, and both nodes of `graph` (§55); Mode and alignment helpers open |
 | Publishing: module path, README, CI | §42 | done |
 | Publishing: licence, first tag | §42 | not started |
 
@@ -2730,7 +2730,7 @@ workspace reuse
 pipeline execution          partly done: the radius-0 Pipeline, internal (§52);
                             radius > 0 and several outputs remain
 deciding whether to publish Kernel (§22, §52)
-workflow graph and planner  done: package graph, over strata's own operations, grids and Resample as a grid change (§55)
+workflow graph and planner  done: package graph, over strata's own operations, grids, and Resample and Mosaic as grid changes (§55)
 ```
 
 **Later milestones**
@@ -4295,8 +4295,8 @@ scalar-canonical passes with AVX2 and NEON kernels that match them bit for
 bit, checked against a float64 reference and against gdalwarp
 (`acceptance/`), measured in `benchmarks/resample`. Mosaics of sources at
 mixed resolutions and origins (`Mosaic`, `MosaicTiled`, `MosaicChunked`,
-below) are done and checked the same way. Open: Mode, alignment helpers,
-a mosaic benchmark, mosaics as a node of `graph` (§55), and the AVX2
+below) are done and checked the same way, and both are nodes of `graph`
+(§55). Open: Mode, alignment helpers, a mosaic benchmark, and the AVX2
 numbers from the Zen 2 machine.
 Reprojection is not planned; it is the caller's preprocessing (§36).
 
@@ -4587,8 +4587,9 @@ Open:
 
 - a mosaic benchmark: many sources onto a large grid, against `gdalwarp`
   with the same inputs;
-- alignment helpers that derive a common grid from the sources;
-- a mosaic node in `graph` (§55), which needs grids in the graph first.
+- alignment helpers that derive a common grid from the sources.
+
+`graph.Mosaic` is the node (§55, "Grids").
 
 ### Execution
 
@@ -4682,8 +4683,9 @@ asked for.
   output. The exact accumulator (§49) makes that free of any ordering
   question: tiles fold in whatever order the workers write them, and the
   summary is the one `reduce.Stats` gives over the whole raster.
-- **Grid changes** (resample; later mosaics and reprojection) end one
-  fused stage and start the next: see "Grids" below. Resample is built.
+- **Grid changes** (resample and mosaics; later reprojection) end one
+  fused stage and start the next: see "Grids" below. Resample and Mosaic
+  are built.
 - **Global steps** (Normalize today; later hydrology, distance
   transforms, viewsheds) force a pass boundary. Their input is either
   computed again in the next pass or stored by its own pass and read
@@ -4921,11 +4923,42 @@ Four deliberate breakages each fail the suite:
 The last was not caught until an unmasked second date was added: with
 a masked one, the mask came from the source anyway.
 
-**Open:** a resampled value is stored even when its only reader is one
-per-cell stage that could read the resampling's tiles directly. Fusing
-the grid change into the first pass on its grid is the next step for
-mosaics (a mosaic as a source that composites in `ReadWindow`), and
-would remove that write and read.
+**Mosaics** are the second grid change. `graph.Mosaic(srcs, grid, opts)`
+is `resample.Mosaic`, sources laid over one another in order onto one
+grid, as a pass of its own that reads every source stored:
+`MosaicTiled` in memory, `MosaicChunked` over sources and sinks, which
+reads a source for a tile only while some of the tile's cells are still
+invalid. Each source must lie on a declared grid, and the sources may
+lie on different grids or on one. Whether the sources leave a gap is
+decided when the node is built (`resample.MosaicCovers`), so a mosaic
+that covers its grid from unmasked sources can feed outputs without
+masks, and one with a gap makes the chain after it masked.
+`graph/mosaic_test.go` holds to the separate calls:
+
+- three tiles at 10 m, 20 m and 7 m, masked and not, under four methods,
+  with a terrain stack and a summary on the mosaic;
+- a mosaic of computed values, which an earlier pass stores, differenced
+  with an input on its grid and normalised under two boundary choices;
+- covering and gapped tiles;
+- the panics.
+
+Reversing the sources in memory, dropping all but the first in a
+chunked run, and forgetting a gap each fail it.
+
+**A chunked-run fix the mosaic tests found.** Since #60, RunChunked
+decided a value's validity from its sources alone. An unmasked input
+written to a masked output therefore got no validity: a stencil's border
+cells came out valid. Run writes into the output raster and gets them
+right. RunChunked now gives a value validity when a source has it or
+when its first output keeps it, and stores the value that way, which is
+what Run does (`TestMaskedOutputsFromUnmaskedInputs`, on a plain
+one-grid graph).
+
+**Open:** a grid change's value is stored even when its only reader is
+one per-cell stage that could read its tiles directly. Fusing the grid
+change into the first pass on its grid would remove that write and
+read: for a mosaic, a source that composites in `ReadWindow`. It wants a
+workflow benchmark to show the write is worth removing.
 
 ### Testing
 
@@ -4982,7 +5015,7 @@ gdalsuite workflow benchmark against GDAL from a COG, as #59 did for
   - statistics: `reduce.Stats`.
 
   Division, `where` and morphology are roadmap items. Of the grid
-  changes, Resample is built; mosaics and reprojection are not.
+  changes, Resample and Mosaic are built; reprojection is not.
 - **Scratch kernels are passes of their own,** and store their input.
   Lending a stage its own scratch (§52) would let them fuse, and is the
   change a focal-heavy workflow benchmark would ask for.
@@ -5019,7 +5052,8 @@ morphology, local maxima, multi-scale focal (TPI at       open (neighbourhood
 lending pipeline stages scratch, so focal fuses           open
 grids on values, Resample as a grid change between       done
   fused passes
-mosaics as a grid change (resample.Mosaic)                open
+mosaics as a grid change (graph.Mosaic)                   done
+fusing a grid change into the first pass on its grid      open
 reprojection, as a grid change between fused stages       open
 hydrology, distance, per-cell reductions across files     open (new pass kinds)
 batch orchestration: one plan over many files, keeping    open

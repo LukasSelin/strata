@@ -284,3 +284,24 @@ func TestCommonResample(t *testing.T) {
 		t.Fatalf("Resample nodes %v %v %v: want the first two equal and the third not", r1, r2, r3)
 	}
 }
+
+// TestMaskedOutputsFromUnmaskedInputs: an output with a mask gets the
+// operation's validity even when no input has one: a stencil's border is
+// invalid, as the separate call writes it, in RunChunked as in Run. The
+// value stored for a later pass is then masked too, as Run stores it in
+// the output raster.
+func TestMaskedOutputsFromUnmaskedInputs(t *testing.T) {
+	sl := terrain.SlopeOptions{CellSize: 10}
+	g := New()
+	slope := Slope(g.Input("dem"), sl)
+	g.Output("slope", slope)
+	g.Output("norm", Normalize(slope))
+	p := g.Plan(PlanOptions{Boundary: BoundaryCache})
+	d := operand(rand.New(rand.NewPCG(19, 20)), 800, false)
+	s := blank(true)
+	terrain.Slope(s, d, sl)
+	n := blank(true)
+	algebra.Normalize(n, s)
+	checkGrids(t, "masked outputs from an unmasked input", p, map[string]raster.Float32Raster{"dem": d},
+		map[string]raster.Float32Raster{"slope": s, "norm": n}, nil)
+}
