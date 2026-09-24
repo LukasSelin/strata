@@ -852,8 +852,45 @@ hold at both radii. `sabotage.py` adds three defects, all caught:
 - the r = 4 curvature taken over 3×3;
 - the r = 4 slope 0.01% too large.
 
-GRASS `r.param.scale` is the natural outside tool to compare with. It is
-not in the GDAL image the suite uses, so it is not wired in yet.
+GRASS `r.param.scale` is Wood's own implementation, and
+`acceptance/grasscheck.sh` compares against it (GRASS 8.5.0 in Docker).
+Every convention was read from GRASS's source, not assumed:
+
+- Its y runs south, as strata's does, so its d, e, 2a, 2b and c are
+  p, q, r, t and s.
+- Its aspect is atan2(e, d) from West, so strata's bearing is
+  (270 + GRASS) mod 360. Flat cells get 0 in GRASS and -1 in strata.
+- `profc` is strata's profile curvature, and `planc` is strata's plan
+  curvature with the opposite sign.
+- Mean curvature is derived exactly from GRASS's outputs as
+  (minic + maxic + g·crosc)/(2(1+g)^1.5).
+
+The window was the gdaldem check's: 4096², 12.5 m, 12.7–12.8M cells
+with data. It was run at `FitRadius` 1, 4 and 8 (sizes 3, 9 and 17).
+The results:
+
+- **Validity:** the same cells carry data in both tools, and they are
+  exactly the whole-window-valid cells.
+- **Flat cells:** they agree.
+- **Values:** slope differs by at most 1.3e-05° and aspect by 2.9e-05°.
+  Profile, plan and mean curvature differ by at most 5.9e-07, 2.6e-05
+  and 5.5e-07 /m.
+- **Against the bounds:** that is 0.006–0.46× bounds derived from
+  strata's documented float32 arithmetic plus a backward-error bound on
+  GRASS's float64 LU solve.
+- **Against a float64 reference:** GRASS is within 1e-16 of it, so the
+  differences are strata's float32 rounding.
+
+`grasssabotage.py` damages strata's products (a 0.002% slope scale, a
+0.01° aspect rotation, GRASS's plan sign, a one-column shift, one
+dropped cell and others) and every one fails the comparison at every
+radius. The run also turned up a GRASS bug: 8.5.0's `G_ludcmp` races in
+its OpenMP pivot search and sometimes writes a wrong map
+(OSGeo/grass#7539, fixed after 8.5.0). The harness runs GRASS on one
+thread. Not covered: rectangular cells, which GRASS averages; ZFactor;
+radii other than 1, 4 and 8; and float32 summation error, because the
+raster's whole-number elevations make strata's sums exact.
+`acceptance/README.md` has the table.
 
 **Testing.** `stencil`: the any-radius kernel at r = 1 against
 `RuggednessRow` bit for bit (hazards, signed zeros, overflowing
@@ -896,7 +933,6 @@ Open:
 
 - **SIMD kernels for the three ruggedness sums at r > 1**, and a SIMD
   curvature tail for the fit.
-- **Comparing the fit against GRASS `r.param.scale`.**
 - **Distance-weighted fits** (r.param.scale's exponent), and annulus and
   distance-weighted TPI.
 - **Timing a `Features` stack against GDAL in `benchmarks/gdalsuite`.**
