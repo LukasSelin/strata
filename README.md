@@ -167,12 +167,13 @@ without `GOEXPERIMENT=simd` — it is roughly a tie, so the advantage is
 AVX2, not the language.
 
 [`benchmarks/cog/`](benchmarks/cog/RESULTS.md) does the same for the
-GeoTIFF/COG reader. GDAL decodes a compressed float32 COG 1.4–2.1×
-faster on one core, mostly because it inflates with libdeflate. Slope
-straight from the COG still beats `gdaldem slope` on the same file, by
-1.8–2.6× on one core and 4.3–5.6× on 12 workers. Reading the format
-costs more than computing the slope: from a Deflate COG the run takes
-2.28 s on one worker, from the raw file 0.89 s.
+GeoTIFF/COG reader. On one core it reads a float32 COG with the
+floating-point predictor about as fast as GDAL (ZSTD a tie, Deflate
+1.17× behind); LZW is 1.5× behind, and an uncompressed COG 1.37× ahead.
+Slope straight from the COG beats `gdaldem slope` on the same file, by
+1.9–3.1× on one core and 6.0–7.9× on 12 workers. On one worker reading
+the format still costs more than computing the slope: from a Deflate
+COG the run takes 1.51 s, from the raw file 0.84 s.
 
 [`benchmarks/gdalsuite/`](benchmarks/gdalsuite/RESULTS.md) times all 25
 operations that have a GDAL counterpart (terrain, focal, algebra,
