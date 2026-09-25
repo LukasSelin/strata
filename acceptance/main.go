@@ -88,6 +88,11 @@ type rasterCase struct {
 	Equation  int     `json:"equation,omitempty"`
 	Radiation bool    `json:"radiation,omitempty"`
 	Linear    bool    `json:"linear,omitempty"`
+	// An orientation case's component, "north" or "east", and whether it
+	// is the cosine or sine of aspect alone rather than weighted by the
+	// sine of the slope.
+	Component  string `json:"component,omitempty"`
+	Unweighted bool   `json:"unweighted,omitempty"`
 }
 
 // heatPoint is HeatLoad at one of the latitude, slope and aspect points
@@ -224,6 +229,7 @@ type op struct {
 	weights  []float32
 	row, col []float32
 	heat     *terrain.HeatLoadOptions
+	orient   *terrain.OrientationOptions
 	plain    func(dst, dem raster.Float32Raster)
 	tiled    func(ctx context.Context, dst, dem raster.Float32Raster, eo engine.Options) error
 	chunked  func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error
@@ -337,6 +343,22 @@ func (d dem) ops() []op {
 	}
 	heatEq1 := terrain.HeatLoadOptions{CellSize: d.cellX, CellSizeY: d.cellY, Latitude: 45}
 
+	// orientation is northness or eastness, named by what it computes.
+	orientation := func(name string, o terrain.OrientationOptions) op {
+		o.CellSize, o.CellSizeY = d.cellX, d.cellY
+		return op{
+			name:   name,
+			orient: &o,
+			plain:  func(dst, dm raster.Float32Raster) { terrain.Orientation(dst, dm, o) },
+			tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+				return terrain.OrientationTiled(ctx, dst, dm, o, eo)
+			},
+			chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.OrientationChunked(ctx, dst, src, o, eo)
+			},
+		}
+	}
+
 	// surface runs terrain.Surface for all five products at once and
 	// emits one: check 12 requires each to be the standalone product's
 	// file bit for bit, so the multi-output pipeline is judged against
@@ -398,6 +420,8 @@ func (d dem) ops() []op {
 		{"curvature_mean_fit1", 1, terrain.CurvatureOptions{CellSize: d.cellX, CellSizeY: d.cellY, Type: terrain.CurvatureMean, FitRadius: 1}},
 		{"heatload_eq1", 0, heatEq1},
 		{"heatload_eq1_fit4", 4, func() terrain.HeatLoadOptions { o := heatEq1; o.FitRadius = 4; return o }()},
+		{"northness", 0, terrain.OrientationOptions{CellSize: d.cellX, CellSizeY: d.cellY}},
+		{"eastness_fit4", 4, terrain.OrientationOptions{CellSize: d.cellX, CellSizeY: d.cellY, FitRadius: 4, Component: terrain.Eastness}},
 	}
 	features := func(which int) op {
 		outs := func(dst, dm raster.Float32Raster) []terrain.Feature {
@@ -485,6 +509,12 @@ func (d dem) ops() []op {
 		heatLoad("heatload_eq3_south", terrain.HeatLoadOptions{Latitude: -33.5, Equation: terrain.HeatLoadEquation3}),
 		heatLoad("radiation_eq2_linear", terrain.HeatLoadOptions{Latitude: 52, Equation: terrain.HeatLoadEquation2,
 			Radiation: true, Linear: true}),
+		// Northness and eastness, weighted by the sine of the slope as
+		// Geomorpho90m defines them, and the cosine and sine of aspect alone.
+		orientation("northness", terrain.OrientationOptions{}),
+		orientation("eastness", terrain.OrientationOptions{Component: terrain.Eastness}),
+		orientation("northness_unweighted", terrain.OrientationOptions{Unweighted: true}),
+		orientation("eastness_unweighted", terrain.OrientationOptions{Component: terrain.Eastness, Unweighted: true}),
 	}
 	for _, r := range []int{1, 3, terrain.MaxRadius} {
 		ops = append(ops,
@@ -561,6 +591,18 @@ func (d dem) fitted(r int, ao terrain.AspectOptions, ho terrain.HillshadeOptions
 			},
 		})
 	}
+	east := terrain.OrientationOptions{CellSize: d.cellX, CellSizeY: d.cellY, FitRadius: r, Component: terrain.Eastness}
+	ops = append(ops, op{
+		name:   "eastness" + sfx,
+		orient: &east,
+		plain:  func(dst, dm raster.Float32Raster) { terrain.Orientation(dst, dm, east) },
+		tiled: func(ctx context.Context, dst, dm raster.Float32Raster, eo engine.Options) error {
+			return terrain.OrientationTiled(ctx, dst, dm, east, eo)
+		},
+		chunked: func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+			return terrain.OrientationChunked(ctx, dst, src, east, eo)
+		},
+	})
 	heat := terrain.HeatLoadOptions{CellSize: d.cellX, CellSizeY: d.cellY, Latitude: 45, FitRadius: r}
 	ops = append(ops, op{
 		name:  "heatload_eq1" + sfx,
@@ -783,6 +825,12 @@ func (d dem) emit(m *manifest, o op, form string, r raster.Float32Raster) error 
 		Weights:   o.weights,
 		Row:       o.row,
 		Col:       o.col,
+	}
+	if o.orient != nil {
+		c.Component, c.Unweighted = "north", o.orient.Unweighted
+		if o.orient.Component == terrain.Eastness {
+			c.Component = "east"
+		}
 	}
 	if o.heat != nil {
 		c.Latitude, c.Equation = o.heat.Latitude, int(o.heat.Equation)+1

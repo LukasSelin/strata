@@ -269,10 +269,10 @@ func RescaleRange(src Node, inLo, inHi, outLo, outHi float32) Node {
 		fmt.Sprintf("%v..%v → %v..%v", inLo, inHi, outLo, outHi), src)
 }
 
-// The terrain operations. Slope, Aspect, Hillshade and HeatLoad of one
-// DEM with the same cell geometry and FitRadius share one gradient, Horn's or the
-// quadratic fit's, as terrain.Surface does, and write the bits of the
-// standalone functions (DESIGN.md §52).
+// The terrain operations. Slope, Aspect, Hillshade, HeatLoad and
+// Orientation of one DEM with the same cell geometry and FitRadius share
+// one gradient, Horn's or the quadratic fit's, as terrain.Surface does,
+// and write the bits of the standalone functions (DESIGN.md §52).
 
 // Gradient is terrain.Gradient: the gradient, dx and dy.
 func Gradient(dem Node, opts terrain.GradientOptions) (dx, dy Node) {
@@ -301,6 +301,12 @@ func Hillshade(dem Node, opts terrain.HillshadeOptions) Node {
 // HeatLoad is terrain.HeatLoad.
 func HeatLoad(dem Node, opts terrain.HeatLoadOptions) Node {
 	return product("terrain.HeatLoad", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
+		FitRadius: opts.FitRadius})
+}
+
+// Orientation is terrain.Orientation: northness or eastness.
+func Orientation(dem Node, opts terrain.OrientationOptions) Node {
+	return product("terrain.Orientation", opts, dem, terrain.GradientOptions{CellSize: opts.CellSize, CellSizeY: opts.CellSizeY, ZFactor: opts.ZFactor,
 		FitRadius: opts.FitRadius})
 }
 

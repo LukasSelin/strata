@@ -43,6 +43,7 @@ the detailed record; this table only points at it.
 | `terrain`: Gradient, Slope, Aspect, Hillshade, Curvature, Ruggedness | §20 | done |
 | `terrain`: multi-scale Ruggedness (radius 1–8), Wood's fit (`FitRadius` 1–8) and `Features` | §20 | done; SIMD ruggedness sums for r > 1 open |
 | `terrain`: HeatLoad, McCune–Keon heat load and direct radiation | §20 | done; float32/SIMD tail and per-row latitude open |
+| `terrain`: Orientation, northness and eastness | §20 | done; SIMD tail open |
 | Engine: tiled, multi-worker, halos | §22–§26 | done |
 | Engine: chunked, bounded memory, memory and raw file IO | §24, §27 | done |
 | First validation target: 20000² DEM | §43 | done |
@@ -735,6 +736,7 @@ terrain/
 ├── aspect.go      Aspect(dst, dem, AspectOptions)
 ├── hillshade.go   Hillshade(dst, dem, HillshadeOptions)
 ├── heatload.go    HeatLoad(dst, dem, HeatLoadOptions)     McCune–Keon heat load | direct radiation
+├── orientation.go Orientation(dst, dem, OrientationOptions) northness | eastness, weighted or not
 ├── curvature.go   Curvature(dst, dem, CurvatureOptions)   profile | plan | mean
 ├── ruggedness.go  Ruggedness(dst, dem, RuggednessOptions) TRI | TRI Wilson | TPI | roughness, radius 1–8
 ├── fit.go         FitRadius: Wood's least-squares quadratic over (2r+1)², for the derivatives
@@ -1123,6 +1125,83 @@ Open:
 - **McCune's 2007 non-parametric estimates.** These are kernel
   regression over his published tables, not an equation, and are more
   accurate.
+
+### Northness and eastness
+
+`Orientation(dst, dem, OrientationOptions)` writes northness or eastness
+(`Component`). They are the standard way to give aspect to a statistical
+or machine-learning model, because aspect itself is circular: 359° and 1°
+are neighbours but far apart as numbers. The default is Geomorpho90m's
+definition (Amatulli et al. 2020): northness = sin(slope)·cos(aspect) and
+eastness = sin(slope)·sin(aspect). These are the north and east
+components of the unit surface normal, continuous everywhere, near 0 on
+gentle slopes whatever their direction, and ±1 only on vertical ones.
+`Unweighted` gives cos(aspect) and sin(aspect) alone, the components of
+the unit downslope direction, as much of the ecological literature uses
+them. Flat cells, which have no aspect, get 0. On nearly flat ground the
+unweighted form follows the noise of the gradient, which is the reason
+the weighted one is the default.
+
+- **From the gradient, like heat load.** The downslope direction is
+  (−dx, dy), so northness is dy/√(1 + dx² + dy²) and eastness
+  −dx/√(1 + dx² + dy²), or over √(dx² + dy²) unweighted. The tail,
+  `stencil.OrientationFromGradientRow`, is evaluated in float64, where no
+  gradient can overflow or underflow a square, and rounded once. It is
+  scalar on every build. The Horn and fit kernels, the `Features` stage
+  and `graph.Orientation`, which shares the gradient, are built exactly
+  as heat load's are.
+- **Cost.** On the Zen 2 desktop (1024², masked, one worker, AVX2 build,
+  20 iterations on a machine in use, so direction only), northness costs
+  4–6 ns a cell, against 2.0 for aspect's SIMD kernel and 20 for its
+  scalar one.
+
+The tests:
+
+- **Planes** facing the eight compass directions at four steepnesses
+  match the closed form within 10⁻⁶.
+- **Cardinal slopes** have exact values: ±1 and 0 unweighted, ±sin(slope)
+  and 0 weighted.
+- **The angle form.** On a rough DEM the result is within an ulp of
+  Geomorpho90m's angle form (slope by atan, aspect by atan2) at the
+  gradient Gradient writes, Horn's and the fit's. Flat cells are exactly
+  0.
+- **Identities.** northness² + eastness² = sin²(slope) against Slope's
+  own output, and 1 unweighted.
+- **Rotation.** A DEM turned 90° clockwise has the original's northness
+  as its eastness.
+- **Composition.** The result is bit for bit `Gradient` followed by the
+  stage, on both backends, in `Features`, in the graph, and in every form.
+- **Mutations.** Six defects each fail the tests: either sign flipped,
+  the components swapped, the weight's "1 +" dropped, flat cells
+  unweighted at 1, and a weight of 1/(1 + g²) for 1/√(1 + g²).
+
+In `acceptance/`, `check.py` has the angle form in numpy from its own
+gradient. Weighted, the bound is the gradient's error plus one rounding,
+since the unit normal moves no more than the gradient does. Unweighted,
+it is the gradient's error over the gradient's length, with nearly flat
+cells reported rather than judged, as for aspect. The harness runs
+northness and eastness, weighted and unweighted, eastness fitted at
+r = 1 and 4, and two `Features` outputs, on the three DEMs in every
+form. Errors are 0.00–0.14× the bounds, and 0.03–0.14× on the plane's
+closed form. `sabotage.py` adds four defects, all caught:
+
+- eastness's sign flipped;
+- the two components swapped;
+- the unweighted northness written for the weighted one;
+- the r = 4 fit replaced by Horn's gradient.
+
+The three DEMs have no flat cells. gdaldem has no northness mode, so
+`gdalcheck.sh` applies the definition to gdaldem's own slope and aspect
+outputs. On the 4096² canopy-height raster, strata's northness, eastness
+and unweighted northness agree within 5.4·10⁻⁷, 0.23× a bound carried
+from the two tools' slope and aspect gaps, over 10.2 million cells. The
+2.68 million cells gdaldem calls flat are exactly 0. `gdalsabotage.py`'s
+three orientation defects fail by 490,000× that bound or more.
+
+Open:
+
+- **A SIMD tail.** Northness is a division and a square root, so it
+  should cost about what aspect's SIMD kernel does.
 
 Terrain is useful because it exercises:
 

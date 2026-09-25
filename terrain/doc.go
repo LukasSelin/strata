@@ -9,11 +9,13 @@
 // with FitRadius set they come from Wood's quadratic fitted to a larger
 // window (see Multi-scale derivatives). HeatLoad is McCune and Keon's
 // heat load index, or their potential direct incident radiation, from the
-// same gradient and a latitude. WeightedSlope is Slope multiplied
+// same gradient and a latitude, and Orientation is northness or eastness,
+// aspect's north and east components, weighted by the sine of the slope
+// or not. WeightedSlope is Slope multiplied
 // cell by cell by a weight raster, in one pass. Surface writes any of
 // Gradient, Slope, Aspect and Hillshade at once from one gradient, and
-// Features any mix of Slope, Aspect, Hillshade, HeatLoad, Curvature and
-// Ruggedness at any radii from one reading of the DEM, each bit for bit
+// Features any mix of Slope, Aspect, Hillshade, HeatLoad, Orientation,
+// Curvature and Ruggedness at any radii from one reading of the DEM, each bit for bit
 // what the standalone function writes.
 //
 // # Conventions
@@ -41,8 +43,8 @@
 // # Multi-scale derivatives
 //
 // FitRadius, in GradientOptions, SlopeOptions, AspectOptions,
-// HillshadeOptions, HeatLoadOptions, CurvatureOptions and
-// SurfaceOptions, replaces the 3×3
+// HillshadeOptions, HeatLoadOptions, OrientationOptions,
+// CurvatureOptions and SurfaceOptions, replaces the 3×3
 // estimate with Wood's (1996) least-squares quadratic
 //
 //	z = a·x² + b·y² + c·x·y + d·x + e·y + f
@@ -89,7 +91,7 @@
 //
 // # Tiled execution
 //
-// SlopeTiled, AspectTiled, HillshadeTiled, HeatLoadTiled, GradientTiled, CurvatureTiled,
+// SlopeTiled, AspectTiled, HillshadeTiled, HeatLoadTiled, OrientationTiled, GradientTiled, CurvatureTiled,
 // RuggednessTiled, WeightedSlopeTiled, SurfaceTiled and FeaturesTiled run the same operations in tiles on engine.Options.Workers goroutines (by default
 // one per GOMAXPROCS) with a context, and return ctx.Err() if cancelled
 // (see package engine). Cells on tile boundaries read their neighbours
@@ -97,7 +99,7 @@
 // every tiling and worker count. The plain functions run the same kernels
 // as one tile with one worker, on the calling goroutine.
 //
-// SlopeChunked, AspectChunked, HillshadeChunked, HeatLoadChunked, GradientChunked,
+// SlopeChunked, AspectChunked, HillshadeChunked, HeatLoadChunked, OrientationChunked, GradientChunked,
 // CurvatureChunked, RuggednessChunked, WeightedSlopeChunked,
 // SurfaceChunked and FeaturesChunked read the DEM from an engine.RasterSource and write to engine.RasterSinks a
 // tile at a time, so rasters larger than memory, such as raw float32
