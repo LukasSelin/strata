@@ -17,6 +17,7 @@ Decisions recorded elsewhere and summarized here:
 
 - [ADR 0001](docs/adr/0001-simd-backend.md): SIMD backend technology (STRATA-2).
 - [ADR 0002](docs/adr/0002-cog-adapter.md): the first format adapter, GeoTIFF/COG: its own module, its own parser, GDAL as the judge (§34, §35).
+- [ADR 0003](docs/adr/0003-zarr-adapter.md): the Zarr adapter: its own module over `github.com/LukasSelin/zarr`, a decoded-chunk cache from the start, shared with cog (§34, §35).
 - [benchmarks/nodata/RESULTS.md](benchmarks/nodata/RESULTS.md): NoData representation (STRATA-3).
 - [benchmarks/algebra/RESULTS.md](benchmarks/algebra/RESULTS.md): first benchmark suite results (STRATA-10).
 - [benchmarks/chunked/RESULTS.md](benchmarks/chunked/RESULTS.md): bounded-memory execution and the §43 demo.
@@ -26,6 +27,7 @@ Decisions recorded elsewhere and summarized here:
 - [benchmarks/focal/RESULTS.md](benchmarks/focal/RESULTS.md): the focal kernels by radius, and §28's convolution prediction (§53).
 - [benchmarks/gdal/RESULTS.md](benchmarks/gdal/RESULTS.md): strata timed against `gdaldem`, the outside speed baseline (§38).
 - [benchmarks/cog/RESULTS.md](benchmarks/cog/RESULTS.md): the GeoTIFF/COG reader's decode speed against GDAL, and slope over a COG against `gdaldem` (§34).
+- [benchmarks/zarr/RESULTS.md](benchmarks/zarr/RESULTS.md): the Zarr source's decoded-chunk cache, on and off, under slope and a focal mean (§34).
 - [benchmarks/gdalsuite/RESULTS.md](benchmarks/gdalsuite/RESULTS.md): all 25 operations with a GDAL counterpart timed against it, compute only, file to file and the whole flow from a COG, with both tools' outputs compared (§38).
 - [benchmarks/resample/RESULTS.md](benchmarks/resample/RESULTS.md): resampling, separable against direct 2-D, on NEON (§54).
 - [acceptance/README.md](acceptance/README.md): black-box checks against numpy, `gdaldem` and GDAL's own GeoTIFF reading, the outside correctness oracles (§39).
@@ -59,7 +61,8 @@ the detailed record; this table only points at it.
 | N-dimensional arrays: `Array[T]`, views, broadcasting, axis reductions | §10 | done; tiled and chunked execution, vector reductions and Zarr-shaped chunking open |
 | Point clouds | §11 | not started (v0.7) |
 | Format adapters: GeoTIFF/COG read (`cog` module) | §34, §35 | done: identical to GDAL on 98 files, from disk and over HTTP range requests (`cog.HTTPReaderAt`), timed against it (`benchmarks/cog`); writing open |
-| Format adapters: Zarr, LAS/LAZ, … | §34, §35 | not started |
+| Format adapters: Zarr read (`zarr` module) | §34, §35 | started: a 2-D plane of a Zarr v3 array as a source, with a decoded-chunk cache (`benchmarks/zarr`); an outside judge (zarr-python), writing and N-D sources open |
+| Format adapters: LAS/LAZ, … | §34, §35 | not started |
 | CRS contract: one CRS per computation, labels checked where grids meet | §36 | done; reprojection is the caller's preprocessing |
 | `resample`: same-CRS grid resampling, Nearest to Average; mosaics | §54 | done: resampling and mosaics, both against gdalwarp, and both nodes of `graph` (§55); Mode and alignment helpers open |
 | Publishing: module path, README, CI | §42 | done |
@@ -2124,8 +2127,11 @@ more than the slope kernel.
   row's partial first and last words are merged bit by bit, through
   `vec.ValidWord`, which returns a word so that no scratch escapes to
   the heap. `RawSink` skips all-valid words of the mask with one compare
-  each. cog is a separate module that cannot import `internal/vec`, so
-  it keeps its own tests for GDAL's rules in `cog/internal/kern`. Its
+  each. cog keeps its own kernels, and their tests for GDAL's rules, in
+  `cog/internal/kern`. (They were written in the belief that a separate
+  module cannot import `internal/vec`; Go's internal rule goes by import
+  path, so it can, and cog and zarr share `internal/blockcache`, ADR
+  0003.) Its
   blocks' mask buffers come from a pool, so a block found all valid
   costs no allocation.
 - **Rule 4, per tile.** `Masked` describes a whole source, and a source
@@ -2219,8 +2225,9 @@ block at a time by the module's own inflater, and the per-row work
 (undoing the predictors, converting rows to float32, the NoData test) is
 in `cog/internal/kern`: kernels with a scalar form in every build and
 AVX2 and NEON forms in `GOEXPERIMENT=simd` builds, held bit for bit to
-the scalar ones, as in `internal/vec` (§14; the cog module cannot import
-strata's internal packages, so it has its own). The floating-point
+the scalar ones, as in `internal/vec` (§14; cog has its own, though it
+could import strata's internal packages, as it now imports
+`internal/blockcache`: ADR 0003). The floating-point
 predictor sums a float32 row's four byte planes side by side in one pass
 and interleaves them into samples, and costs about 96 ms of a 127M-cell
 one-core read (it was 37–54% of the first reader's). With them, on one
@@ -2702,6 +2709,8 @@ strata/
 │   │   │                       their own units (§54)
 │   │   └── workspace.go       planned
 │   ├── overlap/               Data and mask overlap checks
+│   ├── blockcache/            byte-bounded LRU of decoded blocks with shared
+│   │                           loads, for the cog and zarr modules (ADR 0003)
 │   │
 │   │                          test support (§39):
 │   ├── bcecheck/              bounds checks left in tight loops
@@ -2716,10 +2725,15 @@ strata/
 │   ├── ifd.go                 an IFD as an image: layout, samples, blocks
 │   ├── geo.go                 GeoKeys: geotransform, PixelIsPoint, EPSG code
 │   ├── decode.go              decompression, predictors, float32 and validity
-│   ├── cache.go               byte-bounded LRU of decoded blocks
 │   ├── source.go              Open, File, Source (an engine.RasterSource)
 │   └── internal/kern/         row kernels: predictors, conversion, NoData test
 │                              (scalar; AVX2 and NEON in GOEXPERIMENT=simd)
+│
+├── zarr/                      Zarr v3 source, a separate module (§34, ADR 0003)
+│   ├── doc.go                 scope, values and validity, georeferencing, cache
+│   ├── source.go              Open, NewSource, Source (an engine.RasterSource)
+│   ├── convert.go             element types to float32, fill value to validity
+│   └── geo.go                 spatial:transform and proj:code to a Grid
 │
 ├── benchmarks/                implemented (§38)
 ├── acceptance/                black-box checks, a separate module (§39)
