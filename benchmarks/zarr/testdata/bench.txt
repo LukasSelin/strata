@@ -1,0 +1,328 @@
+gomaxprocs: 4
+goos: linux
+goarch: amd64
+pkg: strata-zarrbench
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkSlope/src=memory/workers=1-4         	      10	 109739904 ns/op	       152.9 Mcells/s
+BenchmarkSlope/src=memory/workers=1-4         	      12	 109770150 ns/op	       152.8 Mcells/s
+BenchmarkSlope/src=memory/workers=1-4         	      12	 102414228 ns/op	       163.8 Mcells/s
+BenchmarkSlope/src=memory/workers=1-4         	      10	 107092132 ns/op	       156.7 Mcells/s
+BenchmarkSlope/src=memory/workers=1-4         	      10	 101588870 ns/op	       165.1 Mcells/s
+BenchmarkSlope/src=memory/workers=4-4         	      28	  37516710 ns/op	       447.2 Mcells/s
+BenchmarkSlope/src=memory/workers=4-4         	      30	  39852169 ns/op	       421.0 Mcells/s
+BenchmarkSlope/src=memory/workers=4-4         	      31	  39166176 ns/op	       428.4 Mcells/s
+BenchmarkSlope/src=memory/workers=4-4         	      28	  38571394 ns/op	       435.0 Mcells/s
+BenchmarkSlope/src=memory/workers=4-4         	      32	  36610166 ns/op	       458.3 Mcells/s
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=1-4         	       3	 420323946 ns/op	        39.91 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=1-4         	       3	 428706537 ns/op	        39.13 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=1-4         	       3	 425365869 ns/op	        39.44 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=1-4         	       3	 453947156 ns/op	        36.96 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=1-4         	       3	 417877818 ns/op	        40.15 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=4-4         	       5	 237449722 ns/op	        70.66 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=4-4         	       5	 225811926 ns/op	        74.30 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=4-4         	       6	 221215975 ns/op	        75.84 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=4-4         	       5	 212882810 ns/op	        78.81 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=1/workers=4-4         	       5	 220383084 ns/op	        76.13 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=1-4         	       5	 211534249 ns/op	        79.31 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=1-4         	       6	 218095174 ns/op	        76.93 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=1-4         	       6	 223569302 ns/op	        75.04 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=1-4         	       4	 273768036 ns/op	        61.28 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=1-4         	       4	 276880082 ns/op	        60.59 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=4-4         	       8	 129710955 ns/op	       129.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=4-4         	       9	 127051494 ns/op	       132.1 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=4-4         	       9	 120661110 ns/op	       139.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=4-4         	       9	 123380289 ns/op	       136.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=on/conc=8/workers=4-4         	       9	 126032424 ns/op	       133.1 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=1-4        	       1	1042488718 ns/op	        16.09 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=1-4        	       1	1073855487 ns/op	        15.62 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=1-4        	       1	1048971899 ns/op	        15.99 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=1-4        	       1	1076632337 ns/op	        15.58 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=1-4        	       1	1039183493 ns/op	        16.14 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=4-4        	       4	 327896728 ns/op	        51.17 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=4-4        	       4	 302384581 ns/op	        55.48 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=4-4        	       3	 340612287 ns/op	        49.26 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=4-4        	       4	 308387416 ns/op	        54.40 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=1/workers=4-4        	       3	 333720414 ns/op	        50.27 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=1-4        	       3	 454886031 ns/op	        36.88 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=1-4        	       3	 419704345 ns/op	        39.97 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=1-4        	       3	 380032078 ns/op	        44.15 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=1-4        	       3	 367790659 ns/op	        45.62 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=1-4        	       3	 419078653 ns/op	        40.03 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=4-4        	       4	 337585277 ns/op	        49.70 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=4-4        	       4	 320316105 ns/op	        52.38 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=4-4        	       4	 302609218 ns/op	        55.44 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=4-4        	       4	 293394398 ns/op	        57.18 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=256/cache=off/conc=8/workers=4-4        	       4	 307156846 ns/op	        54.62 Mcells/s	         2.875 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=1-4         	       2	 579681161 ns/op	        28.94 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=1-4         	       3	 474083219 ns/op	        35.39 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=1-4         	       3	 451848619 ns/op	        37.13 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=1-4         	       3	 470398957 ns/op	        35.67 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=1-4         	       3	 466237790 ns/op	        35.98 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=4-4         	       3	 376838366 ns/op	        44.52 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=4-4         	       3	 346168917 ns/op	        48.47 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=4-4         	       3	 389711921 ns/op	        43.05 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=4-4         	       3	 383624971 ns/op	        43.73 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=1/workers=4-4         	       3	 370419402 ns/op	        45.29 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=1-4         	       4	 269508059 ns/op	        62.25 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=1-4         	       4	 273510034 ns/op	        61.34 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=1-4         	       4	 268456260 ns/op	        62.50 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=1-4         	       4	 270751646 ns/op	        61.97 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=1-4         	       4	 293265234 ns/op	        57.21 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=4-4         	       6	 179282731 ns/op	        93.58 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=4-4         	       7	 172391372 ns/op	        97.32 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=4-4         	       7	 172689172 ns/op	        97.15 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=4-4         	       7	 151185163 ns/op	       111.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=on/conc=8/workers=4-4         	       7	 143808332 ns/op	       116.7 Mcells/s	         1.000 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=1-4        	       1	1407037614 ns/op	        11.92 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=1-4        	       1	1393319473 ns/op	        12.04 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=1-4        	       1	1362364185 ns/op	        12.31 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=1-4        	       1	1440269740 ns/op	        11.65 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=1-4        	       1	1419491156 ns/op	        11.82 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=4-4        	       3	 450208448 ns/op	        37.27 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=4-4        	       3	 390502620 ns/op	        42.96 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=4-4        	       3	 389807239 ns/op	        43.04 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=4-4        	       3	 371492341 ns/op	        45.16 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=1/workers=4-4        	       3	 377074882 ns/op	        44.49 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=1-4        	       3	 489245131 ns/op	        34.29 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=1-4        	       3	 465158212 ns/op	        36.07 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=1-4        	       3	 477987353 ns/op	        35.10 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=1-4        	       3	 496384193 ns/op	        33.80 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=1-4        	       3	 490719503 ns/op	        34.19 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=4-4        	       3	 372513886 ns/op	        45.04 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=4-4        	       3	 397501837 ns/op	        42.21 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=4-4        	       3	 401321683 ns/op	        41.80 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=4-4        	       3	 391970862 ns/op	        42.80 Mcells/s	         3.750 decodes/chunk
+BenchmarkSlope/src=zarr/chunk=512/cache=off/conc=8/workers=4-4        	       3	 416139628 ns/op	        40.32 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=memory/workers=1-4                                  	       8	 139250562 ns/op	       120.5 Mcells/s
+BenchmarkMean/src=memory/workers=1-4                                  	       8	 140395562 ns/op	       119.5 Mcells/s
+BenchmarkMean/src=memory/workers=1-4                                  	       8	 135503110 ns/op	       123.8 Mcells/s
+BenchmarkMean/src=memory/workers=1-4                                  	       8	 141617846 ns/op	       118.5 Mcells/s
+BenchmarkMean/src=memory/workers=1-4                                  	       7	 144436293 ns/op	       116.2 Mcells/s
+BenchmarkMean/src=memory/workers=4-4                                  	      24	  49860332 ns/op	       336.5 Mcells/s
+BenchmarkMean/src=memory/workers=4-4                                  	      22	  48521906 ns/op	       345.8 Mcells/s
+BenchmarkMean/src=memory/workers=4-4                                  	      25	  52643243 ns/op	       318.7 Mcells/s
+BenchmarkMean/src=memory/workers=4-4                                  	      26	  52007496 ns/op	       322.6 Mcells/s
+BenchmarkMean/src=memory/workers=4-4                                  	      24	  50069408 ns/op	       335.1 Mcells/s
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=1-4          	       3	 461055252 ns/op	        36.39 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=1-4          	       3	 469291934 ns/op	        35.75 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=1-4          	       3	 436865935 ns/op	        38.40 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=1-4          	       3	 481269911 ns/op	        34.86 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=1-4          	       3	 485246841 ns/op	        34.57 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=4-4          	       5	 240190027 ns/op	        69.85 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=4-4          	       4	 254441398 ns/op	        65.94 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=4-4          	       5	 243889955 ns/op	        68.79 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=4-4          	       5	 251200090 ns/op	        66.79 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=1/workers=4-4          	       4	 257152486 ns/op	        65.24 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=1-4          	       4	 263919690 ns/op	        63.57 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=1-4          	       4	 254604240 ns/op	        65.90 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=1-4          	       4	 251137868 ns/op	        66.80 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=1-4          	       5	 255394180 ns/op	        65.69 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=1-4          	       4	 251616408 ns/op	        66.68 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=4-4          	       8	 142676655 ns/op	       117.6 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=4-4          	       8	 142730484 ns/op	       117.5 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=4-4          	       7	 147675044 ns/op	       113.6 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=4-4          	       8	 140347166 ns/op	       119.5 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=on/conc=8/workers=4-4          	       8	 139490485 ns/op	       120.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=1-4         	       1	1099628289 ns/op	        15.26 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=1-4         	       1	1037606258 ns/op	        16.17 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=1-4         	       1	1150221279 ns/op	        14.59 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=1-4         	       1	1117337981 ns/op	        15.02 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=1-4         	       1	1265511799 ns/op	        13.26 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=4-4         	       4	 307839254 ns/op	        54.50 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=4-4         	       4	 288889554 ns/op	        58.07 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=4-4         	       4	 304877606 ns/op	        55.03 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=4-4         	       4	 292753637 ns/op	        57.31 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=1/workers=4-4         	       4	 304419369 ns/op	        55.11 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=1-4         	       3	 409526229 ns/op	        40.97 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=1-4         	       3	 423994800 ns/op	        39.57 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=1-4         	       3	 444945674 ns/op	        37.71 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=1-4         	       3	 402242780 ns/op	        41.71 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=1-4         	       3	 394100471 ns/op	        42.57 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=4-4         	       4	 283308010 ns/op	        59.22 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=4-4         	       4	 287325777 ns/op	        58.39 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=4-4         	       4	 293228816 ns/op	        57.22 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=4-4         	       4	 306243818 ns/op	        54.78 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=256/cache=off/conc=8/workers=4-4         	       4	 306126836 ns/op	        54.80 Mcells/s	         2.875 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=1-4          	       2	 506932025 ns/op	        33.10 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=1-4          	       2	 511308592 ns/op	        32.81 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=1-4          	       2	 501641336 ns/op	        33.44 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=1-4          	       3	 489785651 ns/op	        34.25 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=1-4          	       3	 490433448 ns/op	        34.21 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=4-4          	       4	 330215079 ns/op	        50.81 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=4-4          	       4	 310034316 ns/op	        54.11 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=4-4          	       3	 343414675 ns/op	        48.85 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=4-4          	       4	 337422164 ns/op	        49.72 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=1/workers=4-4          	       3	 349479906 ns/op	        48.01 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=1-4          	       4	 256387026 ns/op	        65.44 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=1-4          	       4	 276184094 ns/op	        60.75 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=1-4          	       4	 267254038 ns/op	        62.78 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=1-4          	       4	 255447918 ns/op	        65.68 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=1-4          	       4	 264568443 ns/op	        63.41 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=4-4          	       7	 153853427 ns/op	       109.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=4-4          	       7	 153158253 ns/op	       109.5 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=4-4          	       7	 159442353 ns/op	       105.2 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=4-4          	       7	 155947634 ns/op	       107.6 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=on/conc=8/workers=4-4          	       7	 153055658 ns/op	       109.6 Mcells/s	         1.000 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=1-4         	       1	1410846412 ns/op	        11.89 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=1-4         	       1	1508944254 ns/op	        11.12 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=1-4         	       1	1465083343 ns/op	        11.45 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=1-4         	       1	1421137566 ns/op	        11.81 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=1-4         	       1	1538617380 ns/op	        10.90 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=4-4         	       3	 404799481 ns/op	        41.45 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=4-4         	       3	 401566518 ns/op	        41.78 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=4-4         	       3	 376880609 ns/op	        44.52 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=4-4         	       3	 387515974 ns/op	        43.29 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=1/workers=4-4         	       3	 402457824 ns/op	        41.69 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=1-4         	       2	 550710282 ns/op	        30.46 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=1-4         	       2	 521687792 ns/op	        32.16 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=1-4         	       2	 577704572 ns/op	        29.04 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=1-4         	       2	 532281199 ns/op	        31.52 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=1-4         	       2	 532552771 ns/op	        31.50 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=4-4         	       3	 397902674 ns/op	        42.16 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=4-4         	       3	 397331288 ns/op	        42.22 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=4-4         	       3	 395842976 ns/op	        42.38 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=4-4         	       3	 397426727 ns/op	        42.21 Mcells/s	         3.750 decodes/chunk
+BenchmarkMean/src=zarr/chunk=512/cache=off/conc=8/workers=4-4         	       3	 408714706 ns/op	        41.05 Mcells/s	         3.750 decodes/chunk
+BenchmarkWindow/chunk=256/window=pixel/cache=off-4                    	    1020	   1231931 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=off-4                    	     924	   1212803 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=off-4                    	     980	   1219697 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=off-4                    	    1004	   1206840 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=off-4                    	     979	   1233483 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=on-4                     	11858816	        96.53 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=on-4                     	12599017	       101.3 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=on-4                     	11618514	        98.94 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=on-4                     	11065898	       103.3 ns/op
+BenchmarkWindow/chunk=256/window=pixel/cache=on-4                     	11596020	       106.0 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=off-4               	     364	   3345825 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=off-4               	     348	   3525113 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=off-4               	     337	   3329254 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=off-4               	     333	   3656520 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=off-4               	     337	   3433462 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=on-4                	 4025761	       315.8 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=on-4                	 3933739	       298.8 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=on-4                	 4241464	       309.9 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=on-4                	 3966776	       306.0 ns/op
+BenchmarkWindow/chunk=256/window=3x3-corner/cache=on-4                	 3476199	       317.3 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=off-4          	     376	   3322624 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=off-4          	     358	   3321016 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=off-4          	     366	   3499716 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=off-4          	     357	   3659712 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=off-4          	     339	   3556256 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=on-4           	   89304	     14950 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=on-4           	   88232	     14089 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=on-4           	   98319	     13201 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=on-4           	   84391	     13184 ns/op
+BenchmarkWindow/chunk=256/window=256x256-4chunks/cache=on-4           	   88342	     14313 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=off-4                    	     177	   6980438 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=off-4                    	     192	   6068338 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=off-4                    	     217	   5579913 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=off-4                    	     194	   6094196 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=off-4                    	     190	   6016010 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=on-4                     	12517284	       109.3 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=on-4                     	11843721	       111.0 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=on-4                     	11138877	       105.8 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=on-4                     	10975954	        99.06 ns/op
+BenchmarkWindow/chunk=512/window=pixel/cache=on-4                     	11662533	       100.7 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=off-4               	      99	  12338804 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=off-4               	     104	  11096276 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=off-4               	      98	  11962873 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=off-4               	     100	  11699480 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=off-4               	      88	  12893481 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=on-4                	 4281691	       281.7 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=on-4                	 3760054	       304.0 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=on-4                	 4293079	       281.1 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=on-4                	 4426996	       285.6 ns/op
+BenchmarkWindow/chunk=512/window=3x3-corner/cache=on-4                	 4535323	       266.3 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=off-4          	     108	  11030476 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=off-4          	     105	  11381406 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=off-4          	     102	  11425587 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=off-4          	      87	  11561741 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=off-4          	     104	  11357210 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=on-4           	   81152	     14269 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=on-4           	   87219	     13900 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=on-4           	   97219	     12859 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=on-4           	   85878	     14713 ns/op
+BenchmarkWindow/chunk=512/window=256x256-4chunks/cache=on-4           	   82155	     13969 ns/op
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=1-4                	       3	 366138468 ns/op	        45.82 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=1-4                	       3	 357518253 ns/op	        46.93 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=1-4                	       3	 354997453 ns/op	        47.26 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=1-4                	       3	 383331699 ns/op	        43.77 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=1-4                	       4	 329922626 ns/op	        50.85 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=4-4                	       6	 186345946 ns/op	        90.03 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=4-4                	       6	 192151109 ns/op	        87.31 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=4-4                	       6	 186131886 ns/op	        90.14 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=4-4                	       6	 197400366 ns/op	        84.99 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=1/workers=4-4                	       6	 190527868 ns/op	        88.06 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=1-4                	       8	 131782583 ns/op	       127.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=1-4                	       9	 117008898 ns/op	       143.4 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=1-4                	       9	 119608478 ns/op	       140.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=1-4                	       8	 125924012 ns/op	       133.2 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=1-4                	       9	 126112274 ns/op	       133.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=4-4                	      12	 102990181 ns/op	       162.9 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=4-4                	      10	 108420594 ns/op	       154.7 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=4-4                	      12	  99693790 ns/op	       168.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=4-4                	      10	 101725793 ns/op	       164.9 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=on/conc=8/workers=4-4                	      12	  98396321 ns/op	       170.5 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=1-4               	       1	1041448481 ns/op	        16.11 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=1-4               	       1	1086655523 ns/op	        15.44 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=1-4               	       1	1138631236 ns/op	        14.73 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=1-4               	       1	1055042557 ns/op	        15.90 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=1-4               	       1	1070953804 ns/op	        15.67 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=4-4               	       4	 311111961 ns/op	        53.93 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=4-4               	       4	 318157515 ns/op	        52.73 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=4-4               	       4	 285566321 ns/op	        58.75 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=4-4               	       4	 299286891 ns/op	        56.06 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=1/workers=4-4               	       4	 303921887 ns/op	        55.20 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=1-4               	       3	 361601591 ns/op	        46.40 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=1-4               	       3	 361883835 ns/op	        46.36 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=1-4               	       3	 385090551 ns/op	        43.57 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=1-4               	       3	 382279479 ns/op	        43.89 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=1-4               	       3	 407701438 ns/op	        41.15 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=4-4               	       4	 268129848 ns/op	        62.57 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=4-4               	       4	 284209520 ns/op	        59.03 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=4-4               	       4	 284533355 ns/op	        58.96 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=4-4               	       4	 265728802 ns/op	        63.14 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=256/cache=off/conc=8/workers=4-4               	       4	 286942652 ns/op	        58.47 Mcells/s	         2.875 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=1-4                	       3	 391837115 ns/op	        42.82 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=1-4                	       3	 391119506 ns/op	        42.90 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=1-4                	       3	 373825268 ns/op	        44.88 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=1-4                	       3	 396756763 ns/op	        42.29 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=1-4                	       3	 367762955 ns/op	        45.62 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=4-4                	       4	 320763170 ns/op	        52.30 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=4-4                	       4	 305400507 ns/op	        54.94 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=4-4                	       4	 310796896 ns/op	        53.98 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=4-4                	       4	 310974712 ns/op	        53.95 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=1/workers=4-4                	       4	 312365674 ns/op	        53.71 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=1-4                	       8	 132845792 ns/op	       126.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=1-4                	       8	 134860959 ns/op	       124.4 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=1-4                	       8	 136695673 ns/op	       122.7 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=1-4                	       8	 136365891 ns/op	       123.0 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=1-4                	       8	 139226322 ns/op	       120.5 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=4-4                	      10	 106652912 ns/op	       157.3 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=4-4                	      10	 105925506 ns/op	       158.4 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=4-4                	       9	 118208094 ns/op	       141.9 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=4-4                	      10	 109393246 ns/op	       153.4 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=on/conc=8/workers=4-4                	      10	 110953996 ns/op	       151.2 Mcells/s	         1.000 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=1-4               	       1	1531878727 ns/op	        10.95 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=1-4               	       1	1602049227 ns/op	        10.47 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=1-4               	       1	1469350643 ns/op	        11.42 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=1-4               	       1	1560938225 ns/op	        10.75 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=1-4               	       1	1638499981 ns/op	        10.24 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=4-4               	       3	 384605752 ns/op	        43.62 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=4-4               	       3	 410468553 ns/op	        40.87 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=4-4               	       3	 409881393 ns/op	        40.93 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=4-4               	       3	 405803900 ns/op	        41.34 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=1/workers=4-4               	       3	 396356181 ns/op	        42.33 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=1-4               	       3	 479622347 ns/op	        34.98 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=1-4               	       3	 474513036 ns/op	        35.36 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=1-4               	       3	 463716271 ns/op	        36.18 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=1-4               	       3	 509599676 ns/op	        32.92 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=1-4               	       2	 528279214 ns/op	        31.76 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=4-4               	       3	 403985997 ns/op	        41.53 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=4-4               	       3	 374322294 ns/op	        44.82 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=4-4               	       3	 398033494 ns/op	        42.15 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=4-4               	       3	 389724660 ns/op	        43.05 Mcells/s	         3.750 decodes/chunk
+BenchmarkReadAll/chunk=512/cache=off/conc=8/workers=4-4               	       3	 378397117 ns/op	        44.34 Mcells/s	         3.750 decodes/chunk
+PASS
+ok  	strata-zarrbench	385.877s
+EXIT 0

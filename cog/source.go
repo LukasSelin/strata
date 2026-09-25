@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/LukasSelin/strata/engine"
+	"github.com/LukasSelin/strata/internal/blockcache"
 	"github.com/LukasSelin/strata/raster"
 )
 
@@ -23,7 +24,7 @@ type File struct {
 	hasND  bool
 	// shared holds the compressed blocks of pixel-interleaved images,
 	// which every band's source reads; nil for a single band.
-	shared *cache[blockKey, []byte]
+	shared *blockcache.Cache[blockKey, []byte]
 }
 
 // maxOverviews is GDAL's limit on the overviews it reads from one file.
@@ -84,7 +85,7 @@ func Open(r io.ReaderAt) (*File, error) {
 		return nil, fmt.Errorf("cog: %w", err)
 	}
 	if main.bands > 1 {
-		f.shared = newCache[blockKey](sharedCacheBytes, func(b []byte) int64 { return int64(len(b)) + 64 })
+		f.shared = blockcache.New[blockKey](sharedCacheBytes, func(b []byte) int64 { return int64(len(b)) + 64 })
 	}
 	return f, nil
 }
@@ -280,7 +281,7 @@ type Source struct {
 	level int
 	band  int
 	nd    noData
-	cache *cache[int, *block]
+	cache *blockcache.Cache[int, *block]
 	mask  *Source // the level's transparency mask, which gives validity, or nil
 }
 
@@ -310,9 +311,9 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 		hold, drop := (*block).hold, (*block).release
 		switch {
 		case opts.CacheBytes == 0:
-			s.cache = newCache[int](defaultCacheBytes(im), size).withHolds(hold, drop)
+			s.cache = blockcache.New[int](defaultCacheBytes(im), size).WithHolds(hold, drop)
 		case opts.CacheBytes > 0:
-			s.cache = newCache[int](opts.CacheBytes, size).withHolds(hold, drop)
+			s.cache = blockcache.New[int](opts.CacheBytes, size).WithHolds(hold, drop)
 		}
 		return s
 	}
@@ -350,7 +351,7 @@ func (s *Source) CacheBytes() int64 {
 	if s.cache == nil {
 		return 0
 	}
-	return s.cache.limit
+	return s.cache.Limit()
 }
 
 // Size returns the level's width and height.
@@ -420,14 +421,14 @@ func (s *Source) block(ctx context.Context, bx, by int) (*block, error) {
 	var read func(off, n uint64) ([]byte, error) // nil: read into a scratch buffer
 	if s.f.shared != nil && s.im.planar == planarChunky {
 		read = func(off, n uint64) ([]byte, error) {
-			return s.f.shared.get(ctx, blockKey{s.im, idx}, func() ([]byte, error) { return s.f.c.readFull(off, n) })
+			return s.f.shared.Get(ctx, blockKey{s.im, idx}, func() ([]byte, error) { return s.f.c.readFull(off, n) })
 		}
 	}
 	load := func() (*block, error) { return s.f.c.decodeBlock(s.im, idx, by, s.band, s.nd, read) }
 	if s.cache == nil {
 		return load()
 	}
-	return s.cache.get(ctx, idx, load)
+	return s.cache.Get(ctx, idx, load)
 }
 
 // copyBlock copies the part of b, whose top-left cell is (bx0, by0) in

@@ -31,8 +31,8 @@ import (
 //
 // Its cells are in a buffer that is reused for another block once nobody
 // holds this one: the source's cache while it keeps the block, and each
-// reader while it copies from it (see cache). A block is born held once,
-// by whoever decoded it.
+// reader while it copies from it (see blockcache.Cache). A block is born
+// held once, by whoever decoded it.
 type block struct {
 	vals  []float32
 	valid []uint64

@@ -66,7 +66,8 @@ jobs:
   race:
     # internal/exec is the only package that starts goroutines; its tests
     # and engine's also fail on a leaked goroutine (goleak). Quick runs
-    # just those two, in the default build. Full runs everything in both
+    # just those two, and internal/blockcache, the adapters' shared cache,
+    # which their workers call at once, in the default build. Full runs everything in both
     # builds and on both SIMD backends, since the kernels run under those
     # workers.
     name: race (${{ matrix.name }})
@@ -84,7 +85,7 @@ jobs:
           go-version-file: go.mod
       - name: Race (goroutine packages)
         if: env.FULL != 'true'
-        run: go test -race ./internal/exec/... ./engine/...
+        run: go test -race ./internal/exec/... ./engine/... ./internal/blockcache/...
       - name: Race (everything)
         if: env.FULL == 'true'
         run: go test -race ./...
@@ -217,3 +218,56 @@ jobs:
           GOEXPERIMENT: simd
           GOARCH: arm64
         run: golangci-lint run --config ../.golangci.yml ./...
+
+  zarr:
+    # The Zarr adapter is its own module too (docs/adr/0003-zarr-adapter.md),
+    # as is its benchmark (benchmarks/zarr), so the root jobs never see
+    # either. It has no SIMD code of its own, but runs the engine's
+    # kernels in its tests, so the SIMD build is tested as well. Its reads
+    # start goroutines, and its race run takes seconds, so quick runs it.
+    # Full adds Windows.
+    name: zarr (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","windows-latest","macos-latest"]' || '["ubuntu-latest","macos-latest"]') }}
+    defaults:
+      run:
+        working-directory: zarr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: zarr/go.mod
+          cache-dependency-path: zarr/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Test the SIMD build
+        if: matrix.os != 'windows-latest'
+        env:
+          GOEXPERIMENT: simd
+        run: go test ./...
+      - name: Race
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race ./...
+      - name: Vet the benchmark
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: benchmarks/zarr
+        run: go vet ./...
+      - name: Run kernelborder
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          (cd ../lint && go build -o "$RUNNER_TEMP/kernelborder" ./cmd/kernelborder)
+          go vet -vettool="$RUNNER_TEMP/kernelborder" ./...
+      - name: Install golangci-lint
+        if: matrix.os == 'ubuntu-latest'
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - name: Run golangci-lint
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          golangci-lint run --config ../.golangci.yml ./...
+          GOEXPERIMENT=simd golangci-lint run --config ../.golangci.yml ./...
+          GOEXPERIMENT=simd GOARCH=arm64 golangci-lint run --config ../.golangci.yml ./...
+          cd ../benchmarks/zarr && golangci-lint run --config ../../.golangci.yml ./...
