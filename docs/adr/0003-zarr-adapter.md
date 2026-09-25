@@ -132,7 +132,18 @@ the one chunk. The cache holds inner chunks, not shards.
 
 What the cache buys, from benchmarks/zarr/RESULTS.md:
 
-RESULTS_PLACEHOLDER
+- every chunk is decoded once, where without the cache the engine's
+  256-row strips decode each 2.875 times (256² chunks) or 3.75 times
+  (512²);
+- slope over a 4096² gzip float32 DEM on one core runs 2.5× faster
+  (256² chunks) and 3.0× (512²), and 2.3–2.4× on four workers;
+- a window the cache holds costs 0.1 µs for a pixel and 0.3 µs for a
+  3 × 3 across a chunk corner, where decoding it costs 1.2–12 ms.
+
+Reading a window's chunks concurrently matters as much on many workers:
+with one chunk at a time, four workers ran slope over 512² chunks only
+1.25× faster than one, waiting in the cache for the chunk rows another
+worker was decoding.
 
 ### 4. Georeferencing: two GeoZarr attributes, both optional
 

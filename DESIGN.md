@@ -2237,6 +2237,22 @@ behind; uncompressed 1.37× ahead), and slope over a COG beats `gdaldem
 slope` on the same file by 1.9–3.1×, and by 6.0–7.9× on 12 workers.
 Open: writing (a COG sink), internal masks.
 
+Status of Zarr: reading has started ([ADR 0003](docs/adr/0003-zarr-adapter.md)).
+The `zarr` module wraps `github.com/LukasSelin/zarr` (v0.3.0, pure Go,
+Zarr v3) and gives `zarr.Source`, an `engine.RasterSource` over one y-x
+plane of an array of two or more dimensions, the leading indices fixed.
+It reads every integer and float type, as float32, with the array's
+fill value as validity, compared in the element type, NaN fills
+included; a grid from the GeoZarr `spatial:transform` and `proj:code`
+attributes; and sharded arrays. Decoded chunks are kept in a byte-bounded
+cache with shared loads, `internal/blockcache`, which cog now uses too,
+and a window's missing chunks load concurrently. The cache decodes every
+chunk once where tiles and halos decoded each 2.9–3.8 times, and makes
+slope over a gzip array 2.5–3.0× faster on one core
+([benchmarks/zarr/RESULTS.md](benchmarks/zarr/RESULTS.md)). Open: an
+outside judge (xarray reading the same stores), N-D sources, a cache
+shared between planes, and writing.
+
 ## 35. Use Existing Format Libraries Where Possible
 
 Adapters wrap existing format libraries (a Zarr package into `Array`, a
@@ -2249,6 +2265,9 @@ window's blocks of a floating-point TIFF, and GDAL means cgo. So `cog`
 parses the container itself and wraps a library only for LZW, Deflate
 and ZSTD (`klauspost/compress`). An exception to this rule needs an outside
 judge, and GDAL is that judge here (§34).
+
+The Zarr adapter follows the rule: `zarr` wraps `github.com/LukasSelin/zarr`
+and parses nothing itself ([ADR 0003](docs/adr/0003-zarr-adapter.md)).
 
 ## 36. CRS and Reprojection
 
@@ -2966,6 +2985,7 @@ workflow graph and planner  done: package graph, over strata's own operations, g
 
 ```text
 v0.5   Zarr adapter: chunk-native N-D datasets (§34)
+       started: a 2-D plane of an array as a source (`zarr` module, ADR 0003)
 v0.6   GeoTIFF / COG adapters (§34)
        partly done: reading (`cog` module, ADR 0002); writing open
 v0.7   point batches: SoA, filters, reductions, rasterization (§11, §32)
