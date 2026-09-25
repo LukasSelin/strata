@@ -70,6 +70,11 @@ float64 numpy:
     ln(radiation), and "linear" cases exp of it; Equation 3 gives
     radiation itself. Check 15 holds strata to the authors' own numbers:
     their test spreadsheet (testrad.xls), transcribed below.
+  * northness and eastness (cases with a "component"), as Geomorpho90m
+    defines them (Amatulli et al. 2020, Scientific Data 7: 162):
+        northness = sin(slope) cos(aspect)   eastness = sin(slope) sin(aspect)
+    with slope and the compass aspect above; "unweighted" cases are
+    cos(aspect) and sin(aspect) alone, and 0 on flat cells.
 
 The focal operations are checked against their definitions as shifted
 sums of the float32 input, in float64:
@@ -293,6 +298,9 @@ def curvature_ref(op, z, case):
 
 
 def ref_name(case):
+    if case.get("component"):
+        how = f"fit r={case['fit']}" if case.get("fit") else "Horn"
+        return f"Geomorpho90m {case['component']} component ({how} gradient)"
     if case.get("equation"):
         how = f"fit r={case['fit']}" if case.get("fit") else "Horn"
         return f"McCune & Keon eq. {case['equation']} ({how} gradient)"
@@ -571,6 +579,36 @@ def heat_load_ref(dx, dy, gtol, case):
     return v, C * gtol + EPS * np.abs(v) + 1e-12
 
 
+def orientation_ref(dx, dy, gtol, case):
+    """Northness or eastness at the gradient (dx, dy), in angles, with its
+    tolerance and the cells too flat to judge.
+
+    Weighted, the components are the north and east parts of the unit
+    surface normal, which moves by at most as much as the gradient does
+    (see heat_load), so the bound is gtol plus one float32 rounding.
+    Unweighted, they are the parts of the unit downslope direction, which
+    turns by gtol / m for a gradient of length m: the bound grows without
+    limit as the cell flattens, and cells where it passes 0.05 are
+    reported, not judged, as aspect's are. Flat cells must be exactly 0.
+    """
+    m = np.hypot(dx, dy)
+    S = np.arctan(m)
+    aspect = np.arctan2(-dx, dy)
+    unweighted = case.get("unweighted", False)
+    w = np.ones_like(S) if unweighted else np.sin(S)
+    ref = w * (np.sin(aspect) if case["component"] == "east" else np.cos(aspect))
+    flat = (dx == 0) & (dy == 0)
+    ref = np.where(flat, 0.0, ref)
+    if unweighted:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tol = gtol / m + EPS * np.abs(ref) + 1e-12
+        vague = ~flat & (tol > 0.05)
+    else:
+        tol = gtol + EPS * np.abs(ref) + 1e-12
+        vague = np.zeros_like(flat)
+    return ref, tol, flat, vague
+
+
 def defined(out_mask, r=1):
     """Cells that must hold a defined value: at least r from the edge,
     and valid."""
@@ -609,6 +647,23 @@ for case in MAN["rasters"]:
         record(f"{case['name']} == {what}", bad == 0,
                f"{bad} differing cells over {int(keep.sum())}")
         continue
+    if case.get("component"):
+        dx, dy, tolx, toly = gradient_ref(z, case)
+        ref, tol, flat, vague = orientation_ref(dx, dy, np.hypot(tolx, toly), case)
+        keep = defined(out_mask, radius(case)) & np.isfinite(dx) & np.isfinite(dy)
+        judge = keep & ~flat & ~vague
+        err = np.abs(got - ref)
+        worst = (err[judge] / tol[judge]).max() if judge.any() else 0.0
+        flat_ok = bool(np.all(got[keep & flat] == 0.0))
+        record(
+            f"{case['name']} vs {ref_name(case)}",
+            worst <= 1.0 and flat_ok,
+            f"{worst:.2f}x tolerance over {int(judge.sum())} cells, "
+            f"{int((keep & vague).sum())} too flat to judge, {int((keep & flat).sum())} flat"
+            + ("" if flat_ok else ", FLAT CELLS NOT 0"),
+        )
+        continue
+
     ref, tol = expected(op, z, case)
     if ref is None:
         continue
@@ -700,7 +755,7 @@ PLANE_A, PLANE_B = 0.3, -0.7  # rise per column, rise per row (see main.go)
 
 for case in MAN["rasters"]:
     if case["surface"] != "plane" or not (base_op(case["op"]) in ("slope_deg", "aspect") + CURVATURES
-                                          or rug_kind(case["op"]) or case.get("equation")):
+                                          or rug_kind(case["op"]) or case.get("equation") or case.get("component")):
         continue
     cx = case["cell_size"]
     cy = case["cell_size_y"] or cx
@@ -738,6 +793,17 @@ for case in MAN["rasters"]:
         _, tol, _, _ = curvature_ref(base_op(case["op"]), z, case)
         worst = (np.abs(got[keep]) / tol[keep]).max()
         record(f"{case['name']} = analytic 0", worst <= 1.0, f"max {np.abs(got[keep]).max():.2e} ({worst:.2f}x)")
+        continue
+    if case.get("component"):
+        # One value for the whole plane, from its exact gradient.
+        z, _ = load(case["dem"])
+        _, _, tolx, toly = gradient_ref(z, case)
+        want, tol, _, _ = orientation_ref(np.float64(tdx), np.float64(tdy), np.hypot(tolx, toly), case)
+        tol = np.broadcast_to(tol, got.shape)[keep]
+        err = np.abs(got[keep] - want)
+        worst = (err / tol).max()
+        record(f"{case['name']} = analytic {float(want):.6f}", worst <= 1.0,
+               f"max error {err.max():.2e} ({worst:.2f}x tolerance)")
         continue
     if case.get("equation"):
         # One value for the whole plane, from its exact gradient; the

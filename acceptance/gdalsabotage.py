@@ -34,7 +34,9 @@ CHECK = "strata and gdaldem within float32 rounding"
 FACTORS = (1.0005, 1.00002)
 
 FILES = ("dem.raw", "gdal-slope.raw", "gdal-aspect.raw", "gdal-hillshade.raw",
-         "strata-slope.raw", "strata-aspect.raw", "strata-hillshade.raw") + tuple(
+         "strata-slope.raw", "strata-aspect.raw", "strata-hillshade.raw",
+         "strata-northness.raw", "strata-eastness.raw", "strata-northness_unweighted.raw",
+         "weight.raw", "gdal-wslope.raw", "strata-wslope.raw") + tuple(
     f"{tool}-{op}.raw" for tool in ("gdal", "strata") for op in ("tri", "triwilson", "tpi", "roughness"))
 
 
@@ -77,6 +79,31 @@ for op in RUGGEDNESS:
         missed += not caught
         print(f"{'caught' if caught else 'MISSED'}  {op + ' +1 ulp':<17} {line[6:].strip()}")
 
-total = len(FACTORS) + len(RUGGEDNESS)
+# Northness and eastness: a sign, a swap and the wrong weighting must each
+# fail the comparison with gdaldem's slope and aspect.
+ORIENTATION = (
+    ("eastness sign flipped", "eastness", lambda d: -rd(d, "eastness")),
+    ("northness is eastness", "northness", lambda d: rd(d, "eastness")),
+    ("northness unweighted", "northness", lambda d: rd(d, "northness_unweighted")),
+)
+
+
+def rd(d, op):
+    return np.fromfile(os.path.join(d, f"strata-{op}.raw"), dtype="<f4")
+
+
+for label, op, bad in ORIENTATION:
+    with tempfile.TemporaryDirectory() as d:
+        for f in FILES:
+            shutil.copy(os.path.join(SRC, f), d)
+        s = bad(d)
+        s[rd(d, op) == -9999] = -9999
+        s.astype("<f4").tofile(os.path.join(d, f"strata-{op}.raw"))
+        line = next((l for l in compare(d).splitlines() if l[6:].startswith(f"{op} == ")), "")
+        caught = line.startswith("FAIL")
+        missed += not caught
+        print(f"{'caught' if caught else 'MISSED'}  {label:<22} {line[6:].strip()}")
+
+total = len(FACTORS) + len(RUGGEDNESS) + len(ORIENTATION)
 print(f"\n{total - missed}/{total} sabotages caught")
 sys.exit(1 if missed else 0)

@@ -104,6 +104,20 @@ func BenchmarkHeatLoad(b *testing.B) {
 	}
 }
 
+// BenchmarkOrientation is BenchmarkAspect for northness, weighted and
+// not. Its tail is scalar float64 on every build; "simd" is the SIMD Horn
+// gradient under it.
+//
+//	GOEXPERIMENT=simd go test -run - -bench Orientation ./terrain
+func BenchmarkOrientation(b *testing.B) {
+	for _, unweighted := range []bool{false, true} {
+		b.Run(fmt.Sprintf("unweighted=%v", unweighted), func(b *testing.B) {
+			o := OrientationOptions{CellSize: 10, Unweighted: unweighted}
+			benchShade(b, func(dst, dem raster.Float32Raster) { Orientation(dst, dem, o) })
+		})
+	}
+}
+
 // BenchmarkCurvature is BenchmarkAspect for each kind of Curvature.
 //
 //	GOEXPERIMENT=simd go test -run - -bench Curvature ./terrain

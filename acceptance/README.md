@@ -61,14 +61,17 @@ the three curvatures also run with the quadratic fit (`FitRadius` 1 and
 from Equation 1 at 45°N, Equation 3 heat load at 33.5°S, and Equation 2
 radiation on the arithmetic scale. It also runs fitted at radius 1 and
 4, and in the `Features` stack. It runs as well on small planes at the
-points of McCune and Keon's test spreadsheet. 2085 checks come out of
-that (2079 without scipy):
+points of McCune and Keon's test spreadsheet. `Orientation` runs as
+northness and eastness, as Geomorpho90m defines them (weighted by the
+sine of the slope), and unweighted. Eastness also runs fitted at radius 1
+and 4, and both run in the `Features` stack. 2319 checks come out of
+that (2313 without scipy):
 
 | # | Check | Why it would catch a defect |
 | - | ----- | --------------------------- |
-| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; heat load against McCune and Keon's equation in angles on that gradient; fitted results against Wood's quadratic, solved by least squares with numpy's pseudo-inverse of the full design matrix; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
+| 1 | Every result against Horn's gradient, or for curvature the Zevenbergen–Thorne derivatives, recomputed in float64 numpy; heat load against McCune and Keon's equation in angles on that gradient; northness and eastness against Geomorpho90m's sin(slope)·cos(aspect) and sin(slope)·sin(aspect) on it; fitted results against Wood's quadratic, solved by least squares with numpy's pseudo-inverse of the full design matrix; focal results against their definition as shifted sums, Min and Max exactly; ruggedness (TRI, Riley and Wilson; TPI; roughness) exactly, against gdaldem's own arithmetic in float32 numpy | A wrong kernel, a cell size used on the wrong axis, degrees for radians, a sign flip, profile and plan curvature mixed up, a flipped or transposed weight grid, Riley's TRI summed in float32 where gdaldem sums in float64 |
 | 2 | The border carries no data: one cell for terrain, r cells for a radius-r focal operation | A stencil needs its whole neighbourhood; a border cell that holds a number is reading outside the raster |
-| 3 | The plane against its analytic slope, aspect, zero curvature, closed-form ruggedness and heat load at its exact gradient | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
+| 3 | The plane against its analytic slope, aspect, zero curvature, closed-form ruggedness and heat load, northness and eastness at its exact gradient | The whole pipeline agrees with pen-and-paper on a surface whose answer is known exactly |
 | 4 | plain == tiled == chunked, bit for bit | Tile seams, worker races, off-by-one tile origins — the README's central promise |
 | 5 | Validity after a (2r+1)×(2r+1) erosion of the input mask, 3×3 for terrain | NoData leaking into a result, or valid cells wrongly discarded |
 | 6 | Pointwise algebra against numpy in float32 | Exact equality is required here, so any drift shows |
@@ -161,6 +164,16 @@ tolerance is the gradient's error times a constant C, the sum of the
 coefficients' magnitudes. Every term is linear in the unit surface
 normal, which moves by at most as much as the gradient does. Check 15
 then compares against the authors' own evaluated numbers.
+Northness and eastness are Geomorpho90m's definition (Amatulli et al.
+2020) in angles, sin(slope) times the cosine or sine of the compass
+aspect, again from check.py's own gradient. Weighted, they are
+components of the unit surface normal, so the bound is the gradient's
+error plus one rounding. Unweighted, they are components of the unit
+downslope direction, which turns by the gradient's error over its
+length. Nearly flat cells, where that passes 0.05, are reported, not
+judged, as aspect's are. The three DEMs have no flat cells, so the flat
+case (exactly 0) is tested by the Go tests and by `gdalcheck.sh`, whose
+raster has 2.7 million.
 The quadratic fit's reference does not use strata's closed forms for the
 coefficients either: it solves the least-squares problem for every
 window with the pseudo-inverse of the six-column design matrix, and
@@ -284,6 +297,7 @@ are reconciled, and those reconciliations are the interesting part:
 | Flat cell in `aspect` | writes -9999 (its NoData) | writes -1, cell stays valid |
 | `hillshade` | byte, `round(1 + 254·max(0,cos))`, 0 reserved | float, `255·max(0,cos)` |
 | `aspect` on non-square cells | differences raw elevations | divides by each cell size |
+| northness, eastness | no mode; derived here as sin(slope)·cos/sin(aspect) from its outputs, 0 where flat | `terrain.Orientation` |
 
 Last run, on a 4096² window of a 12.5 m Swedish canopy-height raster
 with 23% NoData (12.85M cells carrying data):
@@ -298,6 +312,9 @@ within float32 rounding             worst 0.09× the bound, 76.21% bit-identical
 weighted slope: same cells          0 cells differ; 11,644,877 carry data
 weighted slope: data iff both       0 cells differ; 1,204,997 lose their weight and nothing else
 weighted slope: gdal_calc is x      gdaldem slope × weight, rounded once, over 11,644,877 cells
+northness == from gdaldem           max 5.38e-07 (0.23× bound) over 10,168,703 cells, 2,681,171 flat
+eastness == from gdaldem            max 4.41e-07 (0.17× bound)
+northness (unweighted) == cos(asp)  max 5.45e-07 (0.23× bound)
 weighted slope: float32 rounding    worst 0.11× the bound, 78.10% bit-identical
 surface (gdal/main.go)              slope, aspect, hillshade in one call, each identical to its own run
 no seam every 256 rows              1.222e-06 on chunk boundaries vs 1.203e-06 elsewhere
@@ -350,6 +367,19 @@ slope × 1.00002  caught, 15× bound     caught, 28× bound
 
 On `noisy`, the 1.00002 drift passes the absolute `slope == gdaldem
 slope` check (max 7.9e-04° < 1e-3°); only the derived bound catches it.
+
+Northness and eastness have no gdaldem mode, so `gdalcompare.py` applies
+Geomorpho90m's definition to gdaldem's own slope and aspect. Its bound
+is how far gdaldem's slope and aspect sit from strata's own at each cell
+(which the checks above judge), carried through the definition, plus
+2e-6 for strata's float32 arctangents. So it tests how strata forms the
+components, not its slope and aspect again. `gdalsabotage.py` flips
+eastness's sign, writes eastness as northness, and writes the unweighted
+northness for the weighted one. On the canopy raster each fails by
+490,000× the bound or more. It also now copies the weighted-slope files
+into its scratch directories: without them, every sabotaged comparison
+crashed at the weighted-slope section, after the checks it was looking
+for, so the crash went unnoticed.
 
 Ruggedness needs no reconciliation and gets no tolerance: strata's TRI,
 TRI Wilson, TPI and roughness must match gdaldem's in every bit of every

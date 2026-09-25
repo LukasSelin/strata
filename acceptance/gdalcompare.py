@@ -27,6 +27,13 @@ are reconciled, and the reconciliations are the interesting part:
     dividing by the cell size; strata divides. They agree only for
     square cells, which this raster has (12.5 m both ways).
 
+  * Northness and eastness. gdaldem has no mode for them, so the
+    reference is Geomorpho90m's definition applied to gdaldem's own
+    outputs: sin(slope) cos(aspect) and sin(slope) sin(aspect), and
+    cos(aspect) alone for the unweighted northness, 0 where gdaldem
+    marks a cell flat. That tests how strata forms the components; its
+    slope and aspect are compared with gdaldem's on their own above.
+
   * Ruggedness needs no reconciliation at all. strata documents that
     TRI (Riley and Wilson), TPI and roughness round exactly as gdaldem
     does, so those four are compared bit for bit: any difference in any
@@ -276,6 +283,45 @@ record(
     f"worst {wworst:.2f}x the bound, {int((wgap > wtol).sum()):,} cells over, "
     f"{100 * (wgap == 0).mean():.2f}% bit-identical",
 )
+
+# --------------------------------------------------------------------
+# 5c. Northness and eastness, against Geomorpho90m's definition applied
+#     to gdaldem's slope and aspect. The bound is how far gdaldem's slope
+#     and aspect sit from strata's own at that cell (sections 2 and 3
+#     judge those), carried through the definition: a change dS in the
+#     slope moves sin(S) cos(A) by at most |dS|, and a change dA in the
+#     aspect by at most sin(S) |dA| (|dA| alone unweighted), in radians;
+#     plus 2e-6 for strata's float32 arctangents and the rounding of its
+#     slope and aspect to float32 degrees (documented within 2.7e-7 rad
+#     and 3e-5 deg). A sign, a swap or the wrong weighting is off by a
+#     large fraction of the value, far outside it.
+# --------------------------------------------------------------------
+
+S_g = np.radians(gslope)
+A_g = np.radians(gasp)
+dS = np.radians(np.abs(gslope - sslope))
+dA = np.radians(np.minimum(np.abs(gasp - sasp) % 360.0, 360.0 - np.abs(gasp - sasp) % 360.0))
+flat = g_flat | s_flat
+for name, unweighted, trig in (("northness", False, np.cos), ("eastness", False, np.sin),
+                               ("northness_unweighted", True, np.cos)):
+    got = f32(f"strata-{name}.raw")
+    has = got != STRATA_FILL
+    record(f"{name}: same cells carry data as gdaldem slope", int((has != g_has).sum()) == 0,
+           f"{int((has != g_has).sum())} cells differ")
+    w = 1.0 if unweighted else np.sin(S_g)
+    ref = np.where(flat, 0.0, w * trig(A_g))
+    bound = (0.0 if unweighted else dS) + (1.0 if unweighted else np.sin(S_g)) * dA + 2e-6
+    judge = both & ~flat
+    err = np.abs(got - ref)
+    worst = (err[judge] / bound[judge]).max()
+    flat_ok = bool(np.all(got[both & flat] == 0.0))
+    what = ("cos(aspect)" if unweighted else "sin(slope) " + trig.__name__ + "(aspect)")
+    record(
+        f"{name} == {what} from gdaldem",
+        worst <= 1.0 and flat_ok,
+        f"max {err[judge].max():.2e} ({worst:.2f}x bound) over {int(judge.sum()):,} cells, "
+        f"{int((both & flat).sum()):,} flat" + ("" if flat_ok else ", FLAT CELLS NOT 0"),
+    )
 
 # --------------------------------------------------------------------
 # 6. No tile seam: the streamed run must not be worse on the rows where

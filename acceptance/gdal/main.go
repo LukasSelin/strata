@@ -5,7 +5,10 @@
 //
 // It reads dem.raw and writes strata-slope.raw, strata-aspect.raw,
 // strata-hillshade.raw and, for Ruggedness, strata-tri.raw,
-// strata-triwilson.raw, strata-tpi.raw and strata-roughness.raw, each as
+// strata-triwilson.raw, strata-tpi.raw and strata-roughness.raw, and
+// strata-northness.raw, strata-eastness.raw and
+// strata-northness_unweighted.raw, which gdaldem has no mode for and
+// gdalcompare.py derives from gdaldem's slope and aspect, each as
 // raw little-endian float32 with -9999 under invalid cells, which is the
 // NoData value gdaldem writes.
 //
@@ -81,6 +84,19 @@ func run() error {
 			func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
 				return terrain.HillshadeChunked(ctx, dst, src, ho, eo)
 			}},
+	}
+	for _, o := range []struct {
+		name string
+		opts terrain.OrientationOptions
+	}{
+		{"northness", terrain.OrientationOptions{CellSize: *cell, CellSizeY: *cell}},
+		{"eastness", terrain.OrientationOptions{CellSize: *cell, CellSizeY: *cell, Component: terrain.Eastness}},
+		{"northness_unweighted", terrain.OrientationOptions{CellSize: *cell, CellSizeY: *cell, Unweighted: true}},
+	} {
+		jobs = append(jobs, job{o.name, func(dst, dm raster.Float32Raster) { terrain.Orientation(dst, dm, o.opts) },
+			func(ctx context.Context, dst engine.RasterSink, src engine.RasterSource, eo engine.Options) error {
+				return terrain.OrientationChunked(ctx, dst, src, o.opts, eo)
+			}})
 	}
 	for _, r := range []struct {
 		name string

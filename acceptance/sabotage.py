@@ -451,6 +451,42 @@ def heat_south_unfolded(d):
     json.dump(man, open(p, "w"))
 
 
+# Northness and eastness. check.py has Geomorpho90m's definition in
+# angles, so a sign, a swap or the wrong weighting must fail it.
+
+
+def orientation_east_sign(d):
+    """Eastness with its sign flipped: the aspect measured anticlockwise."""
+    for stem in STEMS:
+        for form in FORMS:
+            name = f"{stem}-eastness-{form}.f32"
+            write(d, name, -read(d, name))
+
+
+def orientation_swapped(d):
+    """Northness and eastness swapped."""
+    for stem in STEMS:
+        for form in FORMS:
+            n, e = f"{stem}-northness-{form}.f32", f"{stem}-eastness-{form}.f32"
+            a, b = read(d, n), read(d, e)
+            write(d, n, b)
+            write(d, e, a)
+
+
+def orientation_unweighted(d):
+    """cos(aspect) alone written where sin(slope) cos(aspect) was asked."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-northness-{form}.f32", read(d, f"{stem}-northness_unweighted-{form}.f32"))
+
+
+def orientation_fit_is_horn(d):
+    """The r = 4 fitted eastness computed from Horn's 3x3 gradient."""
+    for stem in STEMS:
+        for form in FORMS:
+            write(d, f"{stem}-eastness_fit4-{form}.f32", read(d, f"{stem}-eastness-{form}.f32"))
+
+
 def _weighted(d, f):
     """Apply f(values, mask) -> (values, mask) to every weighted slope."""
     for c in MAN["rasters"]:
@@ -559,6 +595,10 @@ MUTATIONS = [
     ("heat load 0.05% too large", heat_drift),
     ("r=4 heat load from Horn's gradient", heat_fit_is_horn),
     ("southern fold not applied", heat_south_unfolded),
+    ("eastness sign flipped", orientation_east_sign),
+    ("northness and eastness swapped", orientation_swapped),
+    ("northness not weighted by slope", orientation_unweighted),
+    ("r=4 eastness from Horn's gradient", orientation_fit_is_horn),
 ]
 
 

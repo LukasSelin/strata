@@ -190,6 +190,9 @@ func featureCases() []featureCase {
 	heat := HeatLoadOptions{CellSize: cs, CellSizeY: csy, Latitude: 47}
 	fheat := HeatLoadOptions{CellSize: cs, CellSizeY: csy, FitRadius: 3, Latitude: -33,
 		Equation: HeatLoadEquation3, Radiation: true, Linear: true}
+	// Northness, Horn's, and unweighted eastness from the fit.
+	north := OrientationOptions{CellSize: cs, CellSizeY: csy}
+	feast := OrientationOptions{CellSize: cs, CellSizeY: csy, FitRadius: 2, Component: Eastness, Unweighted: true}
 	return append(cases,
 		featureCase{fslope, func(d, m raster.Float32Raster) { Slope(d, m, fslope) }},
 		featureCase{fcurv, func(d, m raster.Float32Raster) { Curvature(d, m, fcurv) }},
@@ -197,6 +200,8 @@ func featureCases() []featureCase {
 		featureCase{fshade, func(d, m raster.Float32Raster) { Hillshade(d, m, fshade) }},
 		featureCase{heat, func(d, m raster.Float32Raster) { HeatLoad(d, m, heat) }},
 		featureCase{fheat, func(d, m raster.Float32Raster) { HeatLoad(d, m, fheat) }},
+		featureCase{north, func(d, m raster.Float32Raster) { Orientation(d, m, north) }},
+		featureCase{feast, func(d, m raster.Float32Raster) { Orientation(d, m, feast) }},
 	)
 }
 
@@ -219,6 +224,7 @@ func TestFeaturesAreTheStandaloneProducts(t *testing.T) {
 		{5, 5},                // one operation twice
 		{16, 0, 17, 13},       // fitted slope and curvature next to Horn's and ruggedness
 		{20, 0, 21, 6},        // heat load, Horn's and fitted, next to slope and TRI
+		{22, 23, 1, 20},       // northness and fitted eastness next to aspect and heat load
 		func() []int { // everything
 			all := make([]int, len(cases))
 			for i := range all {
