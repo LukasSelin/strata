@@ -85,8 +85,14 @@ func (c *Cache[K, V]) WithHolds(hold, drop func(V)) *Cache[K, V] {
 	return c
 }
 
-// Limit returns the byte budget the cache was made with.
-func (c *Cache[K, V]) Limit() int64 { return c.limit }
+// Limit returns the byte budget the cache was made with, or 0 for a nil
+// cache, which is how a source without one reports it.
+func (c *Cache[K, V]) Limit() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.limit
+}
 
 // Stats returns the cache's counters.
 func (c *Cache[K, V]) Stats() Stats {

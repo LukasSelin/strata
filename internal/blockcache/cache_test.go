@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/LukasSelin/strata/raster"
 )
 
 func size(int) int64 { return 10 }
@@ -203,5 +205,42 @@ func TestHolds(t *testing.T) {
 	}
 	if c.Limit() != 10 {
 		t.Errorf("Limit %d, want 10", c.Limit())
+	}
+}
+
+// TestDefaultLimit checks that the default cache is DefaultRows rows of
+// decoded blocks, within its floor and cap.
+func TestDefaultLimit(t *testing.T) {
+	row := func(width, bw, bh int) int64 { // one row of blocks, as the adapters' block sizes count it
+		cells := bw * bh
+		return int64((width+bw-1)/bw) * int64(4*cells+8*raster.MaskWords(cells)+64)
+	}
+	for _, tc := range []struct {
+		name          string
+		width, bw, bh int
+		want          int64
+	}{
+		{"the cog benchmark's 11264-wide raster", 11264, 512, 512, DefaultRows * row(11264, 512, 512)},
+		{"wide", 16384, 512, 512, DefaultRows * row(16384, 512, 512)},
+		{"narrow: the floor", 701, 256, 256, DefaultBytes},
+		{"strips: the floor", 20000, 20000, 8, DefaultBytes},
+		{"very wide: the cap", 400000, 512, 512, MaxDefaultBytes},
+		{"absurdly wide: the cap, no overflow", 1 << 40, 16384, 16384, MaxDefaultBytes},
+	} {
+		if got := DefaultLimit(tc.width, tc.bw, tc.bh); got != tc.want {
+			t.Errorf("%s: %d bytes, want %d", tc.name, got, tc.want)
+		}
+	}
+	if got := DefaultRows * row(11264, 512, 512); got < 180<<20 || got > 190<<20 {
+		t.Errorf("11264-wide: %d MiB, the cog benchmark's reasoning expects about 182", got>>20)
+	}
+}
+
+// TestNilLimit checks that a nil cache, a source's when it has none,
+// reports a limit of 0.
+func TestNilLimit(t *testing.T) {
+	var c *Cache[int, int]
+	if got := c.Limit(); got != 0 {
+		t.Errorf("nil cache: limit %d, want 0", got)
 	}
 }

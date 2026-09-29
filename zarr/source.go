@@ -20,9 +20,9 @@ import (
 // workers, taller tiles or a wider raster than the cap allows need
 // CacheBytes set.
 const (
-	DefaultCacheRows     = 8
-	DefaultCacheBytes    = 64 << 20
-	MaxDefaultCacheBytes = 1 << 30
+	DefaultCacheRows     = blockcache.DefaultRows
+	DefaultCacheBytes    = blockcache.DefaultBytes
+	MaxDefaultCacheBytes = blockcache.MaxDefaultBytes
 )
 
 // DefaultReadConcurrency is how many chunks one ReadWindow loads at once
@@ -131,24 +131,11 @@ func NewSource(a *zarrv3.Array, opts SourceOptions) (*Source, error) {
 	size := (*chunk).size
 	switch {
 	case opts.CacheBytes == 0:
-		s.cache = blockcache.New[[2]int](defaultCacheBytes(s.w, s.cw, s.ch), size)
+		s.cache = blockcache.New[[2]int](blockcache.DefaultLimit(s.w, s.cw, s.ch), size)
 	case opts.CacheBytes > 0:
 		s.cache = blockcache.New[[2]int](opts.CacheBytes, size)
 	}
 	return s, nil
-}
-
-// defaultCacheBytes is the cache of a source whose CacheBytes is 0:
-// DefaultCacheRows rows of decoded chunks, as chunk.size counts them,
-// clamped to [DefaultCacheBytes, MaxDefaultCacheBytes].
-func defaultCacheBytes(width, cw, ch int) int64 {
-	cells := int64(cw) * int64(ch)
-	perChunk := 4*cells + 8*int64(raster.MaskWords(int(cells))) + 64
-	across := int64((width + cw - 1) / cw)
-	if across > MaxDefaultCacheBytes/(DefaultCacheRows*perChunk) {
-		return MaxDefaultCacheBytes // and no overflow on the way
-	}
-	return min(max(DefaultCacheRows*across*perChunk, DefaultCacheBytes), MaxDefaultCacheBytes)
 }
 
 // Array returns the array the source reads.
@@ -179,12 +166,7 @@ func (s *Source) Grid() raster.Grid {
 
 // CacheBytes returns the bound on the source's decoded-chunk cache: the
 // one SourceOptions gave, or the default it chose, or 0 for no cache.
-func (s *Source) CacheBytes() int64 {
-	if s.cache == nil {
-		return 0
-	}
-	return s.cache.Limit()
-}
+func (s *Source) CacheBytes() int64 { return s.cache.Limit() }
 
 // CacheStats counts what the decoded-chunk cache has done.
 type CacheStats struct {

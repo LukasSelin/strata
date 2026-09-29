@@ -251,9 +251,9 @@ func (f *File) level(fn string, level int) *image {
 // More workers, taller tiles or a wider raster than the cap allows
 // need CacheBytes set.
 const (
-	DefaultCacheRows     = 8
-	DefaultCacheBytes    = 64 << 20
-	MaxDefaultCacheBytes = 1 << 30
+	DefaultCacheRows     = blockcache.DefaultRows
+	DefaultCacheBytes    = blockcache.DefaultBytes
+	MaxDefaultCacheBytes = blockcache.MaxDefaultBytes
 )
 
 // SourceOptions selects what a Source reads.
@@ -311,7 +311,7 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 		hold, drop := (*block).hold, (*block).release
 		switch {
 		case opts.CacheBytes == 0:
-			s.cache = blockcache.New[int](defaultCacheBytes(im), size).WithHolds(hold, drop)
+			s.cache = blockcache.New[int](blockcache.DefaultLimit(im.width, im.blockW, im.blockH), size).WithHolds(hold, drop)
 		case opts.CacheBytes > 0:
 			s.cache = blockcache.New[int](opts.CacheBytes, size).WithHolds(hold, drop)
 		}
@@ -332,27 +332,9 @@ func (f *File) Source(opts SourceOptions) (*Source, error) {
 	return s, nil
 }
 
-// defaultCacheBytes is the cache of a source over im whose CacheBytes
-// is 0: DefaultCacheRows rows of decoded blocks, as block.size counts
-// them, clamped to [DefaultCacheBytes, MaxDefaultCacheBytes].
-func defaultCacheBytes(im *image) int64 {
-	cells := int64(im.blockW) * int64(im.blockH)
-	perBlock := 4*cells + 8*int64(raster.MaskWords(int(cells))) + 64
-	across := int64((im.width + im.blockW - 1) / im.blockW)
-	if across > MaxDefaultCacheBytes/(DefaultCacheRows*perBlock) {
-		return MaxDefaultCacheBytes // and no overflow on the way
-	}
-	return min(max(DefaultCacheRows*across*perBlock, DefaultCacheBytes), MaxDefaultCacheBytes)
-}
-
 // CacheBytes returns the bound on the source's decoded-block cache: the
 // one SourceOptions gave, or the default it chose, or 0 for no cache.
-func (s *Source) CacheBytes() int64 {
-	if s.cache == nil {
-		return 0
-	}
-	return s.cache.Limit()
-}
+func (s *Source) CacheBytes() int64 { return s.cache.Limit() }
 
 // Size returns the level's width and height.
 func (s *Source) Size() (width, height int) { return s.im.width, s.im.height }
