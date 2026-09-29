@@ -190,34 +190,9 @@ func BenchmarkFloat32Validity(b *testing.B) {
 	}
 }
 
-// TestDefaultCacheBytes checks that the default cache is DefaultCacheRows
-// rows of decoded blocks, within its floor and cap, and that a source
-// reports the bound it chose.
+// TestDefaultCacheBytes checks that a source reports the cache bound it
+// chose; blockcache.DefaultLimit's own test covers the default.
 func TestDefaultCacheBytes(t *testing.T) {
-	row := func(width, bw, bh int) int64 { // one row of blocks, as block.size counts it
-		cells := bw * bh
-		return int64((width+bw-1)/bw) * int64(4*cells+8*raster.MaskWords(cells)+64)
-	}
-	for _, tc := range []struct {
-		name          string
-		width, bw, bh int
-		want          int64
-	}{
-		{"the benchmark's 11264-wide COG", 11264, 512, 512, DefaultCacheRows * row(11264, 512, 512)},
-		{"narrow: the floor", 701, 256, 256, DefaultCacheBytes},
-		{"strips: the floor", 20000, 20000, 8, DefaultCacheBytes},
-		{"very wide: the cap", 200000, 512, 512, MaxDefaultCacheBytes},
-		{"absurdly wide: the cap, no overflow", 1 << 40, 16384, 16384, MaxDefaultCacheBytes},
-	} {
-		got := defaultCacheBytes(&image{width: tc.width, blockW: tc.bw, blockH: tc.bh})
-		if got != tc.want {
-			t.Errorf("%s: %d bytes, want %d", tc.name, got, tc.want)
-		}
-	}
-	if got := DefaultCacheRows * row(11264, 512, 512); got < 180<<20 || got > 190<<20 {
-		t.Errorf("11264-wide: %d MiB, the benchmark's reasoning expects about 182", got>>20)
-	}
-
 	f, err := Open(bytes.NewReader(fileSpec{order: binary.LittleEndian, images: []imageSpec{{
 		w: 40, h: 30, bands: 1, format: sampleFloat, size: 4, tiled: true, blockW: 16, blockH: 16,
 		planar: planarChunky, compression: compressionNone, vals: [][]float64{make([]float64, 40*30)},

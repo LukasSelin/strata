@@ -650,29 +650,6 @@ func TestCacheCounts(t *testing.T) {
 	}
 }
 
-// TestDefaultCacheBytes checks the default cache: DefaultCacheRows rows
-// of chunks, within its floor and cap.
-func TestDefaultCacheBytes(t *testing.T) {
-	row := func(width, cw, ch int) int64 {
-		cells := int64(cw * ch)
-		return int64((width+cw-1)/cw) * (4*cells + 8*int64(raster.MaskWords(int(cells))) + 64)
-	}
-	for _, tc := range []struct {
-		name          string
-		width, cw, ch int
-		want          int64
-	}{
-		{"wide", 16384, 512, 512, DefaultCacheRows * row(16384, 512, 512)},
-		{"narrow: the floor", 700, 256, 256, DefaultCacheBytes},
-		{"very wide: the cap", 400000, 512, 512, MaxDefaultCacheBytes},
-		{"absurdly wide: the cap, no overflow", 1 << 40, 16384, 16384, MaxDefaultCacheBytes},
-	} {
-		if got := defaultCacheBytes(tc.width, tc.cw, tc.ch); got != tc.want {
-			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
-		}
-	}
-}
-
 // TestSharedLoad checks that readers asking for a chunk while another is
 // loading it wait for that load; run it with -race.
 func TestSharedLoad(t *testing.T) {
