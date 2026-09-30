@@ -12,9 +12,10 @@ dot-directories, so nothing here affects an analysis. Score it from a doppel che
     DOPPEL_BENCH_CORPUS=<path to this repo> DOPPEL_BENCH_LABELS=<path to this repo>/.doppel/labels.json \
       go test ./internal/bench/ -run TestGoldenRanking -v -count=1
 
-Baseline when recorded (mean rank per class): merge 42.0 (4/4 retrieved, 2 in top 50) · refactor 27.9 · false_positive 31.4 · 7 false positives in the top 20.
+Baseline when recorded (mean rank per class): merge 36.6 (5/5 retrieved, 3 in top 50) · refactor 29.6 · false_positive 30.5 · 9 false positives in the top 20.
 The benchmark's hard assertions fail at this baseline; that failure is what a
 false-positive fix is measured against.
 
-Pairs whose two sides share a qualified name (two `main.main`s, two `init`s, a helper
-duplicated across two JS files) cannot be expressed in this format and are absent.
+A side may pin its file with `aFile`/`bFile` (slash-separated, relative to the repository
+root); a pair whose two sides share a qualified name — two `main.main`s, two `init`s, a
+helper duplicated across two scripts — must pin both.
