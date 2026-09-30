@@ -12,7 +12,7 @@ dot-directories, so nothing here affects an analysis. Score it from a doppel che
     DOPPEL_BENCH_CORPUS=<path to this repo> DOPPEL_BENCH_LABELS=<path to this repo>/.doppel/labels.json \
       go test ./internal/bench/ -run TestGoldenRanking -v -count=1
 
-Baseline when recorded (mean rank per class): merge 36.6 (5/5 retrieved, 3 in top 50) · refactor 29.6 · false_positive 30.5 · 9 false positives in the top 20.
+Baseline (mean rank per class), re-measured 2026-09-30 after doppel squared code-shape in its rank key: merge 24.4 (5/5 retrieved, 5 in top 50) · refactor 33.9 · false_positive 34.5 · 10 false positives in the top 20.
 The benchmark's hard assertions fail at this baseline; that failure is what a
 false-positive fix is measured against.
 
